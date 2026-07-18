@@ -30,7 +30,7 @@ from pathlib import Path
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
-from . import actions, extract as extract_mod, llm, stt, vault  # noqa: E402
+from . import actions, audit, extract as extract_mod, llm, stt, vault  # noqa: E402
 from .config import DEFAULT_SESSION_MINUTES  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -663,7 +663,7 @@ def execute_plan(plan: dict, verify: bool = True) -> dict:
             ]
         timings["verify"] = round(time.perf_counter() - t0, 2)
 
-    return {
+    result = {
         "actions": result_actions,
         "deduped_actions": deduped_actions,
         "actions_taken": ["note-filed"] + actions_taken,
@@ -674,6 +674,30 @@ def execute_plan(plan: dict, verify: bool = True) -> dict:
         "timings": timings,
         "errors": errors,
     }
+
+    # --- activity log (failure-safe; a logging failure never breaks the run) --
+    # This is the single place both the HTTP path (/api/execute) and the CLI
+    # path (run_debrief) flow through, so every executed debrief is logged once.
+    # The plan carries the phase-1 context (client, transcript, phase-1 timings,
+    # unsupported requests) that the returned result does not, so merge them for
+    # the log. errors is the same list object held by result, so an audit
+    # failure recorded here also surfaces in result["errors"].
+    audit.log_debrief_run(
+        {
+            "client_id": client_id,
+            "client": client,
+            "corrected_transcript": corrected,
+            "note_path": note_path,
+            "actions": result_actions,
+            "deduped_actions": deduped_actions,
+            "verification": verification,
+            "timings": {**(plan.get("timings") or {}), **timings},
+            "unsupported_requests": plan.get("unsupported_requests", []) or [],
+            "errors": errors,
+        }
+    )
+
+    return result
 
 
 # ---------------------------------------------------------------------------
