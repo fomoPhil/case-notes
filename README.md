@@ -4,18 +4,18 @@ One spoken debrief after each therapy session. Debrief writes the progress note,
 
 It also supports a separate **Clinician Voice Journal**: between sessions, a therapist can dictate an observation, session-prep thought, or follow-up idea. The app turns it into a dated draft in that client's local workspace. Journal entries never schedule, email, sign, or send anything.
 
-## Current implementation
+## Run it
 
-The runnable MVP is intentionally narrow and uses synthetic data by default:
+The full agent (STT, DAP note extraction, admin actions, vision verification):
 
 ```bash
 uv sync
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8765
+HF_HUB_OFFLINE=1 .venv/bin/python app.py
 ```
 
-Open `http://127.0.0.1:8765`. Paste or record a spoken debrief, review the action plan, and approve it. `CASE_NOTES_EXECUTION_MODE=demo` is the default and writes only to the local demo vault. `live` mode is macOS-only and must be explicitly enabled after Calendar, Mail, Screen Recording, and Obsidian permissions have been granted.
+Open `http://127.0.0.1:8377`. Pick a client, record a spoken debrief, review the note and action plan, and approve it. Requires: Apple Silicon Mac, LM Studio serving `gemma-4-12b-it-qat` on port 1234, parakeet-mlx, and macOS Automation (Calendar, Mail) plus Screen Recording permissions. The demo vault ships with fictional clients; all processing is local.
 
-For local Gemma inference set `CASE_NOTES_MODEL_BASE_URL` and `CASE_NOTES_MODEL_ID` to a local OpenAI-compatible server. The app refuses live actions if the local model or screen verification is unavailable.
+An earlier, simpler voice-journal MVP also lives in `app/` (port 8765, demo mode by default); it predates the full agent and is kept for reference.
 
 Built for the "Build with Gemma: JustBuild" hackathon (July 17-18, 2026), Track 2: Voice-to-Action Agents.
 

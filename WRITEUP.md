@@ -2,7 +2,7 @@
 
 **Track 2: Voice-to-Action Agents · Build with Gemma: JustBuild · July 17-18, 2026**
 
-Repo: https://github.com/BlainThomas/case-notes
+Repo: https://github.com/fomoPhil/case-notes
 
 ## The problem
 
