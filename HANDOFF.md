@@ -21,8 +21,11 @@ Read this first, then IMPLEMENTATION_PLAN.md. This file is the session-to-sessio
 | Track decision | Track 2 (pivoted from Track 1 on 7/17; Track 2 requires screen understanding + real actions; our answer is deterministic actions + vision verification) |
 | Implementation plan | DONE: IMPLEMENTATION_PLAN.md (LLM-ready, full architecture + timeline + demo script) |
 | **SI refusal test (was the #1 risk)** | **PASSED 2026-07-17**: `gemma-4-12b-it-qat`, thinking OFF, produced a quality SOAP note from an SI-containing transcript, no refusal, spontaneously reminded clinician to document risk level. Keep this exact model + settings. |
-| Code | Runnable FastAPI MVP: Voice Journal and Debrief planning, atomic local draft writes, guarded macOS Calendar/Mail adapters, and local-model screen-verification adapter. Tests pass on Saturday; macOS live validation remains. |
-| Models downloaded | Verify: Gemma 4 12B QAT confirmed present (it was tested); check parakeet-mlx installed |
+| Code | TWO coexisting apps. (1) Blain's simpler voice-journal MVP in app/ (uv/pyproject). (2) The full Debrief agent: debrief/ package + root app.py server + static/index.html UI + eval/ harness. |
+| Full agent verification (2026-07-18 early AM) | 54 unit tests green. End-to-end live pipeline (say-synthesized voice -> STT -> extraction -> Calendar + Mail + vault note -> Gemma vision screen verification 3/3 confirmed): passed 2x. Exact HTTP demo path (webm upload -> /api/debrief -> /api/execute): passed 2x. Eval suite: 5/5 transcripts x 8 checks + 10/10 dates PASS. Two real bugs found by eval and fixed (duplicate booking extraction, date serialization crash). |
+| Models | LM Studio serving gemma-4-12b-it-qat on :1234 (reasoning_effort none via API). parakeet-mlx cached. |
+| Vault | DebriefVault/ is its own registered Obsidian vault (separate from personal vaults). |
+| LAUNCH COMMAND | `HF_HUB_OFFLINE=1 .venv/bin/python app.py` then open http://127.0.0.1:8377. NOT uvicorn app:app (app/ package shadows app.py). Pre-warm with one throwaway debrief before demoing (first request loads parakeet, ~30s). Keep Calendar/Obsidian/Mail windows unobstructed during verification. |
 
 ## Architecture in one line
 
