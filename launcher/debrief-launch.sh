@@ -40,6 +40,9 @@ APP_HEALTH_URL="http://127.0.0.1:8377/api/clients"
 MODEL_ID="gemma-4-12b-it-qat"
 MIN_CONTEXT=64000
 
+# One-time marker so the optional Obsidian nudge is only ever shown once.
+OBSIDIAN_NUDGE_MARKER="$HOME/.debrief-obsidian-nudge-shown"
+
 # ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
@@ -84,7 +87,19 @@ ensure_lm_server() {
 
   log "LM Studio server not responding. Starting it..."
   if [ ! -x "$LMS_BIN" ]; then
-    fail "lm-server" "Debrief could not find LM Studio on this Mac. Open the LM Studio app once, then try Debrief again."
+    # LM Studio is missing entirely (no lms binary AND nothing answering on
+    # :1234). Offer to open the download page instead of only giving advice.
+    log "LM Studio not installed. Offering the download page."
+    local choice
+    choice="$(/usr/bin/osascript 2>/dev/null <<'OSA'
+display dialog "Debrief needs LM Studio, a free app that runs its private AI. Install it, open it once, then run Debrief again." with title "Debrief" buttons {"Not Now", "Open Download Page"} default button "Open Download Page" with icon caution
+OSA
+)"
+    if [[ "$choice" == *"Open Download Page"* ]]; then
+      open "https://lmstudio.ai" >/dev/null 2>&1
+    fi
+    log "FAILED at step: lm-server (LM Studio not installed)"
+    exit 1
   fi
   "$LMS_BIN" server start >/dev/null 2>&1
 
@@ -197,7 +212,24 @@ ensure_model() {
     sleep 1
   done
 
-  fail "model" "Debrief could not load its AI model. Open LM Studio and check that $MODEL_ID is downloaded, then try Debrief again."
+  # The model would not load, most often because it has not been downloaded
+  # yet. Offer to take them straight to LM Studio's model search instead of just
+  # giving advice. (A download page is wrong here; the model lives inside LM
+  # Studio, not on a web page.)
+  log "Model could not be loaded. Offering to get the model."
+  local choice
+  choice="$(/usr/bin/osascript 2>/dev/null <<OSA
+display dialog "Debrief could not load its AI model ($MODEL_ID). You may just need to download it inside LM Studio first, then try Debrief again." with title "Debrief" buttons {"Not Now", "Get the Model"} default button "Get the Model" with icon caution
+OSA
+)"
+  if [[ "$choice" == *"Get the Model"* ]]; then
+    open -a "LM Studio" >/dev/null 2>&1
+    /usr/bin/osascript >/dev/null 2>&1 <<OSA
+display dialog "In LM Studio, search for $MODEL_ID in the model search and download it. Once it finishes, run Debrief again." with title "Debrief" buttons {"OK"} default button "OK" with icon note
+OSA
+  fi
+  log "FAILED at step: model"
+  exit 1
 }
 
 # ---------------------------------------------------------------------------
@@ -254,6 +286,33 @@ open_ui() {
 }
 
 # ---------------------------------------------------------------------------
+# Step E: Optional Obsidian nudge (soft, non-blocking, shown once ever)
+# ---------------------------------------------------------------------------
+
+# Runs LAST, AFTER the window is already open, so it can never prevent Debrief
+# from starting. Purely a friendly suggestion; if Obsidian is present or we have
+# already nudged once, this is a no-op.
+nudge_obsidian() {
+  [ -e "$OBSIDIAN_NUDGE_MARKER" ] && return 0
+  if [ -d "/Applications/Obsidian.app" ]; then
+    return 0
+  fi
+
+  log "Obsidian not installed. Showing the one-time optional nudge."
+  # Mark it shown first, so it never nags again regardless of the choice.
+  touch "$OBSIDIAN_NUDGE_MARKER" 2>/dev/null
+
+  local choice
+  choice="$(/usr/bin/osascript 2>/dev/null <<'OSA'
+display dialog "Optional: Obsidian is a free app for browsing your practice vault visually. Debrief works fine without it." with title "Debrief" buttons {"Skip", "Open Download Page"} default button "Skip" with icon note
+OSA
+)"
+  if [[ "$choice" == *"Open Download Page"* ]]; then
+    open "https://obsidian.md" >/dev/null 2>&1
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Run the checks in order.
 # ---------------------------------------------------------------------------
 
@@ -264,6 +323,8 @@ main() {
   ensure_app_server
   open_ui
   log "Debrief is ready."
+  # Soft, non-blocking suggestion, always after the window is open.
+  nudge_obsidian
 }
 
 main "$@"

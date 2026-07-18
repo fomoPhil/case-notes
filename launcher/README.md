@@ -5,30 +5,41 @@ boots everything and opens the UI in its own chromeless window.
 
 ## What's here
 
-- `debrief-launch.sh` — the brain. Runs four friendly startup checks and opens the window.
-- `build_app.sh` — builds `Debrief.app` at the repo root (a thin wrapper around the launcher).
-- `Debrief.icns` — the app icon (generated from `design/app-icon.png`).
-- `server.log` — where the app server's output goes when the launcher starts it.
+- `debrief-launch.sh`: the brain. Runs the friendly startup checks, opens the window, then shows an optional one-time Obsidian nudge.
+- `build_app.sh`: builds `Debrief.app` at the repo root (a thin wrapper around the launcher).
+- `Debrief.icns`: the app icon (generated from `design/app-icon.png`).
+- `server.log`: where the app server's output goes when the launcher starts it.
 
 ## What the app does when you open it
 
 1. **Checks the AI engine (LM Studio).** If it isn't running, starts it and waits.
+   If LM Studio isn't installed at all, a dialog offers an **Open Download Page**
+   button (takes you to lmstudio.ai) or **Not Now**.
 2. **Checks the AI model.** Makes sure `gemma-4-12b-it-qat` is loaded with a big
-   enough memory (64k context). Loads or reloads it if needed (~a minute).
+   enough memory (64k context). Loads or reloads it if needed (~a minute). If the
+   model can't load (usually because it hasn't been downloaded), a dialog offers a
+   **Get the Model** button that opens LM Studio and tells you exactly what to
+   search for, or **Not Now**.
 3. **Checks the Debrief app server.** If it's already running, it is left
    completely alone. If not, it starts it in the background.
 4. **Opens the window.** A clean, chromeless Chrome app window pointed at Debrief
    (falls back to your default browser if Chrome isn't installed).
+5. **Optional Obsidian nudge (after the window is open).** If Obsidian isn't
+   installed, a gentle, non-blocking dialog mentions it as an optional way to
+   browse your vault visually, with an **Open Download Page** button (obsidian.md)
+   or **Skip**. This never blocks Debrief from opening, and it's only shown once
+   ever.
 
-If any step can't complete, you get a calm, plain-language dialog telling you what
-to do (for example: "Debrief could not find its AI model. Open LM Studio, then try
-again."). You never see a raw technical error.
+If a required step can't complete, you get a calm, plain-language dialog telling
+you what to do, and where it helps, a button that takes you straight to the right
+place (the LM Studio download page, LM Studio's model search, or the Obsidian
+download page). You never see a raw technical error.
 
 ## First run: a one-time permission step (important)
 
 The very first time the **Debrief.app icon** starts the app server itself, macOS
-will show up to **three permission prompts** — for **Calendar**, **Mail**, and
-**Screen Recording**. This is normal and only happens once. Just click **OK** on
+will show up to **three permission prompts** (for **Calendar**, **Mail**, and
+**Screen Recording**). This is normal and only happens once. Just click **OK** on
 each. macOS asks because the app has its own identity, separate from the Terminal.
 
 **How to avoid the prompts entirely on demo day:** start the server once from the
