@@ -18,6 +18,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -125,6 +126,49 @@ def _compose_client_email(
     lines.append("Warm regards,")
     lines.append("Your therapist")
     return subject, "\n".join(lines)
+
+
+def _convert_to_m4a(src: Path, dst: Path) -> bool:
+    """Convert any dictation audio to AAC m4a. afconvert first (native, fast
+    for wav/aiff/caf), ffmpeg fallback (handles webm/opus from MediaRecorder).
+    Returns True when dst exists.
+    """
+    try:
+        proc = subprocess.run(
+            ["afconvert", str(src), str(dst), "-d", "aac", "-f", "m4af"],
+            capture_output=True,
+            timeout=120,
+        )
+        if proc.returncode == 0 and dst.exists():
+            return True
+    except (subprocess.SubprocessError, OSError):
+        pass
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-y", "-i", str(src), "-c:a", "aac", "-b:a", "96k", str(dst)],
+            capture_output=True,
+            timeout=120,
+        )
+        return proc.returncode == 0 and dst.exists()
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
+def _archive_audio(note_path: Path, tmp_m4a: Path) -> Path:
+    """Move a converted m4a into Sessions/audio/<note-stem>.m4a atomically.
+
+    The temp file may live on another volume, so stage it inside the target
+    directory first, then os.replace into place.
+    """
+    import shutil
+
+    audio_dir = note_path.parent / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    final = audio_dir / f"{note_path.stem}.m4a"
+    staging = audio_dir / f".{note_path.stem}.m4a.tmp"
+    shutil.move(str(tmp_m4a), str(staging))
+    os.replace(staging, final)
+    return final
 
 
 def _followup_key(action: dict) -> str:
@@ -480,17 +524,49 @@ def execute_plan(plan: dict, verify: bool = True) -> dict:
             result_actions.append(entry)
     timings["actions"] = round(time.perf_counter() - t0, 2)
 
+    # --- archive the dictation audio (convert first; reference only works) --
+    # Convert BEFORE the note is written so the note never links a file that
+    # failed to convert. The move happens after the note reserves its stem.
+    tmp_m4a: Path | None = None
+    audio_src = plan.get("audio_path")
+    t0 = time.perf_counter()
+    if audio_src and Path(audio_src).exists():
+        try:
+            fd, tmp_name = tempfile.mkstemp(suffix=".m4a")
+            os.close(fd)
+            tmp_m4a = Path(tmp_name)
+            if not _convert_to_m4a(Path(audio_src), tmp_m4a):
+                tmp_m4a.unlink(missing_ok=True)
+                tmp_m4a = None
+                errors.append({"stage": "audio", "error": "conversion to m4a failed"})
+        except Exception as exc:
+            tmp_m4a = None
+            errors.append({"stage": "audio", "error": str(exc)})
+    timings["audio_convert"] = round(time.perf_counter() - t0, 2)
+
     # --- write the session note (note-filed leads the audit trail) --------
     note_path: str | None = None
+    audio_archive_path: str | None = None
     t0 = time.perf_counter()
     try:
         meta = dict(session_meta)
         meta["actions_taken"] = ["note-filed"] + actions_taken
         meta["next_session_suggestions"] = plan.get("next_session_suggestions", []) or []
+        if tmp_m4a is not None:
+            meta["audio_filename"] = True  # vault normalizes to the note stem
         path = vault.write_session_note(client_id, note, corrected, meta)
         note_path = str(path)
+        if tmp_m4a is not None:
+            try:
+                audio_archive_path = str(_archive_audio(path, tmp_m4a))
+                tmp_m4a = None
+            except Exception as exc:
+                errors.append({"stage": "audio", "error": f"archive move failed: {exc}"})
     except Exception as exc:
         errors.append({"stage": "note", "error": str(exc)})
+    finally:
+        if tmp_m4a is not None:
+            tmp_m4a.unlink(missing_ok=True)
     timings["note"] = round(time.perf_counter() - t0, 2)
 
     # --- open the note in Obsidian ----------------------------------------
@@ -590,6 +666,7 @@ def execute_plan(plan: dict, verify: bool = True) -> dict:
         "deduped_actions": deduped_actions,
         "actions_taken": ["note-filed"] + actions_taken,
         "note_path": note_path,
+        "audio_archive_path": audio_archive_path,
         "obsidian_uri": obsidian_uri,
         "verification": verification,
         "timings": timings,
@@ -637,11 +714,15 @@ def run_debrief(
     if not execute:
         return merged
 
+    # Carry the source audio through so the dictation gets archived in the vault.
+    plan["audio_path"] = wav_path
+
     exec_result = execute_plan(plan, verify=verify)
     merged["actions"] = exec_result["actions"]
     merged["deduped_actions"] = exec_result["deduped_actions"]
     merged["actions_taken"] = exec_result["actions_taken"]
     merged["note_path"] = exec_result["note_path"]
+    merged["audio_archive_path"] = exec_result.get("audio_archive_path")
     merged["obsidian_uri"] = exec_result.get("obsidian_uri")
     merged["verification"] = exec_result["verification"]
     merged["timings"].update(exec_result["timings"])

@@ -163,6 +163,42 @@
     50% { box-shadow: 0 6px 20px rgba(179,82,74,0.4), 0 0 0 14px rgba(179,82,74,0.08); }
   }
 
+  .dictate-guide {
+    width: 100%;
+    max-width: 380px;
+    background: #faf9f6;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 14px 18px 12px;
+    margin-top: 6px;
+  }
+  .dictate-guide .dg-title {
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-faint);
+    margin-bottom: 8px;
+  }
+  .dictate-guide ul { list-style: none; margin: 0; padding: 0; }
+  .dictate-guide li {
+    font-size: 13px;
+    color: var(--ink-soft);
+    padding: 4px 0 4px 18px;
+    position: relative;
+    text-wrap: pretty;
+  }
+  .dictate-guide li::before {
+    content: "";
+    position: absolute;
+    left: 2px;
+    top: 11px;
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--accent);
+    opacity: 0.55;
+  }
+
   .timer {
     font-size: 26px;
     font-weight: 600;
@@ -248,6 +284,54 @@
   .action .a-title { font-weight: 560; font-size: 14.5px; }
   .action .a-when { font-size: 13px; color: var(--accent-ink); margin-top: 3px; font-variant-numeric: tabular-nums; }
   .action .a-sub { font-size: 12.5px; color: var(--ink-faint); margin-top: 3px; }
+
+  /* Nudges: soft amber gap flags above the action checklist */
+  .nudges { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+  .nudge {
+    border: 1px solid var(--amber-line);
+    background: var(--amber-soft);
+    border-radius: var(--radius);
+    padding: 11px 14px;
+    font-size: 13px;
+    color: var(--ink);
+    text-wrap: pretty;
+  }
+  .nudge .n-text { color: var(--amber); font-weight: 560; }
+  .nudge .n-sub { color: var(--ink-soft); margin-top: 2px; font-size: 12.5px; }
+  .nudge-add {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .nudge-add input {
+    font: inherit;
+    font-size: 13px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 7px 9px;
+    background: var(--panel);
+    color: var(--ink);
+  }
+  .nudge-add input[type=number] { width: 64px; }
+  .nudge-add .unit { font-size: 12px; color: var(--ink-faint); }
+  .btn-small {
+    font: inherit;
+    font-size: 13px;
+    font-weight: 560;
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: 8px 14px;
+    cursor: pointer;
+    background: var(--accent);
+    color: #fff;
+    transition-property: transform, opacity;
+    transition-duration: 140ms;
+    transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  }
+  .btn-small:active { transform: scale(0.96); }
+  .btn-small:disabled { opacity: 0.5; cursor: default; }
 
   .suggestions { margin-top: 18px; }
   .suggestions h4 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-faint); margin: 0 0 6px; }
@@ -357,6 +441,69 @@ function h(html) { const t = document.createElement("template"); t.innerHTML = h
 function esc(s) { return (s == null ? "" : String(s)).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c])); }
 function fmtSecs(n) { const m = Math.floor(n/60), s = n%60; return `${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`; }
 
+function fmtClock(d) {
+  let h = d.getHours() % 12 || 12;
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${h}:${mm} ${d.getHours() >= 12 ? "PM" : "AM"}`;
+}
+function fmtDateTimeDisplay(d) {
+  const day = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  return `${day} at ${fmtClock(d)}`;
+}
+
+// Pure, deterministic gap detection over the plan JSON. No LLM involved.
+// Returns a list of nudge descriptors; rendering decides how each looks.
+function computeNudges(plan) {
+  const acts = (plan && plan.actions) || [];
+  const nudges = [];
+  if (!acts.some(a => a.type === "schedule_followup")) {
+    nudges.push({ id: "no-followup", text: "No follow-up booked.", sub: "Dictate again or add one below." });
+  }
+  if (!acts.some(a => a.type === "draft_client_email")) {
+    nudges.push({ id: "no-email", text: "No client email requested." });
+  }
+  const unsupported = (plan && plan.unsupported_requests) || [];
+  if (unsupported.length) {
+    nudges.push({ id: "unsupported", text: "Heard but can't do yet: " + unsupported.join("; ") });
+  }
+  if (plan && plan.note && plan.note.risk_present) {
+    nudges.push({ id: "risk", text: "Risk content documented.", sub: "Review the Risk section before executing." });
+  }
+  return nudges;
+}
+window.computeNudges = computeNudges;
+
+function addManualFollowup(dateVal, timeVal, durVal) {
+  const d = new Date(`${dateVal}T${timeVal}:00`);
+  if (isNaN(d.getTime())) return;
+  const first = (App.plan.client && App.plan.client.first_name) || "Client";
+  const duration = Math.max(5, parseInt(durVal, 10) || 50);
+  const iso = `${dateVal}T${timeVal}:00`;
+  App.plan.actions.push({
+    type: "schedule_followup",
+    datetime_utterance: "manually added",
+    resolved_datetime: iso,
+    datetime_display: fmtDateTimeDisplay(d),
+    duration_min: duration,
+    title: `${first} ${fmtClock(d)} session`,
+    label: `Book follow-up: ${fmtDateTimeDisplay(d)} (${duration} min)`,
+    enabled: true,
+  });
+  render();
+}
+
+function addWorksheetEmail() {
+  App.plan.actions.push({
+    type: "draft_client_email",
+    purpose: "confirmation and homework",
+    attachment: "thought record worksheet",
+    attachment_name: "thought record worksheet",
+    label: "Draft confirmation email with the thought record worksheet",
+    enabled: true,
+  });
+  render();
+}
+
 async function loadClients() {
   try {
     const r = await fetch("/api/clients");
@@ -404,6 +551,16 @@ function renderRecord() {
     <button class="rec-btn" id="recBtn"><div class="dot"></div></button>
     <div class="timer" id="timer">00:00</div>
     <div class="hint" id="recHint">Tap to record. Speak your note, the follow-up time, and any email you want drafted.</div>
+    <div class="dictate-guide">
+      <div class="dg-title">While you dictate</div>
+      <ul>
+        <li>What happened this session and how the client responded</li>
+        <li>A risk check, if it came up</li>
+        <li>When you would like the next appointment</li>
+        <li>Any email to send, with resources or reminders</li>
+        <li>Homework you assigned</li>
+      </ul>
+    </div>
   </div>`);
   stage.querySelector(".backlink").onclick = () => { stopStream(); go("clients"); };
   stage.querySelector("#recBtn").onclick = toggleRecord;
@@ -445,6 +602,38 @@ function renderReview() {
 
   el.appendChild(h(`<div class="step-title">Actions to run</div>`));
   const actPanel = h(`<div class="panel enter d2"></div>`);
+
+  // Deterministic gap nudges above the checklist.
+  const nudges = computeNudges(p);
+  if (nudges.length) {
+    const box = h(`<div class="nudges"></div>`);
+    nudges.forEach(n => {
+      const card = h(`<div class="nudge"><span class="n-text">${esc(n.text)}</span>${n.sub ? `<div class="n-sub">${esc(n.sub)}</div>` : ""}</div>`);
+      if (n.id === "no-followup") {
+        const addRow = h(`<div class="nudge-add">
+          <input type="date" id="nfDate" aria-label="Follow-up date" />
+          <input type="time" id="nfTime" value="15:00" aria-label="Follow-up time" />
+          <input type="number" id="nfDur" value="50" min="5" step="5" aria-label="Duration in minutes" />
+          <span class="unit">min</span>
+          <button class="btn-small" id="nfAdd">Add appointment</button>
+        </div>`);
+        addRow.querySelector("#nfAdd").onclick = () => {
+          const dv = addRow.querySelector("#nfDate").value;
+          const tv = addRow.querySelector("#nfTime").value;
+          if (dv && tv) addManualFollowup(dv, tv, addRow.querySelector("#nfDur").value);
+        };
+        card.appendChild(addRow);
+      }
+      if (n.id === "no-email") {
+        const addRow = h(`<div class="nudge-add"><button class="btn-small" id="neAdd">Add worksheet email</button></div>`);
+        addRow.querySelector("#neAdd").onclick = addWorksheetEmail;
+        card.appendChild(addRow);
+      }
+      box.appendChild(card);
+    });
+    actPanel.appendChild(box);
+  }
+
   const list = h(`<div class="actions-list"></div>`);
   if (!p.actions.length) list.appendChild(h(`<div class="a-sub" style="color:var(--ink-faint)">No admin actions were requested in this debrief.</div>`));
   p.actions.forEach((a, i) => {

@@ -14,8 +14,10 @@ Run:  .venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8377
 
 from __future__ import annotations
 
+import re
 import subprocess
 import tempfile
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -29,6 +31,27 @@ APP_HOST = "127.0.0.1"
 APP_PORT = 8377
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+# Server-side store for original uploads, keyed by an opaque token that rides
+# the plan through the approve round-trip. The archived vault m4a is converted
+# from this original (best available source), not the 16k STT wav.
+_AUDIO_STORE = Path(tempfile.gettempdir()) / "debrief_audio_store"
+_TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _store_original_audio(data: bytes) -> str:
+    _AUDIO_STORE.mkdir(parents=True, exist_ok=True)
+    token = uuid.uuid4().hex
+    (_AUDIO_STORE / f"{token}.webm").write_bytes(data)
+    return token
+
+
+def _pop_original_audio(token: str | None) -> Path | None:
+    """Resolve a stored upload for a token. Returns the path or None."""
+    if not token or not _TOKEN_RE.match(str(token)):
+        return None
+    path = _AUDIO_STORE / f"{token}.webm"
+    return path if path.exists() else None
 
 
 @asynccontextmanager
@@ -117,6 +140,11 @@ async def api_debrief(
             plan = pipeline.transcribe_and_extract(wav_path, client_id)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Debrief failed: {exc}")
+    # Keep the original upload so execute can archive it into the vault.
+    try:
+        plan["audio_token"] = _store_original_audio(data)
+    except Exception:
+        plan["audio_token"] = None
     return JSONResponse(plan)
 
 
@@ -130,10 +158,21 @@ async def api_execute(request: Request) -> JSONResponse:
     if not isinstance(plan, dict) or not plan.get("client_id"):
         raise HTTPException(status_code=400, detail="Plan is missing client_id.")
     verify = bool(plan.get("verify", True))
+    # Resolve the stored original upload (never trust a client-sent path).
+    plan.pop("audio_path", None)
+    stored = _pop_original_audio(plan.get("audio_token"))
+    if stored is not None:
+        plan["audio_path"] = str(stored)
     try:
         result = pipeline.execute_plan(plan, verify=verify)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Execution failed: {exc}")
+    finally:
+        if stored is not None:
+            try:
+                stored.unlink(missing_ok=True)
+            except OSError:
+                pass
     return JSONResponse(result)
 
 

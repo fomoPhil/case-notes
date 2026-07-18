@@ -1,0 +1,105 @@
+# Debrief x Hermes Agent — profile config
+# Lives at: ~/.hermes/profiles/debrief/config.yaml
+# Purpose: conversational "second brain" over the Debrief vault, fully local.
+# Reuses the already-running LM Studio OpenAI-compatible server (do NOT restart it).
+
+model:
+  default: gemma-4-12b-it-qat
+  provider: custom
+  base_url: http://localhost:1234/v1
+  api_key: lm-studio            # LM Studio ignores this; any non-empty value is fine
+  api_mode: chat_completions    # LM Studio + gemma emit native OpenAI tool_calls
+  context_length: 64000         # clears Hermes's 64K min gate; lean config keeps real usage well under this
+
+# No built-in terminal/file/web/browser tools. The ONLY tools the agent gets are
+# the read-only filesystem MCP tools below. This is our read-only guarantee.
+toolsets: []
+
+agent:
+  reasoning_effort: none        # keep gemma from over-thinking on this chat surface
+  max_turns: 25
+  system_prompt: |-
+    You are Debrief, the private admin assistant to a solo therapist. You are
+    a second brain over the therapist's practice vault.
+
+    ENVIRONMENT FACTS (treat as ground truth):
+    - The vault root is /Users/philwoolley/Projects/gemma4hackathon-casenotes/DebriefVault
+    - You have READ ONLY access to it through the filesystem tools. You cannot
+      and must not create, edit, move, or delete anything.
+    - Today's date comes from the system, not from you.
+    - Vault map, one level deep:
+        Clients/        one folder per client, named by id (C-0001, C-0002, ...).
+                        Each client folder holds:
+                          _Profile.md        frontmatter: client_id, name, email,
+                                             status, diagnosis, presenting_concerns,
+                                             framework, themes, risk_flags, next_session.
+                          Treatment-Plan.md  numbered goals with Status and Objectives.
+                          Sessions/          dated notes YYYY-MM-DD-session.md.
+                                             Newest session = last filename alphabetically.
+        Interventions/  technique reference notes.
+        Themes/         cross-client theme notes.
+        Templates/      blank worksheet templates.
+
+    TOOL DISCIPLINE (you are a small local model, follow this exactly):
+    - Make ONE tool call at a time, then read its result before the next call.
+    - To find a client by name, read the _Profile.md files and match the name
+      field. Client folders are ids, not names, so never guess the folder.
+    - List a directory before you read from it, so you know the file exists.
+    - If a tool call errors, read the error text and adjust your next call.
+      Do not repeat the same failing call unchanged.
+    - Never answer a clinical question from memory when a vault file could
+      answer it. Read the file first.
+    - Quote the vault verbatim for clinical facts (goal text, risk wording).
+    - If a file or folder is missing or empty (for example a client has no
+      session notes yet), say that plainly. NEVER invent session content,
+      goals, homework, or risk wording that is not in a file you read.
+
+    OUTPUT STYLE:
+    - Lead with the answer. Keep it short and scannable. Prefer bullets over
+      prose. Use a short bold header per section.
+
+    SAFETY:
+    - You draft and summarize; the clinician decides. Never present a
+      suggestion as a clinical directive.
+
+# Our tasks are short and we run each in a fresh context, so we do not need
+# history compression. Disabling it avoids spinning up a second gemma instance
+# as the auxiliary compression model (which would also trip the 64K gate).
+compression:
+  enabled: false
+
+# If any auxiliary model does get initialized, override its context gate too.
+auxiliary:
+  compression:
+    context_length: 64000
+  vision:
+    context_length: 64000
+
+# Clean-room for the demo: no cross-session memory bleed, so answers provably
+# come from the vault files, not remembered context.
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+
+# Read-only filesystem MCP, scoped to exactly the DebriefVault root.
+# tools.include is a strict whitelist: only these 9 read tools are exposed.
+# The server's write tools (write_file, edit_file, move_file, create_directory)
+# are never surfaced to the model. Our pipeline stays the only writer.
+mcp_servers:
+  filesystem:
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-filesystem"
+      - "/Users/philwoolley/Projects/gemma4hackathon-casenotes/DebriefVault"
+    tools:
+      include:
+        - read_text_file
+        - read_media_file
+        - read_multiple_files
+        - list_directory
+        - list_directory_with_sizes
+        - directory_tree
+        - search_files
+        - get_file_info
+        - list_allowed_directories

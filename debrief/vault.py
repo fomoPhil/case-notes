@@ -466,10 +466,19 @@ def write_session_note(
           session_date (date/str, defaults today), session_number (int),
           format ("DAP"|"SOAP"), modality, duration_min, framework,
           actions_taken (list[str]), risk_assessment (override),
-          next_session_suggestions (list[str]).
+          next_session_suggestions (list[str]),
+          audio_filename (truthy -> the note references audio/<stem>.m4a and
+          renders a ## Dictation Audio embed; the caller then places the
+          converted m4a at Sessions/audio/<returned stem>.m4a).
     """
     session_date = meta.get("session_date") or _dt.date.today()
     fmt = meta.get("format", "DAP")
+
+    # Reserve the note path up front so the archived dictation audio can share
+    # the exact stem (including any -2 collision suffix). The caller moves the
+    # converted m4a to Sessions/audio/<stem>.m4a after this returns.
+    path = _session_note_path(client_id, session_date)
+    audio_name = f"{path.stem}.m4a" if meta.get("audio_filename") else None
 
     risk_present = bool(note.get("risk_present"))
     if meta.get("risk_assessment"):
@@ -494,6 +503,8 @@ def write_session_note(
         "actions_taken": meta.get("actions_taken", []),
         "tags": [f"client/{client_id}", "type/session"],
     }
+    if audio_name:
+        frontmatter["audio"] = f"audio/{audio_name}"
 
     # Body sections.
     parts: list[str] = [_dump_frontmatter(frontmatter)]
@@ -537,7 +548,11 @@ def write_session_note(
         parts.append(f"{transcript.strip()}\n\n")
         parts.append("</details>\n")
 
-    path = _session_note_path(client_id, session_date)
+    # Archived dictation audio: Obsidian embed renders an inline player.
+    if audio_name:
+        parts.append("\n## Dictation Audio\n\n")
+        parts.append(f"![[{audio_name}]]\n")
+
     _atomic_write(path, "".join(parts))
     return path
 

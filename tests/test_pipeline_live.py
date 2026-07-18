@@ -164,7 +164,12 @@ SESSIONS_DIR = VAULT_DIR / "Clients" / CLIENT_ID / "Sessions"
 
 
 def session_notes() -> set[Path]:
-    return set(SESSIONS_DIR.glob("*.md")) if SESSIONS_DIR.exists() else set()
+    """Session artifacts this run could create: notes plus archived audio."""
+    if not SESSIONS_DIR.exists():
+        return set()
+    found = set(SESSIONS_DIR.glob("*.md"))
+    found |= set((SESSIONS_DIR / "audio").glob("*.m4a"))
+    return found
 
 
 def cleanup(new_notes: set[Path]) -> None:
@@ -176,6 +181,11 @@ def cleanup(new_notes: set[Path]) -> None:
                 p.unlink()
         except Exception:
             pass
+    # Drop the audio dir if this run left it empty.
+    try:
+        (SESSIONS_DIR / "audio").rmdir()
+    except OSError:
+        pass
     restore_vault()
 
 
@@ -247,6 +257,14 @@ def run_once(run_label: str) -> dict:
             "Clinical judgment and final session planning remain the therapist's responsibility."
             in note_text
         ), "session note missing the required disclaimer line"
+
+        # Dictation audio archived next to the note with a matching stem.
+        audio_file = note_file.parent / "audio" / f"{note_file.stem}.m4a"
+        assert audio_file.exists() and audio_file.stat().st_size > 0, (
+            f"archived dictation audio missing: {audio_file}"
+        )
+        assert f"![[{note_file.stem}.m4a]]" in note_text, "note missing audio embed"
+        assert f"audio/{note_file.stem}.m4a" in note_text, "frontmatter missing audio field"
 
         # Calendar event exists (queried independently via osascript).
         cal_count = count_calendar_events(CAL_PREFIX)

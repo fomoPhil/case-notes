@@ -159,6 +159,25 @@ def test_risk_section_omitted_when_no_risk(vault):
     assert fm["risk_assessment"] == "none-discussed"
 
 
+def test_audio_field_and_section_when_requested(vault):
+    note = _sample_note(risk=False)
+    meta = _sample_meta()
+    meta["audio_filename"] = True
+    path = vault.write_session_note("C-0001", note, "transcript", meta)
+
+    fm = _read_frontmatter(path)
+    assert fm["audio"] == f"audio/{path.stem}.m4a", "frontmatter must reference audio/<stem>.m4a"
+    text = path.read_text(encoding="utf-8")
+    assert "## Dictation Audio" in text
+    assert f"![[{path.stem}.m4a]]" in text, "embed must use the note's own stem"
+
+    # Without the meta key, no audio artifacts appear.
+    path2 = vault.write_session_note("C-0002", note, "transcript", {"session_date": dt.date(2026, 7, 18)})
+    fm2 = _read_frontmatter(path2)
+    assert "audio" not in fm2
+    assert "## Dictation Audio" not in path2.read_text(encoding="utf-8")
+
+
 def test_second_note_same_day_gets_suffix(vault):
     note = _sample_note(risk=False)
     meta = _sample_meta()
