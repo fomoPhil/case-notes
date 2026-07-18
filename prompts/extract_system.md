@@ -56,6 +56,8 @@ Only two action types exist. Extract them only when the therapist actually reque
 
 You never compute a calendar date. You copy the spoken time phrase verbatim into `datetime_utterance`. Python resolves the actual date downstream.
 
+One appointment means ONE action. Emit exactly one `schedule_followup` per distinct appointment the therapist requests, which is almost always a single follow-up. Details about the same appointment (who attends, where it happens, what to prepare) belong to that one action and are NEVER a second action. Never emit two actions with the same or overlapping time phrase. Only emit multiple `schedule_followup` actions if the therapist clearly books separate appointments at clearly different times.
+
 Any other request the therapist makes that is not one of these two action types goes into `unsupported_requests` as a short plain-language phrase (for example "update the insurance authorization"). Do not silently drop requests.
 
 ## Next-session suggestions (`next_session_suggestions`)

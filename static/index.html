@@ -1,10 +1,618 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Debrief</title><style>body{font:16px system-ui;margin:0;background:#f5f7f7;color:#172122}main{max-width:760px;margin:40px auto;padding:0 20px}section{background:#fff;border:1px solid #d6dfdd;border-radius:6px;padding:20px;margin:16px 0}textarea{width:100%;min-height:170px;box-sizing:border-box;font:inherit}select,button{font:inherit;padding:9px 12px;margin:8px 6px 0 0}button{background:#146c63;color:white;border:0;border-radius:4px;font-weight:600}button:disabled{opacity:.5}small{color:#536260}.warning{color:#8a3b12}.ok{color:#12623a}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style></head>
-<body><main><h1>Debrief</h1><p>Local clinician drafts. Every result requires clinician review.</p><section><label>Mode <select id="mode"><option value="voice_journal">Clinician voice journal</option><option value="debrief">Post-session debrief</option></select></label><label> Client <select id="client"><option value="C-0001">Bob (demo)</option><option value="C-0002">Jordan (demo)</option></select></label><textarea id="transcript" placeholder="Speak using Record, or paste a local speech transcript. Example: For Bob, I noticed workplace avoidance came up again. Add this to next session preparation and suggest two CBT questions."></textarea><button id="record">Record</button><button id="plan">Create review plan</button><div id="status"></div></section><section id="review" hidden><h2>Review plan</h2><pre id="output"></pre><button id="approve">Approve draft actions</button><div id="result"></div></section></main><script>
-let currentPlan; const $=id=>document.getElementById(id); async function call(url,body){const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});if(!r.ok)throw new Error(await r.text());return r.json()}
-fetch('/api/status').then(r=>r.json()).then(s=>{$('status').innerHTML=`<small>Execution: ${s.mode}. Model: ${s.model}. ${s.live_actions_allowed?'Live macOS actions enabled.':'Demo-only writes enabled.'}</small>`});
-$('plan').onclick=async()=>{try{$('plan').disabled=true;currentPlan=await call('/api/plan',{mode:$('mode').value,client_id:$('client').value,transcript:$('transcript').value});$('output').textContent=JSON.stringify(currentPlan,null,2);$('review').hidden=false}catch(e){$('status').innerHTML=`<p class="warning">${e.message}</p>`}finally{$('plan').disabled=false}};
-$('approve').onclick=async()=>{try{$('approve').disabled=true;const r=await call('/api/approve',{plan:currentPlan});$('result').innerHTML=`<p class="ok">${r.verification.confirmed?'Verified':'Verification needs review'}: ${r.verification.what_i_see}</p><pre>${JSON.stringify(r.results,null,2)}</pre>`}catch(e){$('result').innerHTML=`<p class="warning">${e.message}</p>`}finally{$('approve').disabled=false}};
-let audioContext, stream, source, processor, chunks=[]; function wav(samples,rate){const b=new ArrayBuffer(44+samples.length*2),v=new DataView(b);const put=(o,s)=>[...s].forEach((c,i)=>v.setUint8(o+i,c.charCodeAt(0)));put(0,'RIFF');v.setUint32(4,36+samples.length*2,true);put(8,'WAVE');put(12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);v.setUint32(24,rate,true);v.setUint32(28,rate*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);put(36,'data');v.setUint32(40,samples.length*2,true);samples.forEach((s,i)=>v.setInt16(44+i*2,Math.max(-1,Math.min(1,s))*32767,true));return new Blob([b],{type:'audio/wav'})}
-$('record').onclick=async()=>{if(!processor){try{stream=await navigator.mediaDevices.getUserMedia({audio:true});audioContext=new AudioContext();source=audioContext.createMediaStreamSource(stream);processor=audioContext.createScriptProcessor(4096,1,1);chunks=[];processor.onaudioprocess=e=>chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));source.connect(processor);processor.connect(audioContext.destination);$('record').textContent='Stop and transcribe';$('status').innerHTML='<small>Recording locally. Click Stop when finished.</small>'}catch(e){$('status').innerHTML=`<p class="warning">Microphone unavailable: ${e.message}</p>`}}else{processor.disconnect();source.disconnect();stream.getTracks().forEach(t=>t.stop());const length=chunks.reduce((n,c)=>n+c.length,0),samples=new Float32Array(length);let offset=0;chunks.forEach(c=>{samples.set(c,offset);offset+=c.length});processor=null;$('record').disabled=true;$('status').innerHTML='<small>Transcribing locally...</small>';try{const form=new FormData();form.append('audio',wav(samples,audioContext.sampleRate),'debrief.wav');const r=await fetch('/api/transcribe',{method:'POST',body:form});if(!r.ok)throw new Error(await r.text());$('transcript').value=(await r.json()).transcript;$('status').innerHTML='<p class="ok">Local transcript ready. Review it before creating the plan.</p>'}catch(e){$('status').innerHTML=`<p class="warning">${e.message}</p>`}finally{$('record').textContent='Record';$('record').disabled=false}}};
-</script></body></html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Debrief</title>
+<style>
+  :root {
+    --bg: #f4f2ee;
+    --panel: #ffffff;
+    --ink: #2b2b28;
+    --ink-soft: #6f6b63;
+    --ink-faint: #a49f95;
+    --line: #e7e3db;
+    --accent: #5b7d70;
+    --accent-soft: #eef3f0;
+    --accent-ink: #3f5a50;
+    --amber: #c98a2b;
+    --amber-soft: #fbf3e4;
+    --amber-line: #ecd4a3;
+    --red: #b3524a;
+    --red-soft: #fbeeec;
+    --green: #4f7d5e;
+    --radius-lg: 20px;
+    --radius: 14px;
+    --radius-sm: 10px;
+    --shadow-sm: 0 1px 2px rgba(40,38,32,0.05), 0 2px 6px rgba(40,38,32,0.04);
+    --shadow: 0 2px 6px rgba(40,38,32,0.06), 0 10px 30px rgba(40,38,32,0.07);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    line-height: 1.55;
+  }
+
+  .wrap {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+
+  header.app {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+  header.app h1 {
+    font-size: 22px;
+    font-weight: 640;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+  header.app .sub {
+    font-size: 13px;
+    color: var(--ink-faint);
+  }
+  .local-badge {
+    margin-left: auto;
+    font-size: 11.5px;
+    color: var(--accent-ink);
+    background: var(--accent-soft);
+    border-radius: 999px;
+    padding: 4px 11px;
+    letter-spacing: 0.02em;
+  }
+
+  .step-title {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-faint);
+    margin: 34px 0 14px;
+  }
+
+  .panel {
+    background: var(--panel);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 22px 24px;
+  }
+
+  .clients {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+  @media (max-width: 560px) { .clients { grid-template-columns: 1fr; } }
+
+  .client-card {
+    text-align: left;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 18px 18px 16px;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    transition-property: box-shadow, border-color, transform;
+    transition-duration: 180ms;
+    transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  }
+  .client-card:hover { box-shadow: var(--shadow); border-color: #d9d4ca; }
+  .client-card:active { transform: scale(0.99); }
+  .client-card.selected {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .client-card .name { font-weight: 600; font-size: 16px; }
+  .client-card .meta { font-size: 12.5px; color: var(--ink-soft); margin-top: 4px; }
+  .client-card .concerns { font-size: 12.5px; color: var(--ink-faint); margin-top: 8px; }
+  .tag-risk {
+    display: inline-block;
+    margin-top: 10px;
+    font-size: 11px;
+    color: var(--amber);
+    background: var(--amber-soft);
+    border: 1px solid var(--amber-line);
+    border-radius: 999px;
+    padding: 2px 9px;
+  }
+
+  .record-stage {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+    padding: 44px 24px 40px;
+  }
+  .record-client { font-size: 14px; color: var(--ink-soft); }
+  .record-client b { color: var(--ink); font-weight: 600; }
+
+  .rec-btn {
+    width: 132px;
+    height: 132px;
+    border-radius: 999px;
+    border: none;
+    cursor: pointer;
+    background: var(--accent);
+    color: #fff;
+    display: grid;
+    place-items: center;
+    box-shadow: 0 6px 18px rgba(91,125,112,0.35);
+    transition-property: transform, box-shadow, background;
+    transition-duration: 160ms;
+    transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  }
+  .rec-btn:hover { box-shadow: 0 8px 24px rgba(91,125,112,0.42); }
+  .rec-btn:active { transform: scale(0.96); }
+  .rec-btn .dot { width: 30px; height: 30px; border-radius: 999px; background: #fff; }
+  .rec-btn.recording { background: var(--red); box-shadow: 0 6px 20px rgba(179,82,74,0.4); animation: pulse 1.8s ease-in-out infinite; }
+  .rec-btn.recording .dot { border-radius: 7px; width: 26px; height: 26px; }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 6px 20px rgba(179,82,74,0.4); }
+    50% { box-shadow: 0 6px 20px rgba(179,82,74,0.4), 0 0 0 14px rgba(179,82,74,0.08); }
+  }
+
+  .timer {
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+  }
+  .hint { font-size: 13px; color: var(--ink-faint); text-align: center; max-width: 340px; text-wrap: pretty; }
+
+  .processing { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 56px 24px; }
+  .spinner {
+    width: 34px; height: 34px; border-radius: 999px;
+    border: 3px solid var(--line); border-top-color: var(--accent);
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .processing .label { color: var(--ink-soft); font-size: 14px; text-align: center; text-wrap: pretty; }
+
+  .note-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; flex-wrap: wrap; }
+  .note-head h3 { margin: 0; font-size: 17px; font-weight: 620; }
+  .pill { font-size: 11px; border-radius: 999px; padding: 2px 9px; background: var(--accent-soft); color: var(--accent-ink); }
+  .note-section { margin-top: 16px; }
+  .note-section h4 {
+    margin: 0 0 4px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--ink-faint);
+  }
+  .note-section p { margin: 0; font-size: 14.5px; color: var(--ink); text-wrap: pretty; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .chip { font-size: 12px; background: #f1efe9; color: var(--ink-soft); border-radius: 999px; padding: 3px 10px; }
+
+  .risk {
+    margin-top: 16px;
+    border: 1px solid var(--amber-line);
+    background: var(--amber-soft);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+  }
+  .risk h4 { color: var(--amber); margin: 0 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; }
+  .risk .row { font-size: 13.5px; margin-top: 6px; }
+  .risk .row b { color: var(--ink); font-weight: 600; }
+
+  details.transcript {
+    margin-top: 16px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 4px 16px;
+    background: #faf9f6;
+  }
+  details.transcript summary {
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--ink-soft);
+    padding: 10px 0;
+    list-style: none;
+  }
+  details.transcript summary::-webkit-details-marker { display: none; }
+  details.transcript summary::before { content: "Show "; }
+  details.transcript[open] summary::before { content: "Hide "; }
+  details.transcript p { font-size: 13.5px; color: var(--ink-soft); text-wrap: pretty; padding-bottom: 14px; margin: 0; }
+
+  .actions-list { display: flex; flex-direction: column; gap: 12px; }
+  .action {
+    display: flex;
+    gap: 13px;
+    align-items: flex-start;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    cursor: pointer;
+    transition-property: border-color, background, opacity;
+    transition-duration: 160ms;
+    transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  }
+  .action.on { border-color: #d7e0db; background: #fbfcfb; }
+  .action.off { opacity: 0.5; }
+  .action input[type=checkbox] {
+    width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--accent); cursor: pointer; flex: none;
+  }
+  .action .body { flex: 1; }
+  .action .a-title { font-weight: 560; font-size: 14.5px; }
+  .action .a-when { font-size: 13px; color: var(--accent-ink); margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .action .a-sub { font-size: 12.5px; color: var(--ink-faint); margin-top: 3px; }
+
+  .suggestions { margin-top: 18px; }
+  .suggestions h4 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-faint); margin: 0 0 6px; }
+  .suggestions ul { margin: 0; padding-left: 18px; }
+  .suggestions li { font-size: 13.5px; color: var(--ink-soft); margin-bottom: 5px; text-wrap: pretty; }
+  .disclaimer { font-size: 12px; color: var(--ink-faint); margin-top: 10px; font-style: italic; text-wrap: pretty; }
+
+  .btn {
+    font: inherit;
+    font-weight: 560;
+    font-size: 15px;
+    border: none;
+    border-radius: var(--radius);
+    padding: 14px 22px;
+    cursor: pointer;
+    transition-property: transform, box-shadow, background, opacity;
+    transition-duration: 160ms;
+    transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  }
+  .btn:active { transform: scale(0.97); }
+  .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 3px 10px rgba(91,125,112,0.28); }
+  .btn-primary:hover { box-shadow: 0 5px 16px rgba(91,125,112,0.34); }
+  .btn-primary:disabled { background: var(--ink-faint); box-shadow: none; cursor: default; opacity: 0.7; }
+  .btn-ghost { background: transparent; color: var(--ink-soft); }
+  .btn-ghost:hover { color: var(--ink); }
+  .actions-bar { display: flex; align-items: center; gap: 12px; margin-top: 26px; }
+  .actions-bar .grow { flex: 1; }
+
+  .result-action {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 13px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .result-action:last-child { border-bottom: none; }
+  .status-dot { width: 10px; height: 10px; border-radius: 999px; margin-top: 6px; flex: none; }
+  .status-ok { background: var(--green); }
+  .status-failed { background: var(--red); }
+  .status-skipped { background: var(--ink-faint); }
+  .result-action .r-title { font-size: 14.5px; font-weight: 540; }
+  .result-action .r-detail { font-size: 13px; color: var(--ink-soft); margin-top: 2px; text-wrap: pretty; overflow-wrap: anywhere; }
+
+  .verify-card {
+    border: 1px solid #d7e0db;
+    background: var(--accent-soft);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    margin-top: 12px;
+  }
+  .verify-card.unconfirmed { border-color: var(--amber-line); background: var(--amber-soft); }
+  .verify-head { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--accent-ink); }
+  .verify-card.unconfirmed .verify-head { color: var(--amber); }
+  .verify-surface { text-transform: capitalize; }
+  .verify-quote { font-size: 13.5px; color: var(--ink); margin-top: 8px; font-style: italic; text-wrap: pretty; }
+  .verify-quote::before { content: "\201C"; }
+  .verify-quote::after { content: "\201D"; }
+
+  .timings { font-size: 12px; color: var(--ink-faint); margin-top: 18px; font-variant-numeric: tabular-nums; }
+
+  .banner {
+    border-radius: var(--radius);
+    padding: 12px 15px;
+    font-size: 13.5px;
+    margin-top: 14px;
+    text-wrap: pretty;
+    overflow-wrap: anywhere;
+  }
+  .banner-error { background: var(--red-soft); color: var(--red); border: 1px solid #eccbc7; }
+
+  .enter { animation: rise 380ms cubic-bezier(0.2, 0, 0, 1) both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  .d1 { animation-delay: 40ms; }
+  .d2 { animation-delay: 120ms; }
+  .d3 { animation-delay: 200ms; }
+
+  .backlink { background: none; border: none; color: var(--ink-soft); font: inherit; font-size: 13px; cursor: pointer; padding: 0; margin-bottom: 4px; }
+  .backlink:hover { color: var(--ink); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="app">
+    <h1>Debrief</h1>
+    <span class="sub">post-session admin, in one breath</span>
+    <span class="local-badge">on this Mac only</span>
+  </header>
+  <div id="app"></div>
+</div>
+
+<script>
+const App = {
+  state: "clients",
+  clients: [],
+  client: null,
+  plan: null,
+  result: null,
+  error: null,
+  mediaRecorder: null,
+  chunks: [],
+  seconds: 0,
+  timerId: null,
+};
+
+const el = document.getElementById("app");
+let stream = null;
+
+function h(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstChild; }
+function esc(s) { return (s == null ? "" : String(s)).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c])); }
+function fmtSecs(n) { const m = Math.floor(n/60), s = n%60; return `${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`; }
+
+async function loadClients() {
+  try {
+    const r = await fetch("/api/clients");
+    if (!r.ok) throw new Error("Could not load clients (" + r.status + ")");
+    App.clients = await r.json();
+  } catch (e) { App.error = e.message; }
+  render();
+}
+
+function go(state) { App.state = state; App.error = null; render(); }
+
+function render() {
+  el.innerHTML = "";
+  if (App.error && (App.state === "clients" || App.state === "record")) {
+    el.appendChild(h(`<div class="banner banner-error">${esc(App.error)}</div>`));
+  }
+  ({ clients: renderClients, record: renderRecord, processing: renderProcessing,
+     review: renderReview, executing: renderExecuting, results: renderResults }[App.state] || renderClients)();
+}
+
+function renderClients() {
+  el.appendChild(h(`<div class="step-title">Choose a client</div>`));
+  const grid = h(`<div class="clients"></div>`);
+  if (!App.clients.length) grid.appendChild(h(`<div class="hint">No clients found in the vault.</div>`));
+  App.clients.forEach((c, i) => {
+    const risk = (c.risk_flags && c.risk_flags.length) ? `<span class="tag-risk">risk history on file</span>` : "";
+    const concerns = (c.presenting_concerns || []).join(", ");
+    const card = h(`<button class="client-card enter d${Math.min(i+1,3)}">
+      <div class="name">${esc(c.name)}</div>
+      <div class="meta">${esc(c.client_id)} &middot; ${esc(c.framework || "")}</div>
+      <div class="concerns">${esc(concerns)}</div>
+      ${risk}
+    </button>`);
+    card.onclick = () => { App.client = c; go("record"); };
+    grid.appendChild(card);
+  });
+  el.appendChild(grid);
+}
+
+function renderRecord() {
+  const c = App.client;
+  const stage = h(`<div class="panel record-stage enter">
+    <button class="backlink">&larr; back to clients</button>
+    <div class="record-client">Debrief for <b>${esc(c.name)}</b> &middot; ${esc(c.framework || "")}</div>
+    <button class="rec-btn" id="recBtn"><div class="dot"></div></button>
+    <div class="timer" id="timer">00:00</div>
+    <div class="hint" id="recHint">Tap to record. Speak your note, the follow-up time, and any email you want drafted.</div>
+  </div>`);
+  stage.querySelector(".backlink").onclick = () => { stopStream(); go("clients"); };
+  stage.querySelector("#recBtn").onclick = toggleRecord;
+  el.appendChild(stage);
+}
+
+function renderProcessing() {
+  el.appendChild(h(`<div class="panel processing enter">
+    <div class="spinner"></div>
+    <div class="label">Transcribing and reading the session locally...</div>
+  </div>`));
+}
+
+function renderReview() {
+  const p = App.plan, note = p.note || {};
+  el.appendChild(h(`<div class="step-title">Review before anything runs</div>`));
+
+  const risk = note.risk_present && note.risk ? note.risk : null;
+  const notePanel = h(`<div class="panel enter d1"></div>`);
+  notePanel.appendChild(h(`<div class="note-head"><h3>DAP progress note</h3><span class="pill">${esc(p.client.framework || "")}</span>${note.risk_present ? '<span class="pill" style="background:var(--amber-soft);color:var(--amber)">risk documented</span>' : ""}</div>`));
+  const sec = (label, text) => text ? `<div class="note-section"><h4>${label}</h4><p>${esc(text)}</p></div>` : "";
+  notePanel.appendChild(h(`<div>${sec("Data", note.data)}${sec("Assessment", note.assessment)}${sec("Plan", note.plan)}</div>`));
+  if (risk) {
+    const row = (l, v) => v ? `<div class="row"><b>${l}:</b> ${esc(v)}</div>` : "";
+    notePanel.appendChild(h(`<div class="risk">
+      <h4>Risk</h4>
+      ${row("Ideation", risk.ideation)}
+      ${row("Plan, intent, means", risk.plan_intent_means)}
+      ${row("Protective factors", risk.protective_factors)}
+      ${row("Interventions taken", risk.interventions_taken)}
+    </div>`));
+  }
+  const chips = [];
+  (note.interventions || []).forEach(x => chips.push(`<span class="chip">${esc(x)}</span>`));
+  (note.themes || []).forEach(x => chips.push(`<span class="chip">${esc(x)}</span>`));
+  if (chips.length) notePanel.appendChild(h(`<div class="chips">${chips.join("")}</div>`));
+  notePanel.appendChild(h(`<details class="transcript"><summary>corrected transcript</summary><p>${esc(p.corrected_transcript || p.transcript || "")}</p></details>`));
+  el.appendChild(notePanel);
+
+  el.appendChild(h(`<div class="step-title">Actions to run</div>`));
+  const actPanel = h(`<div class="panel enter d2"></div>`);
+  const list = h(`<div class="actions-list"></div>`);
+  if (!p.actions.length) list.appendChild(h(`<div class="a-sub" style="color:var(--ink-faint)">No admin actions were requested in this debrief.</div>`));
+  p.actions.forEach((a, i) => {
+    const when = a.datetime_display ? `<div class="a-when">${esc(a.datetime_display)}</div>` : "";
+    const title = a.type === "schedule_followup" ? "Book follow-up appointment"
+                : a.type === "draft_client_email" ? "Draft client email" : esc(a.type);
+    const sub = a.type === "draft_client_email" && a.attachment_name ? `<div class="a-sub">Attaches the ${esc(a.attachment_name)}</div>`
+              : a.type === "schedule_followup" && a.title ? `<div class="a-sub">Calendar title: ${esc(a.title)}</div>` : "";
+    const row = h(`<label class="action on">
+      <input type="checkbox" checked data-i="${i}" />
+      <div class="body"><div class="a-title">${title}</div>${when}${sub}</div>
+    </label>`);
+    const cb = row.querySelector("input");
+    cb.onchange = () => { row.classList.toggle("on", cb.checked); row.classList.toggle("off", !cb.checked); };
+    list.appendChild(row);
+  });
+  actPanel.appendChild(list);
+
+  if ((p.next_session_suggestions || []).length) {
+    const sugg = h(`<div class="suggestions"><h4>Next session considerations</h4><ul></ul></div>`);
+    const ul = sugg.querySelector("ul");
+    p.next_session_suggestions.forEach(s => ul.appendChild(h(`<li>${esc(s)}</li>`)));
+    actPanel.appendChild(sugg);
+    actPanel.appendChild(h(`<div class="disclaimer">Clinical judgment and final session planning remain the therapist's responsibility.</div>`));
+  }
+  el.appendChild(actPanel);
+
+  if ((p.errors || []).length) {
+    el.appendChild(h(`<div class="banner banner-error">Some steps had trouble: ${esc(p.errors.map(e => e.stage + " (" + e.error + ")").join("; "))}</div>`));
+  }
+
+  const bar = h(`<div class="actions-bar enter d3">
+    <button class="btn btn-ghost" id="redo">Discard</button>
+    <div class="grow"></div>
+    <button class="btn btn-primary" id="approve">Approve and run</button>
+  </div>`);
+  bar.querySelector("#redo").onclick = () => go("record");
+  bar.querySelector("#approve").onclick = executePlan;
+  el.appendChild(bar);
+}
+
+function renderExecuting() {
+  el.appendChild(h(`<div class="panel processing enter">
+    <div class="spinner"></div>
+    <div class="label">Filing the note, booking, drafting, and reading the screen to verify...</div>
+  </div>`));
+}
+
+function renderResults() {
+  const r = App.result;
+  el.appendChild(h(`<div class="step-title">Done</div>`));
+  const panel = h(`<div class="panel enter d1"></div>`);
+  panel.appendChild(h(`<div class="note-head"><h3>What ran</h3></div>`));
+  (r.actions || []).forEach(a => {
+    const title = a.type === "schedule_followup" ? "Follow-up appointment"
+                : a.type === "draft_client_email" ? "Client email draft" : esc(a.type);
+    panel.appendChild(h(`<div class="result-action">
+      <div class="status-dot status-${esc(a.status)}"></div>
+      <div><div class="r-title">${title}</div><div class="r-detail">${esc(a.detail || a.status)}</div></div>
+    </div>`));
+  });
+  if (r.note_path) {
+    panel.appendChild(h(`<div class="result-action">
+      <div class="status-dot status-ok"></div>
+      <div><div class="r-title">Session note filed</div><div class="r-detail">${esc(r.note_path)}</div></div>
+    </div>`));
+  }
+  el.appendChild(panel);
+
+  if ((r.verification || []).length) {
+    el.appendChild(h(`<div class="step-title">Verified on screen</div>`));
+    const vpanel = h(`<div class="enter d2"></div>`);
+    r.verification.forEach(v => {
+      const ok = v.confirmed;
+      vpanel.appendChild(h(`<div class="verify-card ${ok ? "" : "unconfirmed"}">
+        <div class="verify-head"><span class="verify-surface">${esc(v.surface)}</span> &middot; ${ok ? "confirmed" : "not confirmed"}</div>
+        <div class="verify-quote">${esc(v.what_i_see || "")}</div>
+      </div>`));
+    });
+    el.appendChild(vpanel);
+  }
+
+  if ((r.errors || []).length) {
+    el.appendChild(h(`<div class="banner banner-error">${esc(r.errors.map(e => e.stage + ": " + e.error).join("; "))}</div>`));
+  }
+
+  if (r.timings) {
+    const t = Object.entries(r.timings).map(([k,v]) => `${k} ${v}s`).join("  &middot;  ");
+    el.appendChild(h(`<div class="timings">${t}</div>`));
+  }
+
+  const bar = h(`<div class="actions-bar enter d3">
+    <div class="grow"></div>
+    <button class="btn btn-primary" id="another">New debrief</button>
+  </div>`);
+  bar.querySelector("#another").onclick = () => { App.plan = null; App.result = null; go("clients"); };
+  el.appendChild(bar);
+}
+
+async function toggleRecord() {
+  if (App.mediaRecorder && App.mediaRecorder.state === "recording") { stopRecord(); return; }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    App.error = "Microphone access was blocked. Allow the mic and try again."; render(); return;
+  }
+  App.chunks = [];
+  const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
+  App.mediaRecorder = new MediaRecorder(stream, { mimeType: mime });
+  App.mediaRecorder.ondataavailable = e => { if (e.data.size) App.chunks.push(e.data); };
+  App.mediaRecorder.onstop = onRecordingStopped;
+  App.mediaRecorder.start();
+  App.seconds = 0;
+  const btn = document.getElementById("recBtn");
+  if (btn) btn.classList.add("recording");
+  const hint = document.getElementById("recHint");
+  if (hint) hint.textContent = "Recording. Tap again when you are done.";
+  App.timerId = setInterval(() => {
+    App.seconds++;
+    const t = document.getElementById("timer");
+    if (t) t.textContent = fmtSecs(App.seconds);
+  }, 1000);
+}
+
+function stopRecord() {
+  if (App.timerId) { clearInterval(App.timerId); App.timerId = null; }
+  if (App.mediaRecorder && App.mediaRecorder.state === "recording") App.mediaRecorder.stop();
+}
+function stopStream() {
+  stopRecord();
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+}
+
+async function onRecordingStopped() {
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  const blob = new Blob(App.chunks, { type: "audio/webm" });
+  go("processing");
+  const fd = new FormData();
+  fd.append("audio", blob, "debrief.webm");
+  fd.append("client_id", App.client.client_id);
+  try {
+    const r = await fetch("/api/debrief", { method: "POST", body: fd });
+    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Server error " + r.status)); }
+    App.plan = await r.json();
+    go("review");
+  } catch (e) {
+    App.error = e.message; go("record");
+  }
+}
+
+async function executePlan() {
+  const boxes = Array.from(document.querySelectorAll(".action input[type=checkbox]"));
+  const plan = JSON.parse(JSON.stringify(App.plan));
+  boxes.forEach(b => { const i = +b.dataset.i; if (plan.actions[i]) plan.actions[i].enabled = b.checked; });
+  plan.verify = true;
+  go("executing");
+  try {
+    const r = await fetch("/api/execute", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(plan) });
+    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Server error " + r.status)); }
+    App.result = await r.json();
+    go("results");
+  } catch (e) {
+    App.state = "review"; render();
+    el.insertBefore(h(`<div class="banner banner-error">${esc(e.message)}</div>`), el.firstChild);
+  }
+}
+
+loadClients();
+</script>
+</body>
+</html>

@@ -1,0 +1,81 @@
+{
+  "_meta": {
+    "now": "2026-07-18T10:00:00",
+    "now_weekday": "Saturday",
+    "notes": "now is a fixed Saturday. schedule_followup weekdays below are derived from resolving each spoken time phrase against this now. framework_terms lists are OR-checks: at least one listed term (case-insensitive substring) must appear in the combined note text (data + assessment + plan + interventions + themes)."
+  },
+  "transcripts": [
+    {
+      "id": "01_bob_cbt_si",
+      "file": "01_bob_cbt_si.txt",
+      "client": {"use_client_context": "C-0001"},
+      "framework": "CBT",
+      "risk_present": true,
+      "action_count": 2,
+      "action_types": ["schedule_followup", "draft_client_email"],
+      "schedule_weekday": "Tuesday",
+      "email_expected": true,
+      "framework_terms": ["cognitive restructuring", "automatic thought", "thought record", "cognitive distortion", "all or nothing", "socratic"]
+    },
+    {
+      "id": "02_marcus_meds",
+      "file": "02_marcus_meds.txt",
+      "client": {"name": "Marcus Bell", "email": "marcus@example.com", "presenting_concerns": "generalized anxiety, low mood, medication transition"},
+      "framework": "CBT",
+      "risk_present": false,
+      "action_count": 1,
+      "action_types": ["schedule_followup"],
+      "schedule_weekday": "Thursday",
+      "email_expected": false,
+      "framework_terms": ["behavioral activation", "automatic thought", "cognitive", "graded exposure"]
+    },
+    {
+      "id": "03_jane_act",
+      "file": "03_jane_act.txt",
+      "client": {"use_client_context": "C-0002"},
+      "framework": "ACT",
+      "risk_present": false,
+      "action_count": 1,
+      "action_types": ["draft_client_email"],
+      "schedule_weekday": null,
+      "email_expected": true,
+      "framework_terms": ["defusion", "values", "willingness", "acceptance", "committed action"]
+    },
+    {
+      "id": "04_rosa_family",
+      "file": "04_rosa_family.txt",
+      "client": {"name": "Rosa Alvarez", "email": "rosa@example.com", "presenting_concerns": "family conflict, boundaries with teenage son"},
+      "framework": "FAMILY SYSTEMS",
+      "risk_present": false,
+      "action_count": 1,
+      "action_types": ["schedule_followup"],
+      "schedule_weekday": "Saturday",
+      "email_expected": false,
+      "framework_terms": ["triangulation", "boundaries", "boundary", "enmeshment", "subsystem", "differentiation"]
+    },
+    {
+      "id": "05_tom_rambling",
+      "file": "05_tom_rambling.txt",
+      "client": {"name": "Tom Reyes", "email": "tom@example.com", "presenting_concerns": "work stress, catastrophizing"},
+      "framework": "CBT",
+      "risk_present": false,
+      "action_count": 1,
+      "action_types": ["schedule_followup"],
+      "schedule_weekday": "Wednesday",
+      "email_expected": false,
+      "framework_terms": ["thought record", "automatic thought", "behavioral activation", "catastroph", "cognitive"]
+    }
+  ],
+  "date_resolution": [
+    {"utterance": "next Tuesday at 3", "expected": "2026-07-21T15:00:00"},
+    {"utterance": "same time next week", "expected": "2026-07-25T10:00:00"},
+    {"utterance": "two weeks from Friday morning", "expected": "2026-08-07T09:00:00"},
+    {"utterance": "tomorrow morning", "expected": "2026-07-19T09:00:00"},
+    {"utterance": "next Thursday at 10am", "expected": "2026-07-23T10:00:00"},
+    {"utterance": "in three days", "expected": "2026-07-21T15:00:00"},
+    {"utterance": "same time next Wednesday", "expected": "2026-07-22T10:00:00"},
+    {"utterance": "Friday at 2", "expected": "2026-07-24T14:00:00"},
+    {"utterance": "next week", "expected": "2026-07-25T15:00:00"},
+    {"utterance": "at 4:30 on Monday", "expected": "2026-07-20T16:30:00"}
+  ]
+}

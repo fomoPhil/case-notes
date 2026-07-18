@@ -8,8 +8,9 @@ from pathlib import Path
 # Repo root = parent of the debrief/ package directory.
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 
-# Obsidian vault lives at ./vault (scaffolded by vault.py).
-VAULT_DIR: Path = REPO_ROOT / "vault"
+# Obsidian vault lives at ./DebriefVault (scaffolded by vault.py).
+# Its own standalone Obsidian vault, separate from any personal vault.
+VAULT_DIR: Path = REPO_ROOT / "DebriefVault"
 
 # Local LM Studio OpenAI-compatible endpoint. Model is loaded and running.
 LMSTUDIO_URL: str = "http://localhost:1234/v1/chat/completions"

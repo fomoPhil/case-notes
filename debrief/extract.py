@@ -130,7 +130,7 @@ def _format_context(client_ctx: dict) -> str:
         if isinstance(value, (list, tuple)):
             value = ", ".join(str(v) for v in value)
         elif isinstance(value, dict):
-            value = json.dumps(value, ensure_ascii=False)
+            value = json.dumps(value, ensure_ascii=False, default=str)
         label = key.replace("_", " ").title()
         lines.append(f"{label}: {value}")
     return "\n".join(lines) if lines else "(no prior context on file)"
