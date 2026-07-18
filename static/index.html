@@ -5,27 +5,54 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Debrief</title>
 <style>
+  /* Self-hosted fonts (latin subset). Both are variable woff2 files that
+     cover the full weight range from a single file, so no network is needed. */
+  @font-face {
+    font-family: 'Newsreader';
+    font-style: normal;
+    font-weight: 400 600;
+    font-display: swap;
+    src: url('/fonts/newsreader-latin.woff2') format('woff2');
+  }
+  @font-face {
+    font-family: 'Source Sans 3';
+    font-style: normal;
+    font-weight: 400 600;
+    font-display: swap;
+    src: url('/fonts/source-sans-3-latin.woff2') format('woff2');
+  }
+
   :root {
-    --bg: #f4f2ee;
-    --panel: #ffffff;
-    --ink: #2b2b28;
-    --ink-soft: #6f6b63;
-    --ink-faint: #a49f95;
-    --line: #e7e3db;
-    --accent: #5b7d70;
-    --accent-soft: #eef3f0;
-    --accent-ink: #3f5a50;
-    --amber: #c98a2b;
-    --amber-soft: #fbf3e4;
-    --amber-line: #ecd4a3;
-    --red: #b3524a;
-    --red-soft: #fbeeec;
-    --green: #4f7d5e;
+    /* Quiet Sage palette */
+    --bg: #f7f4ee;            /* warm cream app background */
+    --panel: #ffffff;         /* cards / surfaces */
+    --panel-2: #fbfaf7;       /* secondary surface */
+    --ink: #2b2e2a;           /* primary text */
+    --ink-soft: #6b6659;      /* secondary text */
+    --ink-faint: #96917f;     /* tertiary / meta */
+    --line: #e7e2d6;          /* card + surface borders */
+    --divider: #e4e1d8;       /* subtle dividers */
+    --accent: #5f7a61;        /* deep sage, primary action */
+    --accent-hover: #4e6650;  /* hover / pressed */
+    --accent-soft: #ecf1ea;   /* soft sage tint */
+    --accent-ink: #47614a;    /* readable sage on tint */
+    --sage-label: #6e8570;    /* DAP + section heading tint */
+    --soft-sage: #a8bca1;     /* selected card border */
+    --terracotta: #c97b5d;    /* recording-active accent */
+    --amber: #8a6d2f;         /* risk + nudge text */
+    --amber-soft: #fbf3e1;    /* risk + nudge background */
+    --amber-line: #e4b363;    /* risk + nudge border */
+    --red: #b3524a;           /* error text */
+    --red-soft: #fbeeec;      /* error background */
+    --green: #5f7a61;         /* success status dot */
+    --focus: rgba(95,122,97,0.4); /* focus ring, deep sage @ 40% */
+    --font-serif: 'Newsreader', Georgia, 'Times New Roman', serif;
+    --font-sans: 'Source Sans 3', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     --radius-lg: 20px;
     --radius: 14px;
     --radius-sm: 10px;
-    --shadow-sm: 0 1px 2px rgba(40,38,32,0.05), 0 2px 6px rgba(40,38,32,0.04);
-    --shadow: 0 2px 6px rgba(40,38,32,0.06), 0 10px 30px rgba(40,38,32,0.07);
+    --shadow-sm: 0 1px 2px rgba(43,46,42,0.05), 0 2px 6px rgba(43,46,42,0.04);
+    --shadow: 0 2px 6px rgba(43,46,42,0.06), 0 10px 30px rgba(43,46,42,0.07);
   }
 
   * { box-sizing: border-box; }
@@ -35,10 +62,16 @@
     padding: 0;
     background: var(--bg);
     color: var(--ink);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
+    font-optical-sizing: auto;
     line-height: 1.55;
+  }
+
+  :focus-visible {
+    outline: 3px solid var(--focus);
+    outline-offset: 2px;
   }
 
   .wrap {
@@ -54,9 +87,10 @@
     margin-bottom: 8px;
   }
   header.app h1 {
-    font-size: 22px;
-    font-weight: 640;
-    letter-spacing: -0.01em;
+    font-family: var(--font-serif);
+    font-size: 25px;
+    font-weight: 500;
+    letter-spacing: -0.005em;
     margin: 0;
   }
   header.app .sub {
@@ -111,10 +145,10 @@
   .client-card:hover { box-shadow: var(--shadow); border-color: #d9d4ca; }
   .client-card:active { transform: scale(0.99); }
   .client-card.selected {
-    border-color: var(--accent);
+    border-color: var(--soft-sage);
     box-shadow: 0 0 0 3px var(--accent-soft);
   }
-  .client-card .name { font-weight: 600; font-size: 16px; }
+  .client-card .name { font-family: var(--font-serif); font-weight: 600; font-size: 18px; letter-spacing: -0.005em; }
   .client-card .meta { font-size: 12.5px; color: var(--ink-soft); margin-top: 4px; }
   .client-card .concerns { font-size: 12.5px; color: var(--ink-faint); margin-top: 8px; }
   .tag-risk {
@@ -148,25 +182,26 @@
     color: #fff;
     display: grid;
     place-items: center;
-    box-shadow: 0 6px 18px rgba(91,125,112,0.35);
+    box-shadow: 0 6px 18px rgba(95,122,97,0.35);
     transition-property: transform, box-shadow, background;
     transition-duration: 160ms;
     transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
   }
-  .rec-btn:hover { box-shadow: 0 8px 24px rgba(91,125,112,0.42); }
+  .rec-btn:hover { background: var(--accent-hover); box-shadow: 0 8px 24px rgba(95,122,97,0.42); }
   .rec-btn:active { transform: scale(0.96); }
   .rec-btn .dot { width: 30px; height: 30px; border-radius: 999px; background: #fff; }
-  .rec-btn.recording { background: var(--red); box-shadow: 0 6px 20px rgba(179,82,74,0.4); animation: pulse 1.8s ease-in-out infinite; }
+  .rec-btn.recording { background: var(--terracotta); box-shadow: 0 6px 20px rgba(201,123,93,0.42); animation: pulse 1.8s ease-in-out infinite; }
+  .rec-btn.recording:hover { background: var(--terracotta); }
   .rec-btn.recording .dot { border-radius: 7px; width: 26px; height: 26px; }
   @keyframes pulse {
-    0%, 100% { box-shadow: 0 6px 20px rgba(179,82,74,0.4); }
-    50% { box-shadow: 0 6px 20px rgba(179,82,74,0.4), 0 0 0 14px rgba(179,82,74,0.08); }
+    0%, 100% { box-shadow: 0 6px 20px rgba(201,123,93,0.42); }
+    50% { box-shadow: 0 6px 20px rgba(201,123,93,0.42), 0 0 0 14px rgba(201,123,93,0.10); }
   }
 
   .dictate-guide {
     width: 100%;
     max-width: 380px;
-    background: #faf9f6;
+    background: var(--panel-2);
     border: 1px solid var(--line);
     border-radius: var(--radius);
     padding: 14px 18px 12px;
@@ -218,19 +253,21 @@
   .processing .label { color: var(--ink-soft); font-size: 14px; text-align: center; text-wrap: pretty; }
 
   .note-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; flex-wrap: wrap; }
-  .note-head h3 { margin: 0; font-size: 17px; font-weight: 620; }
+  .note-head h3 { margin: 0; font-family: var(--font-serif); font-size: 20px; font-weight: 600; letter-spacing: -0.005em; }
   .pill { font-size: 11px; border-radius: 999px; padding: 2px 9px; background: var(--accent-soft); color: var(--accent-ink); }
   .note-section { margin-top: 16px; }
+  .note-section + .note-section { border-top: 1px solid var(--divider); padding-top: 16px; }
   .note-section h4 {
     margin: 0 0 4px;
-    font-size: 12px;
+    font-size: 12.5px;
     text-transform: uppercase;
     letter-spacing: 0.07em;
-    color: var(--ink-faint);
+    font-weight: 600;
+    color: var(--sage-label);
   }
-  .note-section p { margin: 0; font-size: 14.5px; color: var(--ink); text-wrap: pretty; }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-  .chip { font-size: 12px; background: #f1efe9; color: var(--ink-soft); border-radius: 999px; padding: 3px 10px; }
+  .note-section p { margin: 0; font-family: var(--font-serif); font-size: 16px; line-height: 1.6; color: var(--ink); text-wrap: pretty; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+  .chip { font-size: 12px; background: var(--panel-2); border: 1px solid var(--line); color: var(--ink-soft); border-radius: 999px; padding: 3px 10px; }
 
   .risk {
     margin-top: 16px;
@@ -248,7 +285,7 @@
     border: 1px solid var(--line);
     border-radius: var(--radius);
     padding: 4px 16px;
-    background: #faf9f6;
+    background: var(--panel-2);
   }
   details.transcript summary {
     cursor: pointer;
@@ -275,7 +312,7 @@
     transition-duration: 160ms;
     transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
   }
-  .action.on { border-color: #d7e0db; background: #fbfcfb; }
+  .action.on { border-color: #d8e0d4; background: var(--panel-2); }
   .action.off { opacity: 0.5; }
   .action input[type=checkbox] {
     width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--accent); cursor: pointer; flex: none;
@@ -352,8 +389,8 @@
     transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
   }
   .btn:active { transform: scale(0.97); }
-  .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 3px 10px rgba(91,125,112,0.28); }
-  .btn-primary:hover { box-shadow: 0 5px 16px rgba(91,125,112,0.34); }
+  .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 3px 10px rgba(95,122,97,0.28); }
+  .btn-primary:hover { background: var(--accent-hover); box-shadow: 0 5px 16px rgba(95,122,97,0.34); }
   .btn-primary:disabled { background: var(--ink-faint); box-shadow: none; cursor: default; opacity: 0.7; }
   .btn-ghost { background: transparent; color: var(--ink-soft); }
   .btn-ghost:hover { color: var(--ink); }
@@ -374,7 +411,7 @@
   .result-action .r-detail { font-size: 13px; color: var(--ink-soft); margin-top: 2px; text-wrap: pretty; overflow-wrap: anywhere; }
 
   .verify-card {
-    border: 1px solid #d7e0db;
+    border: 1px solid #d8e0d4;
     background: var(--accent-soft);
     border-radius: var(--radius);
     padding: 14px 16px;
