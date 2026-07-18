@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 import os
 import platform
@@ -14,7 +15,8 @@ from urllib.parse import quote
 
 import httpx
 from dateutil import parser as date_parser
-from fastapi import FastAPI, HTTPException
+from dateparser import parse as parse_human_date
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -24,6 +26,7 @@ VAULT = Path(os.getenv("CASE_NOTES_VAULT", ROOT / "demo_vault"))
 MODE = os.getenv("CASE_NOTES_EXECUTION_MODE", "demo")
 MODEL_BASE_URL = os.getenv("CASE_NOTES_MODEL_BASE_URL", "http://127.0.0.1:11434/v1").rstrip("/")
 MODEL_ID = os.getenv("CASE_NOTES_MODEL_ID", "gemma4:12b-qat")
+STT_MODEL = os.getenv("CASE_NOTES_STT_MODEL", "mlx-community/whisper-large-v3-turbo")
 
 app = FastAPI(title="Debrief", docs_url=None, redoc_url=None)
 
@@ -68,12 +71,15 @@ def profile(client_id: str) -> dict[str, str]:
     return profiles[client_id]
 
 
-def resolve_datetime(utterance: str | None) -> str | None:
+def resolve_datetime(utterance: str | None, *, base: datetime | None = None) -> str | None:
     if not utterance:
         return None
     # The model supplies the words it heard. Python, not the model, resolves dates.
+    resolved = parse_human_date(utterance, settings={"RELATIVE_BASE": base or datetime.now(), "PREFER_DATES_FROM": "future"})
+    if resolved:
+        return resolved.isoformat(timespec="minutes")
     try:
-        return date_parser.parse(utterance, fuzzy=True, default=datetime.now()).isoformat(timespec="minutes")
+        return date_parser.parse(utterance, fuzzy=True, default=base or datetime.now()).isoformat(timespec="minutes")
     except (OverflowError, TypeError, ValueError):
         return None
 
@@ -101,7 +107,7 @@ async def model_plan(request: Request, client: dict[str, str]) -> Plan:
         "actions": [{"type": "write_note|schedule_followup|draft_email", "summary": "string", "datetime_utterance": "string|null", "duration_min": "integer|null", "subject": "string|null"}],
         "suggestions": ["string"], "sources": ["string"], "warnings": ["string"],
     }
-    payload = {"model": MODEL_ID, "temperature": 0.1, "response_format": {"type": "json_object"}, "messages": [
+    payload = {"model": MODEL_ID, "temperature": 0.1, "max_tokens": 1200, "response_format": {"type": "json_object"}, "messages": [
         {"role": "system", "content": system},
         {"role": "user", "content": f"Client alias: {client['alias']}; framework: {client['framework']}.\nTranscript:\n{request.transcript}\n\nRequired JSON shape:\n{json.dumps(schema)}"},
     ]}
@@ -142,6 +148,12 @@ def write_note(plan: Plan, client: dict[str, str]) -> Path:
     return path
 
 
+def reveal_note(path: Path) -> None:
+    if MODE != "live" or platform.system() != "Darwin":
+        return
+    subprocess.run(["open", "-a", "Obsidian", str(path)], check=True, capture_output=True, text=True, timeout=20)
+
+
 def run_osascript(script: str) -> None:
     if MODE != "live" or platform.system() != "Darwin":
         return
@@ -180,15 +192,30 @@ async def verify_screen(expected: str) -> dict[str, str | bool]:
         subprocess.run(["screencapture", "-x", str(image_path)], check=True, timeout=20)
         encoded = base64.b64encode(image_path.read_bytes()).decode()
         prompt = f"Read this live screenshot. Does it visibly confirm: {expected}? Return JSON only: {{\"confirmed\": true|false, \"what_i_see\": \"short factual description\"}}"
-        payload = {"model": MODEL_ID, "temperature": 0, "response_format": {"type": "json_object"}, "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encoded}"}}]}]}
+        payload = {"model": MODEL_ID, "temperature": 0, "max_tokens": 160, "response_format": {"type": "json_object"}, "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encoded}"}}]}]}
         async with httpx.AsyncClient(timeout=90) as http:
             response = await http.post(f"{MODEL_BASE_URL}/chat/completions", json=payload)
             response.raise_for_status()
         return json.loads(response.json()["choices"][0]["message"]["content"])
     except Exception as exc:
-        return {"confirmed": False, "what_i_see": f"Screen verification failed: {exc}"}
+        detail = str(exc)
+        if "could not create image from display" in detail:
+            detail = "Screen Recording permission is required for live visual verification."
+        return {"confirmed": False, "what_i_see": f"Screen verification failed: {detail}"}
     finally:
         image_path.unlink(missing_ok=True)
+
+
+def transcribe_wav(path: Path) -> str:
+    try:
+        import mlx_whisper
+    except ImportError as exc:
+        raise RuntimeError("Local speech recognition is not installed. Install mlx-whisper on the Mac.") from exc
+    result = mlx_whisper.transcribe(str(path), path_or_hf_repo=STT_MODEL)
+    text = result.get("text", "").strip()
+    if not text:
+        raise RuntimeError("No speech was detected. Try recording again.")
+    return text
 
 
 @app.get("/")
@@ -206,22 +233,45 @@ async def create_plan(request: Request) -> Plan:
     return await model_plan(request, profile(request.client_id))
 
 
+@app.post("/api/transcribe")
+async def transcribe(audio: UploadFile = File(...)) -> dict[str, str]:
+    if audio.content_type not in {"audio/wav", "audio/x-wav", "application/octet-stream"}:
+        raise HTTPException(415, "Recordings must be WAV audio.")
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as target:
+        target.write(await audio.read())
+        path = Path(target.name)
+    try:
+        return {"transcript": await asyncio.to_thread(transcribe_wav, path)}
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    finally:
+        path.unlink(missing_ok=True)
+
+
 @app.post("/api/approve")
 async def approve(request: Approve) -> dict:
     plan = request.plan
     client = profile(plan.client_id)
     results = []
     note_path = write_note(plan, client)
-    results.append({"action": "write_note", "ok": True, "artifact": str(note_path)})
+    reveal_note(note_path)
+    note_verification = await verify_screen(f"Obsidian displays the draft note titled {plan.note_title} for {client['alias']}")
+    results.append({"action": "write_note", "ok": True, "artifact": str(note_path), "verification": note_verification})
     for action in plan.actions:
         try:
             if action.type == "schedule_followup" and action.resolved_datetime:
                 create_calendar_event(client, action)
-                results.append({"action": action.type, "ok": True})
+                verification = await verify_screen(f"Calendar displays {client['alias']} follow-up at {action.resolved_datetime}")
+                results.append({"action": action.type, "ok": True, "verification": verification})
             elif action.type == "draft_email":
                 draft_email(client, action)
-                results.append({"action": action.type, "ok": True})
+                verification = await verify_screen(f"Mail displays a draft to {client['alias']} with subject {action.subject or 'Follow-up draft'}")
+                results.append({"action": action.type, "ok": True, "verification": verification})
         except Exception as exc:
             results.append({"action": action.type, "ok": False, "error": str(exc)})
-    verification = await verify_screen(f"draft note for {client['alias']} titled {plan.note_title}")
+    verified = [result.get("verification", {}).get("confirmed", False) for result in results if result.get("ok")]
+    verification = {
+        "confirmed": bool(verified) and all(verified),
+        "what_i_see": "; ".join(str(result.get("verification", {}).get("what_i_see", result.get("error", "No verification"))) for result in results),
+    }
     return {"results": results, "verification": verification, "review_required": True}

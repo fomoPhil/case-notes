@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from app.main import Request, fallback_plan, profile, resolve_datetime
 
 
@@ -9,6 +11,7 @@ def test_voice_journal_cannot_propose_external_actions():
 
 def test_datetime_resolution_is_not_model_owned():
     assert resolve_datetime("July 21 2026 3:00 PM") == "2026-07-21T15:00"
+    assert resolve_datetime("next Tuesday at 3pm", base=datetime(2026, 7, 18, 9, 0)) == "2026-07-21T15:00"
 
 
 def test_unknown_client_is_rejected():
