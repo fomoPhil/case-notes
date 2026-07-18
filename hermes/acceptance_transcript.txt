@@ -1,0 +1,237 @@
+================================================================
+DEBRIEF x HERMES AGENT — ACCEPTANCE TRANSCRIPT
+Captured 2026-07-18. Fully local: LM Studio (gemma-4-12b-it-qat @ 64000 ctx)
++ Hermes Agent v0.18.2, debrief profile, read-only filesystem MCP over DebriefVault.
+Command form: debrief chat -q "<query>" --yolo   (debrief = hermes -p debrief)
+================================================================
+
+########## PRIMARY ACCEPTANCE QUERY, PASS 1 ##########
+Query: Summarize Bob Smith's current treatment goals and what we worked on in his most recent session. Use the vault files.
+
+Query: Summarize Bob Smith's current treatment goals and what we worked on in 
+his most recent session. Use the vault files.
+Initializing agent...
+────────────────────────────────────────
+
+  ┊ ⚡ preparing mcp__filesystem__search_files…
+  ┊ ⚡ mcp__file Clients/  0.0s
+  ┊ ⚡ preparing mcp__filesystem__list_directory…
+  ┊ ⚡ mcp__file Clients/  0.0s
+  ┊ ⚡ preparing mcp__filesystem__list_directory…
+  ┊ ⚡ mcp__file Clients/C-0001  0.0s
+  ┊ ⚡ preparing mcp__filesystem__read_text_file…
+  ┊ ⚡ mcp__file Clients/C-0001/_Profile.md  0.0s
+  ┊ ⚡ preparing mcp__filesystem__read_text_file…
+  ┊ ⚡ mcp__file Clients/C-0001/Treatment-Plan.md  0.0s
+  ┊ ⚡ preparing mcp__filesystem__list_directory…
+  ┊ ⚡ mcp__file Clients/C-0001/Sessions/  0.0s
+  ┊ ⚡ preparing mcp__filesystem__list_directory…
+  ┊ ⚡ mcp__file Clients/C-0002  0.0s
+  ┊ ⚡ preparing mcp__filesystem__read_text_file…
+  ┊ ⚡ mcp__file Clients/C-0002/_Profile.md  0.0s
+  ┊ ⚡ preparing mcp__filesystem__list_directory…
+  ┊ ⚡ mcp__file Clients/C-0001/Sessions/  0.0s
+
+╭─ ⚕ Hermes ───────────────────────────────────────────────────────────────────╮
+    Bob Smith (Client C-0001) has the following current treatment goals and
+    recent session activity based on the vault files:
+    
+    Current Treatment Goals:
+    *   **Goal 1: Reduce frequency and intensity of self-critical automatic
+    thoughts.**
+        *   Complete a thought record after each significant work stressor.
+        *   Identify at least two cognitive distortions per week and generate
+    balanced alternatives.
+    *   Goal 2: Rebuild a sense of worth independent of work performance.
+        *   Schedule two value-based activities each week unrelated to work.
+        *   Track mood before and after activities to test predictions.
+    
+    Most Recent Session Activity:
+    The Sessions/ folder for Bob Smith (C-0001) is currently empty, so
+    there are no specific session notes available in the vault. However, his
+    profile indicates his last session was on 2026-07-17, and it included
+    an assessment of passive suicidal ideation (no plan or intent, protective
+    factors in place).
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+Resume this session with:
+  hermes --resume 20260718_022414_ed4500 -p debrief
+
+Session:        20260718_022414_ed4500
+Duration:       1m 11s
+Messages:       20 (1 user, 18 tool calls)
+
+########## PRIMARY ACCEPTANCE QUERY, PASS 2 ##########
+Query: Summarize Bob Smith's current treatment goals and what we worked on in 
+his most recent session. Use the vault files.
+Initializing agent...
+────────────────────────────────────────
+
+  ┊ ⚡ preparing mcp__filesystem__search_files…
+  ┊ ⚡ mcp__file Clients/  0.0s
+  ┊ ⚡ preparing mcp__filesystem__list_directory…
+  ┊ ⚡ mcp__file Clients/  0.0s
+  ┊ ⚡ preparing mcp__filesystem__list_directory…
+  ┊ ⚡ mcp__file Clients/C-0001  0.0s
+  ┊ ⚡ preparing mcp__filesystem__read_text_file…
+  ┊ ⚡ mcp__file Clients/C-0001/_Profile.md  0.0s
+  ┊ ⚡ preparing mcp__filesystem__read_text_file…
+  ┊ ⚡ mcp__file Clients/C-0001/Treatment-Plan.md  0.0s
+  ┊ ⚡ preparing mcp__filesystem__list_directory…
+  ┊ ⚡ mcp__file Clients/C-0001/Sessions/  0.0s
+  ┊ ⚡ preparing mcp__filesystem__search_files…
+  ┊ ⚡ mcp__file Clients/C-0001/Sessions/  0.0s
+  ┊ ⚡ preparing mcp__filesystem__list_directory…
+  ┊ ⚡ mcp__file Clients/C-0002  0.0s
+  ┊ ⚡ preparing mcp__filesystem__read_text_file…
+  ┊ ⚡ mcp__file Clients/C-0002/_Profile.md  0.0s
+
+╭─ ⚕ Hermes ───────────────────────────────────────────────────────────────────╮
+    Bob Smith's current treatment goals and recent session details are as
+    follows:
+    
+    Current Treatment Goals (C-0001):
+    *   **Goal 1: Reduce frequency and intensity of self-critical automatic
+    thoughts.**
+        *   Complete a thought record after each significant work stressor.
+        *   Identify at least two cognitive distortions per week and generate
+    balanced alternatives.
+    *   Goal 2: Rebuild a sense of worth independent of work performance.
+        *   Schedule two value-based activities each week unrelated to work.
+        *   Track mood before and after activities to test predictions.
+    
+    Most Recent Session:
+    The Sessions/ folder for Bob Smith (C-0001) appears to be empty, or the
+    files are not currently visible in that directory. However, his profile
+    indicates his last session was on 2026-07-17.
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+Resume this session with:
+  hermes --resume 20260718_022548_c4642a -p debrief
+
+Session:        20260718_022548_c4642a
+Duration:       2m 57s
+Messages:       20 (1 user, 18 tool calls)
+
+########## SMOKE TEST: VAULT LISTING, PASS A ##########
+Query: List every client in the vault with their full name and client id.
+Initializing agent...
+────────────────────────────────────────
+
+  ┊ ⚡ preparing mcp__filesystem__list_directory…
+  ┊ ⚡ mcp__file /Users/philwoolley/Projects/gemma4hackathon-casenotes/Clients  0.0s [Access denied - path outside allowed director...]
+  ┊ ⚡ preparing mcp__filesystem__list_directory…
+  ┊ ⚡ mcp__file /Users/philwoolley/Projects/gemma4hackathon-casenotes/DebriefVault  0.0s
+  ┊ ⚡ preparing mcp__filesystem__list_directory…
+  ┊ ⚡ mcp__file /Users/philwoolley/Projects/gemma4hackathon-casenotes/DebriefVault/Clients  0.0s
+  ┊ ⚡ preparing mcp__filesystem__read_text_file…
+  ┊ ⚡ mcp__file /Users/philwoolley/Projects/gemma4hackathon-casenotes/DebriefVault/Clients/C-0001/_Profile.md  0.0s
+  ┊ ⚡ preparing mcp__filesystem__read_text_file…
+  ┊ ⚡ mcp__file /Users/philwoolley/Projects/gemma4hackathon-casenotes/DebriefVault/Clients/C-0002/_Profile.md  0.0s
+
+╭─ ⚕ Hermes ───────────────────────────────────────────────────────────────────╮
+    Here are the clients currently in the vault:
+    
+    *   Bob Smith (ID: C-0001)
+    *   Jane Doe (ID: C-0002)
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+Resume this session with:
+  hermes --resume 20260718_021902_b1f0e6 -p debrief
+
+Session:        20260718_021902_b1f0e6
+Duration:       2m 40s
+Messages:       12 (1 user, 10 tool calls)
+
+########## SMOKE TEST: VAULT LISTING, PASS B ##########
+Query: List every client in the vault with their full name and client id.
+Initializing agent...
+────────────────────────────────────────
+
+  ┊ ⚡ preparing mcp__filesystem__list_directory…
+  ┊ ⚡ mcp__file /Users/philwoolley/Projects/gemma4hackathon-casenotes/Clients  0.0s [Access denied - path outside allowed director...]
+  ┊ ⚡ preparing mcp__filesystem__list_directory…
+  ┊ ⚡ mcp__file /Users/philwoolley/Projects/gemma4hackathon-casenotes/DebriefVault  0.0s
+  ┊ ⚡ preparing mcp__filesystem__list_directory…
+  ┊ ⚡ mcp__file /Users/philwoolley/Projects/gemma4hackathon-casenotes/DebriefVault/Clients  0.0s
+  ┊ ⚡ preparing mcp__filesystem__read_text_file…
+  ┊ ⚡ mcp__file /Users/philwoolley/Projects/gemma4hackathon-casenotes/DebriefVault/Clients/C-0001/_Profile.md  0.0s
+  ┊ ⚡ preparing mcp__filesystem__read_text_file…
+  ┊ ⚡ mcp__file /Users/philwoolley/Projects/gemma4hackathon-casenotes/DebriefVault/Clients/C-0002/_Profile.md  0.0s
+
+╭─ ⚕ Hermes ───────────────────────────────────────────────────────────────────╮
+    Here are the clients currently in the vault:
+    
+    *   Bob Smith (ID: C-0001)
+    *   Jane Doe (ID: C-0002)
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+Resume this session with:
+  hermes --resume 20260718_022218_028d05 -p debrief
+
+Session:        20260718_022218_028d05
+Duration:       1m 55s
+Messages:       12 (1 user, 10 tool calls)
+
+########## FUZZY NAME TEST: 'bob smyth' -> Bob Smith ##########
+Query: prep me for my session with bob smyth
+Initializing agent...
+────────────────────────────────────────
+
+  ┊ 📚 preparing skill_view…
+  ┊ 📚 skill     client-lookup  0.0s
+  ┊ ⚡ preparing mcp__filesystem__list_directory…
+  ┊ ⚡ mcp__file Clients/  0.0s
+  ┊ ⚡ preparing mcp__filesystem__read_text_file…
+  ┊ ⚡ mcp__file Clients/C-0001/_Profile.md  0.0s
+  ┊ ⚡ preparing mcp__filesystem__read_text_file…
+  ┊ ⚡ mcp__file Clients/C-0001/Treatment-Plan.md  0.0s
+  ┊ ⚡ preparing mcp__filesystem__list_directory…
+  ┊ ⚡ mcp__file Clients/C-0001/Sessions/  0.0s
+
+╭─ ⚕ Hermes ───────────────────────────────────────────────────────────────────╮
+    Resolved client: Bob Smith, C-0001
+    
+    - Open goals
+        - Goal 1: Reduce frequency and intensity of self-critical automatic
+    thoughts. (Status: in-progress)
+        - Goal 2: Rebuild a sense of worth independent of work performance.
+    (Status: in-progress)
+    
+    - Last session focus
+    no notes yet
+    
+    - Homework assigned
+    none on file
+    
+    - Suggested focus for next session
+    Since there are no previous session notes on file, I suggest starting by
+    establishing a baseline for his current workplace stress and identifying
+    specific "self-critical automatic thoughts" he has experienced since the
+    intake. You might also want to review the objectives in his treatment
+    plan regarding thought records and value-based activities to see if any
+    have been attempted.
+    
+    - Risk flags
+    [SI-passive-2026-07-17]
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+Resume this session with:
+  hermes --resume 20260718_023428_6fc317 -p debrief
+
+Session:        20260718_023428_6fc317
+Duration:       2m 41s
+Messages:       12 (1 user, 10 tool calls)
+
+########## FRESH-CONTEXT RUNNER (session-prep + caseload-risk-review) ##########
+See hermes/state/RESULTS.md for the full per-task results and audit checklists.
+[task] session-prep: Prep me for my next session with Bob Smith
+  running skill=session-prep :: Prep me for my next session with Bob Smith...
+  -> DONE, checkbox marked. (1 left)
+[task] caseload-risk-review: Review my whole caseload and tell me which clients currently carry a risk flag
+  running skill=caseload-risk-review :: Review my whole caseload and tell me which clients currently...
+  -> DONE, checkbox marked. (0 left)
+All tasks complete.
+real 303.15
+user 6.97
+sys 2.18

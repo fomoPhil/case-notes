@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Debrief · Font Combo Test · Round 1</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Inter:wght@400;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,600&family=Source+Sans+3:wght@400;600&family=Lora:wght@400;600&family=Karla:wght@400;500;600&family=Spectral:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600&family=DM+Serif+Display&family=DM+Sans:wght@400;500;600&display=swap');
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #EFEDE8; color: #2B2E2A; padding: 48px 24px; -webkit-font-smoothing: antialiased; font-family: -apple-system, sans-serif; }
+.page-title { text-align: center; font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; color: #8A8578; margin-bottom: 40px; }
+.combo { max-width: 860px; margin: 0 auto 56px; background: #FBFAF7; border-radius: 20px; padding: 44px 48px; box-shadow: 0 2px 16px rgba(43,46,42,0.07); }
+.combo-label { display: flex; align-items: baseline; gap: 12px; margin-bottom: 28px; padding-bottom: 14px; border-bottom: 1px solid #E4E1D8; }
+.combo-num { font-size: 26px; font-weight: 700; color: #B8B2A2; font-family: Georgia, serif; }
+.combo-names { font-size: 14px; color: #6B6659; letter-spacing: 0.02em; }
+.combo-why { margin-left: auto; font-size: 12.5px; color: #96917F; font-style: italic; max-width: 300px; text-align: right; }
+
+.app-name { font-size: 15px; font-weight: 600; letter-spacing: 0.01em; color: #5F7A61; margin-bottom: 10px; }
+.headline { font-size: 34px; line-height: 1.18; margin-bottom: 6px; }
+.subline { font-size: 16px; color: #6B6659; margin-bottom: 26px; }
+
+.note-card { background: #FFFFFF; border: 1px solid #E7E4DB; border-radius: 14px; padding: 22px 26px; margin-bottom: 18px; }
+.note-h { font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: #8A9B8C; margin-bottom: 6px; }
+.note-body { font-size: 15px; line-height: 1.62; color: #3A3D38; margin-bottom: 14px; }
+.note-quote { border-left: 3px solid #D9CDB8; padding-left: 12px; color: #6B6659; font-style: italic; }
+
+.ui-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.btn { background: #5F7A61; color: #fff; border-radius: 999px; padding: 12px 26px; font-size: 14.5px; font-weight: 600; letter-spacing: 0.01em; }
+.chip { background: #FBF3E1; border: 1px solid #EAD9AE; color: #8A6D2F; border-radius: 999px; padding: 8px 16px; font-size: 13px; }
+.meta { color: #96917F; font-size: 13px; font-variant-numeric: tabular-nums; }
+
+.f1-serif { font-family: 'Fraunces', serif; } .f1-sans { font-family: 'Inter', sans-serif; }
+.f2-serif { font-family: 'Newsreader', serif; } .f2-sans { font-family: 'Source Sans 3', sans-serif; }
+.f3-serif { font-family: 'Lora', serif; } .f3-sans { font-family: 'Karla', sans-serif; }
+.f4-serif { font-family: 'Spectral', serif; } .f4-sans { font-family: 'IBM Plex Sans', sans-serif; }
+.f5-serif { font-family: 'DM Serif Display', serif; } .f5-sans { font-family: 'DM Sans', sans-serif; }
+
+.footnote { max-width: 860px; margin: 0 auto; font-size: 13px; line-height: 1.6; color: #8A8578; padding: 0 8px; }
+</style>
+</head>
+<body>
+<div class="page-title">Debrief · Font Combination Test · Round 1 of 1</div>
+
+<!-- 1: Fraunces + Inter -->
+<div class="combo">
+  <div class="combo-label"><span class="combo-num">1</span><span class="combo-names"><strong>Fraunces</strong> headlines · <strong>Inter</strong> UI and body</span><span class="combo-why">Warm literary soul with a crisp modern interface. The current favorite of calm-tech apps.</span></div>
+  <div class="f1-sans app-name">Debrief</div>
+  <div class="f1-serif headline">A calm end to every session</div>
+  <div class="f1-sans subline">One spoken debrief. The note, the booking, the email, all filed.</div>
+  <div class="note-card">
+    <div class="f1-sans note-h">Data</div>
+    <div class="f1-serif note-body">Bob arrived on time and described another week of feeling overwhelmed at the office. We used cognitive restructuring on the automatic thought and completed a thought record together.
+    <div class="note-quote">"I am convinced everyone there thinks I am a fraud."</div></div>
+    <div class="ui-row f1-sans"><span class="btn">Start recording</span><span class="chip">No follow-up booked. Add one below.</span><span class="meta">Session 14 · 50 min · Jul 18, 2026</span></div>
+  </div>
+</div>
+
+<!-- 2: Newsreader + Source Sans 3 -->
+<div class="combo">
+  <div class="combo-label"><span class="combo-num">2</span><span class="combo-names"><strong>Newsreader</strong> headlines · <strong>Source Sans 3</strong> UI and body</span><span class="combo-why">Editorial and quietly serious, like a well-set journal. The most understated of the five.</span></div>
+  <div class="f2-sans app-name">Debrief</div>
+  <div class="f2-serif headline">A calm end to every session</div>
+  <div class="f2-sans subline">One spoken debrief. The note, the booking, the email, all filed.</div>
+  <div class="note-card">
+    <div class="f2-sans note-h">Data</div>
+    <div class="f2-serif note-body">Bob arrived on time and described another week of feeling overwhelmed at the office. We used cognitive restructuring on the automatic thought and completed a thought record together.
+    <div class="note-quote">"I am convinced everyone there thinks I am a fraud."</div></div>
+    <div class="ui-row f2-sans"><span class="btn">Start recording</span><span class="chip">No follow-up booked. Add one below.</span><span class="meta">Session 14 · 50 min · Jul 18, 2026</span></div>
+  </div>
+</div>
+
+<!-- 3: Lora + Karla -->
+<div class="combo">
+  <div class="combo-label"><span class="combo-num">3</span><span class="combo-names"><strong>Lora</strong> headlines · <strong>Karla</strong> UI and body</span><span class="combo-why">The counseling-room classic: gentle, familiar, zero intimidation. Safest choice.</span></div>
+  <div class="f3-sans app-name">Debrief</div>
+  <div class="f3-serif headline">A calm end to every session</div>
+  <div class="f3-sans subline">One spoken debrief. The note, the booking, the email, all filed.</div>
+  <div class="note-card">
+    <div class="f3-sans note-h">Data</div>
+    <div class="f3-serif note-body">Bob arrived on time and described another week of feeling overwhelmed at the office. We used cognitive restructuring on the automatic thought and completed a thought record together.
+    <div class="note-quote">"I am convinced everyone there thinks I am a fraud."</div></div>
+    <div class="ui-row f3-sans"><span class="btn">Start recording</span><span class="chip">No follow-up booked. Add one below.</span><span class="meta">Session 14 · 50 min · Jul 18, 2026</span></div>
+  </div>
+</div>
+
+<!-- 4: Spectral + IBM Plex Sans -->
+<div class="combo">
+  <div class="combo-label"><span class="combo-num">4</span><span class="combo-names"><strong>Spectral</strong> headlines · <strong>IBM Plex Sans</strong> UI and body</span><span class="combo-why">Precise but humane. Reads the most "clinical credibility" of the five, good for the audit story.</span></div>
+  <div class="f4-sans app-name">Debrief</div>
+  <div class="f4-serif headline">A calm end to every session</div>
+  <div class="f4-sans subline">One spoken debrief. The note, the booking, the email, all filed.</div>
+  <div class="note-card">
+    <div class="f4-sans note-h">Data</div>
+    <div class="f4-serif note-body">Bob arrived on time and described another week of feeling overwhelmed at the office. We used cognitive restructuring on the automatic thought and completed a thought record together.
+    <div class="note-quote">"I am convinced everyone there thinks I am a fraud."</div></div>
+    <div class="ui-row f4-sans"><span class="btn">Start recording</span><span class="chip">No follow-up booked. Add one below.</span><span class="meta">Session 14 · 50 min · Jul 18, 2026</span></div>
+  </div>
+</div>
+
+<!-- 5: DM Serif Display + DM Sans -->
+<div class="combo">
+  <div class="combo-label"><span class="combo-num">5</span><span class="combo-names"><strong>DM Serif Display</strong> headlines · <strong>DM Sans</strong> UI and body</span><span class="combo-why">Same type family, maximum harmony. The most polished product feel, slightly more "startup."</span></div>
+  <div class="f5-sans app-name">Debrief</div>
+  <div class="f5-serif headline">A calm end to every session</div>
+  <div class="f5-sans subline">One spoken debrief. The note, the booking, the email, all filed.</div>
+  <div class="note-card">
+    <div class="f5-sans note-h">Data</div>
+    <div class="f5-serif note-body" style="font-family:'DM Sans',sans-serif;">Bob arrived on time and described another week of feeling overwhelmed at the office. We used cognitive restructuring on the automatic thought and completed a thought record together.
+    <div class="note-quote">"I am convinced everyone there thinks I am a fraud."</div></div>
+    <div class="ui-row f5-sans"><span class="btn">Start recording</span><span class="chip">No follow-up booked. Add one below.</span><span class="meta">Session 14 · 50 min · Jul 18, 2026</span></div>
+  </div>
+</div>
+
+<div class="footnote">Every block uses the same real app content: headline, a Data section from Bob's session note with a client quote, the record button, a nudge chip, and session metadata. The serif carries headlines and note prose (the human, reflective layer); the sans carries UI controls and metadata (the reliable, functional layer). Combo 5 breaks that rule on note prose because DM Serif Display is display-only and too sharp for body text. Pick by feel: which one would you want to see at 8 PM after your sixth session of the day?</div>
+</body>
+</html>
