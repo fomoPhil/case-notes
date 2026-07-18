@@ -1,0 +1,582 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Debrief — Live Demo Deck</title>
+<style>
+  @font-face {
+    font-family: "Newsreader";
+    src: url("../static/fonts/newsreader-latin.woff2") format("woff2");
+    font-weight: 400 600;
+    font-style: normal;
+    font-display: swap;
+  }
+  @font-face {
+    font-family: "Source Sans 3";
+    src: url("../static/fonts/source-sans-3-latin.woff2") format("woff2");
+    font-weight: 400 600;
+    font-style: normal;
+    font-display: swap;
+  }
+
+  :root {
+    --cream: #F7F4EE;
+    --ink: #2B2E2A;
+    --deep-sage: #5F7A61;
+    --soft-sage: #A8BCA1;
+    --terracotta: #C97B5D;
+    --amber: #E4B363;
+    --sage-label: #6E8570;
+    --line: rgba(43, 46, 42, 0.12);
+    --card: #FFFFFF;
+    --serif: "Newsreader", Georgia, "Times New Roman", serif;
+    --sans: "Source Sans 3", system-ui, -apple-system, sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+    background: var(--cream);
+    color: var(--ink);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Background: cream + soft radial sage wash + subtle grain overlay */
+  .bg {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    background:
+      radial-gradient(120% 90% at 18% 12%, rgba(168, 188, 161, 0.28) 0%, rgba(168, 188, 161, 0) 55%),
+      radial-gradient(110% 100% at 88% 88%, rgba(95, 122, 97, 0.16) 0%, rgba(95, 122, 97, 0) 60%),
+      var(--cream);
+  }
+  .grain {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    mix-blend-mode: multiply;
+    opacity: 0.05;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  }
+
+  .stage {
+    position: relative;
+    z-index: 2;
+    height: 100vh;
+    width: 100vw;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .slide {
+    position: absolute;
+    inset: 0;
+    display: none;
+    flex-direction: column;
+    padding: clamp(3vh, 5vh, 6vh) clamp(4vw, 6vw, 7vw);
+    opacity: 0;
+    transition: opacity 200ms ease;
+  }
+  .slide.active {
+    display: flex;
+    opacity: 1;
+  }
+
+  /* Shared type */
+  .eyebrow {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: clamp(0.62rem, 0.82vw, 0.82rem);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--sage-label);
+  }
+  h1, h2 {
+    font-family: var(--serif);
+    font-weight: 500;
+    line-height: 1.04;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+  }
+  .lede {
+    font-family: var(--serif);
+    font-weight: 400;
+    line-height: 1.32;
+    color: var(--ink);
+  }
+  .muted { color: rgba(43, 46, 42, 0.66); }
+  em, .it { font-style: italic; }
+
+  /* ---------- Slide 1: Title ---------- */
+  .s1 { justify-content: center; }
+  .s1 .wordmark {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: clamp(4rem, 11vw, 9.5rem);
+    line-height: 0.92;
+    letter-spacing: -0.02em;
+  }
+  .s1 .tagline {
+    font-family: var(--serif);
+    font-style: italic;
+    font-weight: 400;
+    font-size: clamp(1.4rem, 2.9vw, 2.5rem);
+    color: var(--deep-sage);
+    margin-top: 0.6rem;
+  }
+  .s1 .problem {
+    max-width: 46ch;
+    font-family: var(--serif);
+    font-size: clamp(1.05rem, 1.7vw, 1.5rem);
+    line-height: 1.4;
+    color: rgba(43, 46, 42, 0.82);
+    margin-top: clamp(1.6rem, 3vh, 2.4rem);
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6em;
+    padding: 0.62em 1.05em;
+    border: 1px solid rgba(95, 122, 97, 0.4);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.55);
+    color: var(--deep-sage);
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: clamp(0.78rem, 1.15vw, 1rem);
+    letter-spacing: 0.01em;
+    margin-top: clamp(1.6rem, 3vh, 2.4rem);
+    box-shadow: 0 1px 2px rgba(43, 46, 42, 0.05);
+    align-self: flex-start;
+  }
+  .badge svg { display: block; }
+
+  /* ---------- Section header (slides 2-5) ---------- */
+  .head { margin-bottom: clamp(1.4rem, 3vh, 2.2rem); }
+  .head h2 { font-size: clamp(1.9rem, 3.6vw, 3.2rem); margin-top: 0.35rem; }
+  .head .sub {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: clamp(1rem, 1.7vw, 1.45rem);
+    color: var(--deep-sage);
+    margin-top: 0.5rem;
+  }
+
+  /* Two-column layout for screenshot slides */
+  .cols {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1.15fr;
+    gap: clamp(2rem, 4vw, 4rem);
+    align-items: center;
+    min-height: 0;
+  }
+  .cols.reverse { grid-template-columns: 1.15fr 1fr; }
+
+  /* Browser frame */
+  .frame {
+    border-radius: 14px;
+    background: #fff;
+    box-shadow:
+      0 1px 2px rgba(43, 46, 42, 0.06),
+      0 18px 40px -18px rgba(43, 46, 42, 0.28);
+    outline: 1px solid rgba(43, 46, 42, 0.08);
+    overflow: hidden;
+    max-height: 78vh;
+  }
+  .frame .bar {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 10px 14px;
+    background: #EFEBE3;
+    border-bottom: 1px solid rgba(43, 46, 42, 0.07);
+  }
+  .frame .bar i {
+    width: 11px; height: 11px; border-radius: 50%;
+    background: #D8D2C6; display: block;
+  }
+  .frame .bar i:nth-child(1) { background: #D9A38C; }
+  .frame .bar i:nth-child(2) { background: #E4C88A; }
+  .frame .bar i:nth-child(3) { background: #A8BCA1; }
+  .frame img { display: block; width: 100%; height: auto; }
+
+  /* Numbered / bullet lists */
+  .outcomes { list-style: none; display: flex; flex-direction: column; gap: clamp(0.9rem, 2vh, 1.5rem); }
+  .outcomes li { display: flex; gap: 0.95rem; align-items: baseline; }
+  .outcomes .num {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: clamp(1rem, 1.4vw, 1.2rem);
+    color: #fff;
+    background: var(--deep-sage);
+    width: 1.9em; height: 1.9em;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    align-self: flex-start;
+  }
+  .outcomes .t {
+    font-family: var(--serif);
+    font-size: clamp(1.15rem, 1.85vw, 1.65rem);
+    line-height: 1.28;
+  }
+  .outcomes .t small {
+    display: block;
+    font-family: var(--sans);
+    font-size: clamp(0.82rem, 1.05vw, 0.98rem);
+    color: rgba(43, 46, 42, 0.6);
+    margin-top: 0.15rem;
+    font-weight: 400;
+  }
+
+  /* Slide 3: roles */
+  .roles { display: grid; grid-template-columns: repeat(3, 1fr); gap: clamp(1rem, 2vw, 1.8rem); }
+  .role {
+    background: rgba(255, 255, 255, 0.7);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: clamp(1.1rem, 2.2vh, 1.7rem);
+    box-shadow: 0 10px 26px -20px rgba(43, 46, 42, 0.4);
+  }
+  .role .k {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: clamp(1.3rem, 2vw, 1.75rem);
+    color: var(--deep-sage);
+  }
+  .role .k .en { font-style: normal; color: rgba(43,46,42,0.4); font-size: 0.7em; margin-left: 0.4em; }
+  .role p {
+    font-family: var(--sans);
+    font-size: clamp(0.9rem, 1.15vw, 1.05rem);
+    line-height: 1.42;
+    color: rgba(43, 46, 42, 0.78);
+    margin-top: 0.55rem;
+  }
+  .principle {
+    margin-top: clamp(1.4rem, 3vh, 2.3rem);
+    font-family: var(--serif);
+    font-size: clamp(1.15rem, 2vw, 1.7rem);
+    line-height: 1.35;
+    color: var(--ink);
+    max-width: 60ch;
+  }
+  .principle b { color: var(--terracotta); font-weight: 500; }
+  .stt-note {
+    margin-top: clamp(0.8rem, 1.6vh, 1.1rem);
+    font-family: var(--sans);
+    font-size: clamp(0.82rem, 1.05vw, 0.98rem);
+    color: var(--sage-label);
+    letter-spacing: 0.01em;
+  }
+
+  /* Slide 4: evidence table */
+  .evtable { width: 100%; border-collapse: collapse; }
+  .evtable td {
+    padding: clamp(0.6rem, 1.5vh, 1.05rem) 0;
+    border-bottom: 1px solid var(--line);
+    vertical-align: middle;
+  }
+  .evtable tr:last-child td { border-bottom: none; }
+  .evtable .suite {
+    font-family: var(--serif);
+    font-size: clamp(0.98rem, 1.45vw, 1.32rem);
+    line-height: 1.25;
+    padding-right: 1.2rem;
+  }
+  .evtable .suite small {
+    display: block;
+    font-family: var(--sans);
+    font-size: clamp(0.76rem, 0.95vw, 0.9rem);
+    color: rgba(43, 46, 42, 0.55);
+    margin-top: 0.12rem;
+  }
+  .evtable .res {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: clamp(0.98rem, 1.4vw, 1.28rem);
+    color: var(--deep-sage);
+    white-space: nowrap;
+    text-align: right;
+  }
+  .caught {
+    margin-top: clamp(1rem, 2.2vh, 1.6rem);
+    padding: clamp(0.9rem, 2vh, 1.3rem) clamp(1.1rem, 2vw, 1.4rem);
+    border-left: 3px solid var(--terracotta);
+    background: rgba(201, 123, 93, 0.07);
+    border-radius: 0 10px 10px 0;
+    font-family: var(--serif);
+    font-size: clamp(1rem, 1.5vw, 1.35rem);
+    line-height: 1.35;
+  }
+  .caught b { color: var(--terracotta); font-weight: 500; }
+
+  /* Slide 5: close */
+  .demo-arc { display: flex; flex-direction: column; gap: clamp(0.7rem, 1.7vh, 1.15rem); }
+  .step { display: flex; align-items: center; gap: 1rem; }
+  .step .dot {
+    width: 0.72em; height: 0.72em; border-radius: 50%;
+    background: var(--soft-sage);
+    flex: 0 0 auto;
+    box-shadow: 0 0 0 4px rgba(168, 188, 161, 0.22);
+  }
+  .step .lbl {
+    font-family: var(--serif);
+    font-size: clamp(1.2rem, 2vw, 1.75rem);
+  }
+  .arrow { color: rgba(43,46,42,0.3); margin: 0 0.1rem; }
+  .next {
+    background: rgba(255, 255, 255, 0.7);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: clamp(1.2rem, 2.4vh, 1.8rem);
+    box-shadow: 0 10px 26px -20px rgba(43, 46, 42, 0.4);
+  }
+  .next .eyebrow { margin-bottom: 0.85rem; }
+  .next ul { list-style: none; display: flex; flex-direction: column; gap: 0.7rem; }
+  .next li {
+    font-family: var(--sans);
+    font-size: clamp(0.92rem, 1.25vw, 1.1rem);
+    line-height: 1.4;
+    color: rgba(43, 46, 42, 0.8);
+    padding-left: 1.1rem;
+    position: relative;
+  }
+  .next li::before {
+    content: "";
+    position: absolute; left: 0; top: 0.62em;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--sage-label);
+  }
+  .s5cta {
+    font-family: var(--serif);
+    font-style: italic;
+    font-weight: 500;
+    color: var(--terracotta);
+  }
+
+  /* Slide counter */
+  .counter {
+    position: fixed;
+    right: clamp(1.4rem, 2.5vw, 2.6rem);
+    bottom: clamp(1.2rem, 2.5vh, 2rem);
+    z-index: 5;
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 0.82rem;
+    letter-spacing: 0.14em;
+    color: var(--sage-label);
+  }
+  .counter b { color: var(--ink); font-weight: 600; }
+
+  /* Progress rail */
+  .rail {
+    position: fixed;
+    left: clamp(1.4rem, 2.5vw, 2.6rem);
+    bottom: clamp(1.3rem, 2.6vh, 2.1rem);
+    z-index: 5;
+    display: flex;
+    gap: 8px;
+  }
+  .rail span {
+    width: 26px; height: 4px; border-radius: 3px;
+    background: rgba(43, 46, 42, 0.14);
+    transition: background 200ms ease;
+  }
+  .rail span.on { background: var(--deep-sage); }
+</style>
+
+<div class="bg"></div>
+<div class="grain"></div>
+
+<div class="stage">
+
+  <!-- SLIDE 1: TITLE -->
+  <section class="slide s1" data-slide="1">
+    <div class="wordmark">Debrief</div>
+    <div class="tagline">post-session admin, in one breath</div>
+    <p class="problem">
+      Therapists lose 15 to 30 minutes of admin after every session. Cloud AI scribes
+      ask them to upload their clients' trauma disclosures to someone else's servers.
+    </p>
+    <div class="badge">
+      <svg width="14" height="16" viewBox="0 0 14 16" aria-hidden="true">
+        <rect x="1.5" y="6.5" width="11" height="8" rx="2" fill="none" stroke="#5F7A61" stroke-width="1.4"/>
+        <path d="M4 6.5V4.5a3 3 0 0 1 6 0v2" fill="none" stroke="#5F7A61" stroke-width="1.4"/>
+      </svg>
+      On-device Gemma 4. Nothing leaves the Mac.
+    </div>
+  </section>
+
+  <!-- SLIDE 2: WHAT IT DOES -->
+  <section class="slide" data-slide="2">
+    <div class="head">
+      <div class="eyebrow">What it does</div>
+      <h2>One spoken debrief. Four things done.</h2>
+      <div class="sub">A therapist talks for 60 to 90 seconds. The agent takes it from there.</div>
+    </div>
+    <div class="cols">
+      <ul class="outcomes">
+        <li><span class="num">1</span><span class="t">DAP progress note filed<small>Grounded in the transcript, framework-authentic, filed into the Obsidian vault</small></span></li>
+        <li><span class="num">2</span><span class="t">Follow-up booked<small>Apple Calendar event created for the next session</small></span></li>
+        <li><span class="num">3</span><span class="t">Client email drafted<small>Worksheet attached in Apple Mail, always a draft, never auto-sent</small></span></li>
+        <li><span class="num">4</span><span class="t">Verified on screen<small>Gemma 4 vision reads the live screen to confirm each action happened</small></span></li>
+      </ul>
+      <div class="frame">
+        <div class="bar"><i></i><i></i><i></i></div>
+        <img src="../design/kaggle-media/02-recording.png" alt="Debrief recording screen">
+      </div>
+    </div>
+  </section>
+
+  <!-- SLIDE 3: HOW -->
+  <section class="slide" data-slide="3">
+    <div class="head">
+      <div class="eyebrow">How it works</div>
+      <h2>Deterministic hands, model brain, model eyes.</h2>
+      <div class="sub">One local model, Gemma 4 12B QAT, playing three roles.</div>
+    </div>
+    <div class="roles">
+      <div class="role">
+        <div class="k">brain <span class="en">/ the plan</span></div>
+        <p>A single JSON-schema call extracts the clinical note and the requested actions from the transcript.</p>
+      </div>
+      <div class="role">
+        <div class="k">eyes <span class="en">/ the check</span></div>
+        <p>The same model's vision reads screenshots of the live screen and confirms each action landed.</p>
+      </div>
+      <div class="role">
+        <div class="k">editor <span class="en">/ the fix</span></div>
+        <p>A glossary pass repairs clinical-term transcription errors: GAD, sertraline, EMDR.</p>
+      </div>
+    </div>
+    <p class="principle">
+      Python does all the date math and a human approves the checklist before <b>anything</b> runs.
+      The model decides and verifies; deterministic code executes.
+    </p>
+    <p class="stt-note">Speech-to-text is parakeet-mlx on Apple Silicon. A 10-minute dictation transcribes in seconds, fully offline.</p>
+  </section>
+
+  <!-- SLIDE 4: EVIDENCE -->
+  <section class="slide" data-slide="4">
+    <div class="head">
+      <div class="eyebrow">Evidence</div>
+      <h2>We defined success before the demo, then measured it.</h2>
+    </div>
+    <div class="cols reverse">
+      <div>
+        <table class="evtable">
+          <tr>
+            <td class="suite">Unit tests<small>dates, vault, schemas</small></td>
+            <td class="res">54 / 54</td>
+          </tr>
+          <tr>
+            <td class="suite">Date resolution<small>10 spoken phrasings</small></td>
+            <td class="res">10 / 10</td>
+          </tr>
+          <tr>
+            <td class="suite">Eval checks<small>5 fictional debriefs x 8 automated checks</small></td>
+            <td class="res">40 / 40</td>
+          </tr>
+          <tr>
+            <td class="suite">Full live pipeline<small>synthesized voice to verified screen, end to end</small></td>
+            <td class="res">Passed 2x</td>
+          </tr>
+          <tr>
+            <td class="suite">Vision verification<small>Calendar, Obsidian, Mail surfaces</small></td>
+            <td class="res">3 / 3</td>
+          </tr>
+        </table>
+        <div class="caught">
+          The eval earned its keep: it caught <b>2 real bugs</b> before the demo, a duplicated
+          calendar booking and a crash on real client profiles. Both fixed and re-verified.
+        </div>
+      </div>
+      <div class="frame">
+        <div class="bar"><i></i><i></i><i></i></div>
+        <img src="../design/kaggle-media/05-verified-results.png" alt="Debrief verified results screen">
+      </div>
+    </div>
+  </section>
+
+  <!-- SLIDE 5: CLOSE -->
+  <section class="slide" data-slide="5">
+    <div class="head">
+      <div class="eyebrow">Live demo</div>
+      <h2>Wi-Fi off. Let's run one.</h2>
+    </div>
+    <div class="cols">
+      <div class="demo-arc">
+        <div class="step"><span class="dot"></span><span class="lbl">Pick a client</span></div>
+        <div class="step"><span class="dot"></span><span class="lbl">Speak the debrief</span></div>
+        <div class="step"><span class="dot"></span><span class="lbl">Review the note</span></div>
+        <div class="step"><span class="dot"></span><span class="lbl">Approve the checklist</span></div>
+        <div class="step"><span class="dot"></span><span class="lbl s5cta">Watch it verify on screen</span></div>
+      </div>
+      <div class="next">
+        <div class="eyebrow">Honest next steps</div>
+        <ul>
+          <li>A voice correction turn ("actually, make it 4").</li>
+          <li>A native SwiftUI app.</li>
+          <li>A formal privacy and legal review before any real clinical use.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<div class="rail" id="rail"></div>
+<div class="counter"><b id="cur">1</b> / <span id="tot">5</span></div>
+
+<script>
+  const slides = Array.from(document.querySelectorAll('.slide'));
+  const total = slides.length;
+  const railEl = document.getElementById('rail');
+  const curEl = document.getElementById('cur');
+  document.getElementById('tot').textContent = total;
+
+  // build progress rail
+  slides.forEach(() => {
+    const s = document.createElement('span');
+    railEl.appendChild(s);
+  });
+  const railSpans = Array.from(railEl.children);
+
+  // read starting slide from ?slide=N
+  const params = new URLSearchParams(location.search);
+  let idx = parseInt(params.get('slide'), 10);
+  if (!Number.isInteger(idx) || idx < 1 || idx > total) idx = 1;
+  idx -= 1;
+
+  function render() {
+    slides.forEach((s, i) => s.classList.toggle('active', i === idx));
+    railSpans.forEach((s, i) => s.classList.toggle('on', i === idx));
+    curEl.textContent = idx + 1;
+  }
+  function go(n) {
+    idx = Math.max(0, Math.min(total - 1, n));
+    render();
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === 'PageDown') { e.preventDefault(); go(idx + 1); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); go(idx - 1); }
+    else if (e.key === ' ') { e.preventDefault(); go(idx + 1); }
+    else if (e.key === 'Home') { e.preventDefault(); go(0); }
+    else if (e.key === 'End') { e.preventDefault(); go(total - 1); }
+  });
+  document.addEventListener('click', (e) => {
+    // right half advances, left half goes back
+    if (e.clientX > window.innerWidth * 0.5) go(idx + 1);
+    else go(idx - 1);
+  });
+
+  render();
+</script>
