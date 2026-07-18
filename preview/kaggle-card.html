@@ -1,0 +1,41 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+@font-face { font-family:'Newsreader'; font-weight:400 600; src:url('/static/fonts/newsreader-latin.woff2') format('woff2'); }
+@font-face { font-family:'Source Sans 3'; font-weight:400 600; src:url('/static/fonts/source-sans-3-latin.woff2') format('woff2'); }
+* { margin:0; box-sizing:border-box; }
+body {
+  width:1120px; height:560px; overflow:hidden;
+  background: radial-gradient(120% 90% at 80% 10%, rgba(95,122,97,0.20), rgba(95,122,97,0) 55%),
+              linear-gradient(160deg, #f8f5ef 0%, #f0ebe0 100%);
+  font-family:'Source Sans 3', sans-serif; color:#2b2e2a;
+  display:flex; align-items:center; position:relative;
+  -webkit-font-smoothing: antialiased;
+}
+body::before { content:""; position:absolute; inset:0; opacity:0.5;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E"); }
+.left { flex:1; padding:0 0 0 84px; position:relative; }
+h1 { font-family:'Newsreader', serif; font-size:88px; font-weight:500; letter-spacing:-0.02em; }
+.tag { font-family:'Newsreader', serif; font-style:italic; font-size:30px; color:#6b6659; margin-top:6px; }
+.badge { display:inline-flex; align-items:center; gap:9px; margin-top:34px; font-size:19px; font-weight:600; color:#47614a;
+  background:rgba(255,255,255,0.7); border:1.5px solid rgba(95,122,97,0.3); border-radius:999px; padding:10px 22px; }
+.badge svg { width:18px; height:18px; }
+.right { width:460px; height:100%; display:grid; place-items:center; position:relative; }
+.ring { position:absolute; border-radius:999px; border:1.5px solid rgba(95,122,97,0.25); }
+.r1 { width:340px; height:340px; }
+.r2 { width:264px; height:264px; border-color:rgba(95,122,97,0.35); }
+.btn { width:190px; height:190px; border-radius:999px; position:relative;
+  background: radial-gradient(120% 120% at 30% 20%, #79936f 0%, #5f7a61 45%, #48604b 100%);
+  box-shadow: 0 4px 8px rgba(43,46,42,0.15), 0 24px 60px rgba(95,122,97,0.5), inset 0 2px 2px rgba(255,255,255,0.35);
+  display:grid; place-items:center; }
+.btn svg { width:58px; height:58px; color:#fff; filter:drop-shadow(0 1px 2px rgba(0,0,0,0.15)); }
+</style></head><body>
+<div class="left">
+  <h1>Debrief</h1>
+  <div class="tag">post-session admin, in one breath</div>
+  <div class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>On-device Gemma 4. Nothing leaves the Mac.</div>
+</div>
+<div class="right">
+  <div class="ring r1"></div><div class="ring r2"></div>
+  <div class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></div>
+</div>
+</body></html>
