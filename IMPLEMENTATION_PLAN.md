@@ -9,14 +9,14 @@ Working title: **Debrief** (fallback: CaseNotes). This document is LLM-ready: an
 
 ## 1. Executive Summary
 
-After every session, a therapist does 15-30 minutes of admin: write the progress note, book the follow-up, send the client their homework/confirmation. **Debrief collapses all of it into one spoken debrief.** The therapist talks for 60-90 seconds; the agent:
+After every session, a therapist does 15-30 minutes of admin: write the progress note, book the follow-up, send the client their homework/confirmation. **Debrief collapses all of it into one spoken debrief.** Between sessions, its Clinician Voice Journal lets the therapist dictate observations and session-prep thoughts while context is fresh. The therapist talks for 60-90 seconds; the agent:
 
 1. Generates an audit-compliant DAP progress note (local Gemma 4) and files it in the Obsidian client vault, opening it on screen.
 2. Books the follow-up appointment in Apple Calendar (visible on screen).
 3. Drafts the client email in Apple Mail (confirmation + attached worksheet), left open for the therapist to review and send.
 4. **Closes the loop with screen understanding:** screenshots the results and has Gemma 4 (vision) read the actual screen to verify the appointment and note exist as requested, then reports what it saw.
 
-Everything runs locally. PHI never leaves the Mac. No BAA needed because there is nothing to sign.
+The intended deployment keeps transcription, model inference, vault data, and screen captures on clinician-controlled hardware. The demo uses fictional clients only. This is not a HIPAA-compliance claim and a production deployment needs a formal privacy, security, retention, and legal review.
 
 **Status of the #1 pre-build risk: RESOLVED.** Tested 2026-07-17 on `gemma-4-12b-it-qat` with thinking toggled OFF: a mock transcript containing suicidal ideation produced a high-quality SOAP note with no refusal, and the model spontaneously appended a clinician reminder to document risk level and safety plan. Structured generation on SI content is confirmed viable.
 
@@ -54,13 +54,15 @@ Everything runs locally. PHI never leaves the Mac. No BAA needed because there i
 **Persona:** Solo private-practice therapist, Mac user.
 
 **Core loop (must ship):**
-1. Pick client (or create new) → tap Record → speak the debrief → Stop.
+1. Pick client (or create new) → choose Post-session Debrief or Clinician Voice Journal → tap Record → speak → Stop.
 2. On-device STT → transcript shown briefly.
 3. Gemma 4 extracts: (a) note content, (b) requested actions with parameters (follow-up datetime, email intent + attachment reference).
 4. Action plan shown as checklist ("File DAP note · Book Tue Jul 21 3:00 PM · Draft email with thought-record worksheet") → therapist taps Approve (one confirmation gate, then the agent runs unattended).
 5. Agent executes: writes note to vault + opens it in Obsidian; creates Calendar event; creates Mail draft with attachment.
 6. Verification pass: screenshot each surface → Gemma 4 vision confirms → agent reports results with what it actually saw.
 7. Next-session suggestions panel (from prior plan, unchanged): options only, therapist decides.
+
+**Clinician Voice Journal mode:** writes a dated, review-required observation or session-prep draft into `Clients/<id>/Voice-Journal/`. It never schedules, drafts email, signs documentation, or sends anything. This is the lowest-risk first demonstration of the voice-to-action loop outside a live session.
 
 **Should ship:** voice correction turn ("change it to 4pm"): agent re-reads current screen/calendar state, amends the event, re-verifies.
 
@@ -117,7 +119,7 @@ Unchanged from prior research:
 
 ## 6. LLM Layer: Gemma 4, Three Roles
 
-**Model (CONFIRMED by direct test):** `gemma-4-12b-it-qat`, thinking OFF. Serve via Ollama (`ollama pull gemma4:12b-qat` or match whatever runtime the confirmed test used; keep the exact same model + settings that passed the SI test). ~8GB class on disk; fine on 16GB+ M-series. If RAM contention appears alongside STT + browser: `gemma4:e4b` fallback, but re-run the SI test on it before trusting it.
+**Model:** use a local Gemma 4 E4B runtime for the 18 GB demo Mac. It is small enough to coexist with transcription and the desktop apps. The prior 12B test is useful evidence, but it is not the stage configuration; rerun the required structured-note and safety tests on E4B before relying on it. The app accepts any local OpenAI-compatible Gemma endpoint so the exact runtime can be swapped without changing orchestration.
 
 **Role 1: Intent + note extraction (one call).** Input: corrected transcript + client profile + treatment plan + framework. Output (JSON-schema constrained via Ollama structured output):
 ```json
@@ -209,7 +211,7 @@ Fallback assets ready: pre-recorded debrief wav (if mic/room noise fails), pre-w
 | Ollama cold start on stage | Medium | Warmup call before demo slot. |
 | Hermes time sink | Medium | Stretch-only, 2h box, zero core dependency. |
 
-**Claims discipline (writeup + demo):** "no BAA needed" (developer never touches PHI), never "HIPAA compliant." Email always a draft. Suggestions are options; the signed note and the sent email are the clinician's decisions.
+**Claims discipline (writeup + demo):** describe the fictional-data demo and local processing plainly. Never claim "HIPAA compliant," "no BAA needed," or that local deployment alone satisfies legal obligations. Email always remains a draft. Suggestions are options; the signed note and the sent email are the clinician's decisions.
 
 ---
 
