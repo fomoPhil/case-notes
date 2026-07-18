@@ -1,0 +1,133 @@
+{
+  "_meta": {
+    "purpose": "Jargon-torture eval for debrief.stt.correct_transcript. Each case feeds a realistically STT-mangled sentence through the glossary correction pass and checks that clinical terms are (present) recovered or (absent) NOT hallucinated. Matching is CASE-SENSITIVE so the SUDs (scale) vs suds (dish soap) distinction is real. present = every listed term must appear; present_any = at least one must appear; absent = none may appear.",
+    "pass_threshold": 0.85
+  },
+  "cases": [
+    {
+      "id": "emdr-suds",
+      "framework": "EMDR",
+      "mangled": "toward the end his suds rating dropped to a two which was real progress",
+      "present": ["SUDs"]
+    },
+    {
+      "id": "emdr-bilateral",
+      "framework": "EMDR",
+      "mangled": "we did buy lateral stimulation with the eye movements on that memory",
+      "present": ["bilateral stimulation"]
+    },
+    {
+      "id": "emdr-voc",
+      "framework": "EMDR",
+      "mangled": "her vock on the positive cognition came up to a six by the close",
+      "present_any": ["VOC"]
+    },
+    {
+      "id": "emdr-nc",
+      "framework": "EMDR",
+      "mangled": "the target memory brought up a strong en see of i am not safe",
+      "present_any": ["NC", "negative cognition"]
+    },
+    {
+      "id": "med-sertraline",
+      "framework": "CBT",
+      "mangled": "the client started on certain leen fifty milligrams two weeks ago",
+      "present": ["sertraline"]
+    },
+    {
+      "id": "med-bupropion",
+      "framework": "CBT",
+      "mangled": "we discussed switching to bue pro pee on for the low energy",
+      "present": ["bupropion"]
+    },
+    {
+      "id": "med-escitalopram",
+      "framework": "CBT",
+      "mangled": "she is currently taking as it all a pram ten milligrams each morning",
+      "present": ["escitalopram"]
+    },
+    {
+      "id": "med-trazodone",
+      "framework": "CBT",
+      "mangled": "we added traza doan at night to help with the sleep onset",
+      "present": ["trazodone"]
+    },
+    {
+      "id": "med-venlafaxine",
+      "framework": "CBT",
+      "mangled": "the psychiatrist bumped his ven la faxine up to one fifty",
+      "present": ["venlafaxine"]
+    },
+    {
+      "id": "family-genogram",
+      "framework": "FAMILY SYSTEMS",
+      "mangled": "we drew out her jean oh gram going back three generations on the mother's side",
+      "present": ["genogram"]
+    },
+    {
+      "id": "family-triangulation",
+      "framework": "FAMILY SYSTEMS",
+      "mangled": "there was clear try angulation between the parents and the oldest son",
+      "present": ["triangulation"]
+    },
+    {
+      "id": "dbt-diary-card",
+      "framework": "DBT",
+      "mangled": "she filled out her dairy card every single day this week",
+      "present": ["diary card"]
+    },
+    {
+      "id": "act-defusion",
+      "framework": "ACT",
+      "mangled": "we practiced cognitive de fusion from the thought that he is a failure",
+      "present": ["defusion"]
+    },
+    {
+      "id": "name-bob-smith",
+      "client_id": "C-0001",
+      "framework": "CBT",
+      "mangled": "my session today with bob smyth focused mostly on the work stress",
+      "present": ["Bob Smith"]
+    },
+    {
+      "id": "risk-si",
+      "framework": "CBT",
+      "mangled": "he endorsed passive ess eye this week but without any plan or intent",
+      "present_any": ["SI", "suicidal ideation"]
+    },
+    {
+      "id": "dx-gad-mdd",
+      "framework": "CBT",
+      "mangled": "the screening was consistent with both g a d and m d d",
+      "present": ["GAD", "MDD"]
+    },
+    {
+      "id": "neg-suds-dishes",
+      "framework": "EMDR",
+      "mangled": "she described standing at the sink doing the dishes with suds everywhere and feeling calm",
+      "present": ["suds"],
+      "absent": ["SUDs"]
+    },
+    {
+      "id": "neg-watch",
+      "framework": "DBT",
+      "mangled": "he kept checking his watch during the tense conversation with his boss",
+      "present": ["watch"],
+      "absent": ["chain analysis"]
+    },
+    {
+      "id": "neg-chain-of-events",
+      "framework": "DBT",
+      "mangled": "a chain of events at the airport meant she missed her connecting flight home",
+      "present": ["chain of events"],
+      "absent": ["chain analysis"]
+    },
+    {
+      "id": "neg-diary-journal",
+      "framework": "DBT",
+      "mangled": "the diary she keeps at home is really just a personal journal of her days",
+      "present_any": ["diary", "journal"],
+      "absent": ["diary card"]
+    }
+  ]
+}

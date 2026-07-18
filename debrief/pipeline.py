@@ -271,17 +271,9 @@ def transcribe_and_extract(wav_path: str, client_id: str) -> dict:
         errors.append({"stage": "transcribe", "error": str(exc)})
     timings["transcribe"] = round(time.perf_counter() - t0, 2)
 
-    # --- glossary correction ----------------------------------------------
-    corrected = transcript
-    t0 = time.perf_counter()
-    try:
-        corrected = stt.correct_transcript(transcript)
-    except Exception as exc:
-        errors.append({"stage": "correct", "error": str(exc)})
-        corrected = transcript
-    timings["correct"] = round(time.perf_counter() - t0, 2)
-
     # --- client context ----------------------------------------------------
+    # Fetched before correction so the glossary pass can bias ambiguous words
+    # toward this client's known name, diagnoses, medications, and framework.
     client_ctx: dict = {}
     t0 = time.perf_counter()
     try:
@@ -293,6 +285,16 @@ def transcribe_and_extract(wav_path: str, client_id: str) -> dict:
     framework = client_ctx.get("framework") or "CBT"
     client_name = client_ctx.get("name") or client_id
     first_name = _first_name(client_name)
+
+    # --- glossary correction ----------------------------------------------
+    corrected = transcript
+    t0 = time.perf_counter()
+    try:
+        corrected = stt.correct_transcript(transcript, client_ctx, framework)
+    except Exception as exc:
+        errors.append({"stage": "correct", "error": str(exc)})
+        corrected = transcript
+    timings["correct"] = round(time.perf_counter() - t0, 2)
 
     # --- extraction (brain) ------------------------------------------------
     # client_context() nests a full "profile" frontmatter dict that duplicates

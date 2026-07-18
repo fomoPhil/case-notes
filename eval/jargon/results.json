@@ -1,0 +1,391 @@
+{
+  "generated_at": "2026-07-18T04:00:03",
+  "model": "gemma-4-12b-it-qat (LM Studio localhost:1234)",
+  "threshold": 0.85,
+  "passed": 20,
+  "total": 20,
+  "pass_rate": 1.0,
+  "negative_passed": 4,
+  "negative_total": 4,
+  "overall_pass": true,
+  "rows": [
+    {
+      "id": "emdr-suds",
+      "framework": "EMDR",
+      "negative": false,
+      "mangled": "toward the end his suds rating dropped to a two which was real progress",
+      "corrected": "toward the end his SUDs rating dropped to a two which was real progress",
+      "checks": [
+        {
+          "kind": "present",
+          "term": "SUDs",
+          "pass": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 4.74
+    },
+    {
+      "id": "emdr-bilateral",
+      "framework": "EMDR",
+      "negative": false,
+      "mangled": "we did buy lateral stimulation with the eye movements on that memory",
+      "corrected": "we did bilateral stimulation with the eye movements on that target memory",
+      "checks": [
+        {
+          "kind": "present",
+          "term": "bilateral stimulation",
+          "pass": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 1.4
+    },
+    {
+      "id": "emdr-voc",
+      "framework": "EMDR",
+      "negative": false,
+      "mangled": "her vock on the positive cognition came up to a six by the close",
+      "corrected": "her VOC on the positive cognition came up to a six by the close",
+      "checks": [
+        {
+          "kind": "present_any",
+          "term": "VOC",
+          "pass": true,
+          "matched": [
+            "VOC"
+          ]
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 7.02
+    },
+    {
+      "id": "emdr-nc",
+      "framework": "EMDR",
+      "negative": false,
+      "mangled": "the target memory brought up a strong en see of i am not safe",
+      "corrected": "the target memory brought up a strong NC of i am not safe",
+      "checks": [
+        {
+          "kind": "present_any",
+          "term": "NC | negative cognition",
+          "pass": true,
+          "matched": [
+            "NC"
+          ]
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 1.68
+    },
+    {
+      "id": "med-sertraline",
+      "framework": "CBT",
+      "negative": false,
+      "mangled": "the client started on certain leen fifty milligrams two weeks ago",
+      "corrected": "the client started on sertraline fifty milligrams two weeks ago",
+      "checks": [
+        {
+          "kind": "present",
+          "term": "sertraline",
+          "pass": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 4.78
+    },
+    {
+      "id": "med-bupropion",
+      "framework": "CBT",
+      "negative": false,
+      "mangled": "we discussed switching to bue pro pee on for the low energy",
+      "corrected": "we discussed switching to bupropion for the low energy",
+      "checks": [
+        {
+          "kind": "present",
+          "term": "bupropion",
+          "pass": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 1.26
+    },
+    {
+      "id": "med-escitalopram",
+      "framework": "CBT",
+      "negative": false,
+      "mangled": "she is currently taking as it all a pram ten milligrams each morning",
+      "corrected": "she is currently taking escitalopram ten milligrams each morning",
+      "checks": [
+        {
+          "kind": "present",
+          "term": "escitalopram",
+          "pass": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 5.72
+    },
+    {
+      "id": "med-trazodone",
+      "framework": "CBT",
+      "negative": false,
+      "mangled": "we added traza doan at night to help with the sleep onset",
+      "corrected": "we added trazodone at night to help with the sleep onset",
+      "checks": [
+        {
+          "kind": "present",
+          "term": "trazodone",
+          "pass": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 1.54
+    },
+    {
+      "id": "med-venlafaxine",
+      "framework": "CBT",
+      "negative": false,
+      "mangled": "the psychiatrist bumped his ven la faxine up to one fifty",
+      "corrected": "the psychiatrist bumped his venlafaxine up to one fifty",
+      "checks": [
+        {
+          "kind": "present",
+          "term": "venlafaxine",
+          "pass": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 1.68
+    },
+    {
+      "id": "family-genogram",
+      "framework": "FAMILY SYSTEMS",
+      "negative": false,
+      "mangled": "we drew out her jean oh gram going back three generations on the mother's side",
+      "corrected": "we drew out her genogram going back three generations on the mother's side",
+      "checks": [
+        {
+          "kind": "present",
+          "term": "genogram",
+          "pass": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 7.53
+    },
+    {
+      "id": "family-triangulation",
+      "framework": "FAMILY SYSTEMS",
+      "negative": false,
+      "mangled": "there was clear try angulation between the parents and the oldest son",
+      "corrected": "there was clear triangulation between the parents and the oldest son",
+      "checks": [
+        {
+          "kind": "present",
+          "term": "triangulation",
+          "pass": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 1.4
+    },
+    {
+      "id": "dbt-diary-card",
+      "framework": "DBT",
+      "negative": false,
+      "mangled": "she filled out her dairy card every single day this week",
+      "corrected": "she filled out her diary card every single day this week",
+      "checks": [
+        {
+          "kind": "present",
+          "term": "diary card",
+          "pass": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 4.37
+    },
+    {
+      "id": "act-defusion",
+      "framework": "ACT",
+      "negative": false,
+      "mangled": "we practiced cognitive de fusion from the thought that he is a failure",
+      "corrected": "we practiced cognitive defusion from the thought that he is a failure",
+      "checks": [
+        {
+          "kind": "present",
+          "term": "defusion",
+          "pass": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 4.43
+    },
+    {
+      "id": "name-bob-smith",
+      "framework": "CBT",
+      "negative": false,
+      "mangled": "my session today with bob smyth focused mostly on the work stress",
+      "corrected": "my session today with Bob Smith focused mostly on the work stress",
+      "checks": [
+        {
+          "kind": "present",
+          "term": "Bob Smith",
+          "pass": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 4.56
+    },
+    {
+      "id": "risk-si",
+      "framework": "CBT",
+      "negative": false,
+      "mangled": "he endorsed passive ess eye this week but without any plan or intent",
+      "corrected": "he endorsed passive SI this week but without any plan or intent",
+      "checks": [
+        {
+          "kind": "present_any",
+          "term": "SI | suicidal ideation",
+          "pass": true,
+          "matched": [
+            "SI"
+          ]
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 13.02
+    },
+    {
+      "id": "dx-gad-mdd",
+      "framework": "CBT",
+      "negative": false,
+      "mangled": "the screening was consistent with both g a d and m d d",
+      "corrected": "the screening was consistent with both GAD and MDD",
+      "checks": [
+        {
+          "kind": "present",
+          "term": "GAD",
+          "pass": true
+        },
+        {
+          "kind": "present",
+          "term": "MDD",
+          "pass": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 1.32
+    },
+    {
+      "id": "neg-suds-dishes",
+      "framework": "EMDR",
+      "negative": true,
+      "mangled": "she described standing at the sink doing the dishes with suds everywhere and feeling calm",
+      "corrected": "she described standing at the sink doing the dishes with suds everywhere and feeling calm",
+      "checks": [
+        {
+          "kind": "present",
+          "term": "suds",
+          "pass": true
+        },
+        {
+          "kind": "absent",
+          "term": "SUDs",
+          "pass": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 5.04
+    },
+    {
+      "id": "neg-watch",
+      "framework": "DBT",
+      "negative": true,
+      "mangled": "he kept checking his watch during the tense conversation with his boss",
+      "corrected": "he kept checking his watch during the tense conversation with his boss",
+      "checks": [
+        {
+          "kind": "present",
+          "term": "watch",
+          "pass": true
+        },
+        {
+          "kind": "absent",
+          "term": "chain analysis",
+          "pass": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 4.52
+    },
+    {
+      "id": "neg-chain-of-events",
+      "framework": "DBT",
+      "negative": true,
+      "mangled": "a chain of events at the airport meant she missed her connecting flight home",
+      "corrected": "a chain of events at the airport meant she missed her connecting flight home",
+      "checks": [
+        {
+          "kind": "present",
+          "term": "chain of events",
+          "pass": true
+        },
+        {
+          "kind": "absent",
+          "term": "chain analysis",
+          "pass": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 1.75
+    },
+    {
+      "id": "neg-diary-journal",
+      "framework": "DBT",
+      "negative": true,
+      "mangled": "the diary she keeps at home is really just a personal journal of her days",
+      "corrected": "the diary she keeps at home is really just a personal journal of her days",
+      "checks": [
+        {
+          "kind": "present_any",
+          "term": "diary | journal",
+          "pass": true,
+          "matched": [
+            "diary",
+            "journal"
+          ]
+        },
+        {
+          "kind": "absent",
+          "term": "diary card",
+          "pass": true
+        }
+      ],
+      "passed": true,
+      "error": null,
+      "latency_s": 1.92
+    }
+  ]
+}
