@@ -3,3 +3,6 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 demo_vault/
+.claude/settings.local.json
+.DS_Store
+recordings/
