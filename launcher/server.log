@@ -19,3 +19,8 @@ INFO:     127.0.0.1:58722 - "GET / HTTP/1.1" 200 OK
 INFO:     127.0.0.1:58723 - "GET /fonts/source-sans-3-latin.woff2 HTTP/1.1" 304 Not Modified
 INFO:     127.0.0.1:58722 - "GET /api/clients HTTP/1.1" 200 OK
 INFO:     127.0.0.1:58724 - "GET /fonts/newsreader-latin.woff2 HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:64058 - "GET /api/clients HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [53877]

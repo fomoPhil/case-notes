@@ -1,6 +1,6 @@
 # Debrief Evaluation Results
 
-Generated: 2026-07-18T01:40:56  
+Generated: 2026-07-18T04:10:30  
 Fixed now: 2026-07-18T10:00:00 (Saturday)  
 Model: local Gemma via LM Studio  
 **Overall: PASS**
@@ -9,17 +9,17 @@ Model: local Gemma via LM Studio
 
 | Transcript | Framework | DAP | Trio | Risk | Ground | NoEmDash | Actions | Weekday | Vocab | Latency (s) | Overall |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 01_bob_cbt_si | CBT | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | 28.04 | PASS |
-| 02_marcus_meds | CBT | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | 20.33 | PASS |
-| 03_jane_act | ACT | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | 25.36 | PASS |
-| 04_rosa_family | FAMILY SYSTEMS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | 27.34 | PASS |
-| 05_tom_rambling | CBT | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | 25.64 | PASS |
+| 01_bob_cbt_si | CBT | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | 190.36 | PASS |
+| 02_marcus_meds | CBT | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | 102.66 | PASS |
+| 03_jane_act | ACT | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | 124.87 | PASS |
+| 04_rosa_family | FAMILY SYSTEMS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | 88.16 | PASS |
+| 05_tom_rambling | CBT | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | 73.65 | PASS |
 
 All note-quality checks passed.
 
 ### Latency
 
-Per-transcript extract() wall time. min 20.33s, mean 25.34s, max 28.04s (n=5). Note: LM Studio may be serving other agents concurrently, so calls can queue and inflate latency.
+Per-transcript extract() wall time. min 73.65s, mean 115.94s, max 190.36s (n=5). Note: LM Studio may be serving other agents concurrently, so calls can queue and inflate latency.
 
 ## Suite 2: Date resolution (deterministic)
 
