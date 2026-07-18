@@ -199,7 +199,7 @@ async def verify_screen(expected: str) -> dict[str, str | bool]:
         return json.loads(response.json()["choices"][0]["message"]["content"])
     except Exception as exc:
         detail = str(exc)
-        if "could not create image from display" in detail:
+        if platform.system() == "Darwin" and (isinstance(exc, subprocess.CalledProcessError) or "could not create image from display" in detail):
             detail = "Screen Recording permission is required for live visual verification."
         return {"confirmed": False, "what_i_see": f"Screen verification failed: {detail}"}
     finally:
