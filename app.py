@@ -14,9 +14,11 @@ Run:  .venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8377
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import tempfile
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -25,10 +27,19 @@ from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from debrief import pipeline, vault
+from debrief import config, doctor, models, pipeline, vault
 
 APP_HOST = "127.0.0.1"
 APP_PORT = 8377
+
+# Marker file (in the vault) recording that the first-run wizard has completed.
+# Phase 4 owns creating it; Phase 1 only reports its absence as first_run.
+_SETUP_MARKER = ".debrief_setup_done"
+
+# Cheap cache so /api/debrief and /api/execute can gate on readiness without
+# probing the model server (~1.5s) on every request.
+_DOCTOR_CACHE_TTL = 10.0
+_doctor_cache: dict = {"at": 0.0, "checks": None}
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -68,8 +79,78 @@ app = FastAPI(title="Debrief", docs_url=None, redoc_url=None, lifespan=_lifespan
 
 
 # ---------------------------------------------------------------------------
+# Readiness
+# ---------------------------------------------------------------------------
+
+
+def _cached_checks(force: bool = False) -> list[dict]:
+    """Return doctor.run_checks(), cached for ~10s to keep hot paths fast."""
+    now = time.monotonic()
+    if (
+        not force
+        and _doctor_cache["checks"] is not None
+        and (now - _doctor_cache["at"]) < _DOCTOR_CACHE_TTL
+    ):
+        return _doctor_cache["checks"]
+    checks = doctor.run_checks()
+    _doctor_cache["checks"] = checks
+    _doctor_cache["at"] = now
+    return checks
+
+
+def _first_hard_failure(checks: list[dict]) -> dict | None:
+    """First failing hard check, or None if all hard checks pass."""
+    for c in checks:
+        if c.get("hard") and not c["ok"]:
+            return c
+    return None
+
+
+def _require_model_ready() -> None:
+    """Guard for model-dependent endpoints.
+
+    Raises 503 with the failed hard check's fix text when the model server or
+    model is unavailable, so callers get actionable JSON instead of a raw 500.
+    """
+    checks = _cached_checks()
+    for c in checks:
+        if c["name"] in ("Model server reachable", "Gemma model loaded") and not c["ok"]:
+            raise HTTPException(
+                status_code=503,
+                detail={"error": c["detail"], "fix": c["fix"]},
+            )
+
+
+# ---------------------------------------------------------------------------
 # API
 # ---------------------------------------------------------------------------
+
+
+@app.get("/api/status")
+def api_status() -> JSONResponse:
+    """Report detected servers, active model, vault, checks, and readiness."""
+    checks = _cached_checks(force=True)
+    servers = models.detect_servers()
+    active = models.pick_gemma()
+
+    vault_dir = config.VAULT_DIR
+    vault_info = {
+        "path": str(vault_dir),
+        "exists": vault_dir.exists(),
+        "writable": vault_dir.exists() and os.access(vault_dir, os.W_OK),
+    }
+
+    ready = _first_hard_failure(checks) is None
+    first_run = not (vault_dir / _SETUP_MARKER).exists()
+
+    return JSONResponse({
+        "servers": servers,
+        "active_model": active,
+        "vault": vault_info,
+        "checks": checks,
+        "ready": ready,
+        "first_run": first_run,
+    })
 
 
 @app.get("/api/clients")
@@ -128,6 +209,7 @@ async def api_debrief(
     client_id: str = Form(...),
 ) -> JSONResponse:
     """Transcribe + extract the uploaded debrief. Returns the plan, no execution."""
+    _require_model_ready()
     data = await audio.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty audio upload.")
@@ -151,6 +233,7 @@ async def api_debrief(
 @app.post("/api/execute")
 async def api_execute(request: Request) -> JSONResponse:
     """Execute an approved plan: actions + note write + verification."""
+    _require_model_ready()
     try:
         plan = await request.json()
     except Exception as exc:
