@@ -74,6 +74,30 @@ def test_note_view_path_guard(client):
     assert tc.get("/api/notes", params={"path": "../secret.md"}).status_code == 400
 
 
+def test_malformed_markdown_documents_still_list(client):
+    tc, vault_dir = client
+    docs_dir = vault_dir / "Clients" / "C-0001" / "Documents"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    # Broken YAML frontmatter and scalar (non-dict) frontmatter must not 500.
+    (docs_dir / "broken.md").write_text(
+        "---\ntitle: [unclosed\n---\n\n# Broken Doc\n\nBody.\n", encoding="utf-8"
+    )
+    (docs_dir / "scalar.md").write_text(
+        "---\nhello\n---\n\n# Scalar Doc\n", encoding="utf-8"
+    )
+    resp = tc.get("/api/clients/C-0001")
+    assert resp.status_code == 200
+    docs = resp.json()["documents"]
+    by_title = {d["title"]: d for d in docs}
+    assert "Broken Doc" in by_title and "Scalar Doc" in by_title
+    assert by_title["Broken Doc"]["kind"] == "markdown"
+    assert by_title["Scalar Doc"]["kind"] == "markdown"
+    # /api/notes on the malformed file stays usable (200, renders a fragment).
+    note = tc.get("/api/notes", params={"path": "Clients/C-0001/Documents/broken.md"})
+    assert note.status_code == 200
+    assert "Broken Doc" in note.json()["html"]
+
+
 # ---------------------------------------------------------------------------
 # Amend + save
 # ---------------------------------------------------------------------------

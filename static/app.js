@@ -830,7 +830,8 @@ function firstName(name) { return (name || "").trim().split(/\s+/)[0] || "client
 function fmtNextSession(iso) {
   if (!iso) return "Not scheduled";
   const d = new Date(iso);
-  if (isNaN(d.getTime())) return esc(String(iso));
+  // Return plain text; the sole caller escapes the result (avoids double-escape).
+  if (isNaN(d.getTime())) return String(iso);
   const day = d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
   return `${day} · ${fmtClock(d)}`;
 }

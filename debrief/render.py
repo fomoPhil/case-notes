@@ -21,8 +21,10 @@ No em dashes anywhere in generated copy.
 
 from __future__ import annotations
 
+import html as _html
 import os
 import shutil
+from html.parser import HTMLParser
 from pathlib import Path
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -85,6 +87,109 @@ def _no_em_dash(text: str) -> str:
     return text.replace("—", "-").replace("―", "-")
 
 
+# ---------------------------------------------------------------------------
+# HTML sanitizer (stdlib-only allowlist)
+# ---------------------------------------------------------------------------
+#
+# Uploaded markdown can carry raw inline HTML (python-markdown's `extra` passes
+# it through). The records document view injects the rendered fragment via
+# innerHTML, so an unsanitized <img onerror=...> or <script> would execute in
+# the therapist's browser. We run the produced HTML through a small allowlist
+# sanitizer built on the stdlib html.parser: no new dependency, and only known
+# structural tags survive. All on* event handlers and style are stripped, and
+# script/style/iframe/object/embed are dropped along with their contents.
+
+_ALLOWED_TAGS = {
+    "h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "li", "strong", "em",
+    "code", "pre", "blockquote", "table", "thead", "tbody", "tr", "th", "td",
+    "hr", "br", "a", "img", "details", "summary",
+}
+_VOID_TAGS = {"br", "hr", "img"}
+# Dangerous containers: drop the tag and everything inside it.
+_DROP_CONTENT_TAGS = {"script", "style", "iframe", "object", "embed"}
+# Per-tag attribute allowlist (everything else, including on* and style, drops).
+_ALLOWED_ATTRS = {"a": {"href"}, "img": {"src"}}
+
+
+def _safe_href(val: str) -> bool:
+    v = (val or "").strip().lower()
+    return v.startswith("http://") or v.startswith("https://")
+
+
+def _safe_img_src(val: str) -> bool:
+    # Vault-internal images only: a single leading slash, not protocol-relative.
+    v = (val or "").strip()
+    return v.startswith("/") and not v.startswith("//")
+
+
+class _Sanitizer(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.out: list[str] = []
+        self._skip_depth = 0
+
+    def _emit_start(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in _DROP_CONTENT_TAGS:
+            return
+        if self._skip_depth or tag not in _ALLOWED_TAGS:
+            return
+        allowed = _ALLOWED_ATTRS.get(tag, set())
+        clean: list[str] = []
+        for name, val in attrs:
+            lname = (name or "").lower()
+            if lname.startswith("on") or lname == "style" or lname not in allowed:
+                continue
+            if val is None:
+                continue
+            if tag == "a" and lname == "href" and not _safe_href(val):
+                continue
+            if tag == "img" and lname == "src" and not _safe_img_src(val):
+                continue
+            clean.append(f' {lname}="{_html.escape(val, quote=True)}"')
+        joined = "".join(clean)
+        if tag in _VOID_TAGS:
+            self.out.append(f"<{tag}{joined} />")
+        else:
+            self.out.append(f"<{tag}{joined}>")
+
+    def handle_starttag(self, tag, attrs):
+        if tag in _DROP_CONTENT_TAGS:
+            self._skip_depth += 1
+            return
+        self._emit_start(tag, attrs)
+
+    def handle_startendtag(self, tag, attrs):
+        # Self-closing form (e.g. <img/>, <br/>): never opens a skip region.
+        self._emit_start(tag, attrs)
+
+    def handle_endtag(self, tag):
+        if tag in _DROP_CONTENT_TAGS:
+            if self._skip_depth:
+                self._skip_depth -= 1
+            return
+        if self._skip_depth or tag not in _ALLOWED_TAGS or tag in _VOID_TAGS:
+            return
+        self.out.append(f"</{tag}>")
+
+    def handle_data(self, data):
+        if self._skip_depth:
+            return
+        self.out.append(_html.escape(data, quote=False))
+
+
+def sanitize_fragment(html_fragment: str) -> str:
+    """Allowlist-sanitize an HTML fragment so it is safe to inject via innerHTML.
+
+    Keeps structural tags (headings, lists, tables, code, details/summary),
+    strips every event-handler and style attribute, and removes
+    script/style/iframe/object/embed along with their contents.
+    """
+    parser = _Sanitizer()
+    parser.feed(html_fragment or "")
+    parser.close()
+    return "".join(parser.out)
+
+
 def markdown_to_html(md: str, title: str = "Document") -> str:
     """Render markdown to a full, self-contained Quiet Sage HTML document.
 
@@ -95,9 +200,11 @@ def markdown_to_html(md: str, title: str = "Document") -> str:
     """
     import markdown as _markdown
 
-    body_html = _markdown.markdown(
-        _no_em_dash(md or ""),
-        extensions=["extra", "tables", "sane_lists"],
+    body_html = sanitize_fragment(
+        _markdown.markdown(
+            _no_em_dash(md or ""),
+            extensions=["extra", "tables", "sane_lists"],
+        )
     )
     css = _read_css()
     safe_title = _no_em_dash(title or "Document")
@@ -126,9 +233,11 @@ def markdown_to_fragment(md: str) -> str:
     """
     import markdown as _markdown
 
-    return _markdown.markdown(
-        _no_em_dash(md or ""),
-        extensions=["extra", "tables", "sane_lists"],
+    return sanitize_fragment(
+        _markdown.markdown(
+            _no_em_dash(md or ""),
+            extensions=["extra", "tables", "sane_lists"],
+        )
     )
 
 

@@ -46,7 +46,15 @@ def _split_frontmatter(text: str) -> tuple[dict, str]:
     if text.startswith("---"):
         parts = text.split("---", 2)
         if len(parts) == 3:
-            fm = yaml.safe_load(parts[1]) or {}
+            # A malformed/scalar frontmatter block must never crash a listing or
+            # a note read: broken YAML and non-mapping frontmatter both fall back
+            # to an empty dict so callers can safely .get() the result.
+            try:
+                fm = yaml.safe_load(parts[1])
+            except Exception:
+                fm = None
+            if not isinstance(fm, dict):
+                fm = {}
             return fm, parts[2].lstrip("\n")
     return {}, text
 
