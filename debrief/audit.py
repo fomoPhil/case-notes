@@ -250,6 +250,41 @@ def log_assistant_run(run: dict) -> Path | None:
         return None
 
 
+def log_records_change(action: str, path: str, detail: str = "") -> Path | None:
+    """Append one activity-log entry for a records-UI change. Failure-safe.
+
+    action: a short verb phrase (e.g. "Renamed", "Amended", "Uploaded",
+            "Moved to trash", "Restored"). path: the vault-relative path
+            affected. detail: an optional human note.
+    """
+    try:
+        now = _dt.datetime.now()
+        today = now.date().isoformat()
+        day_file = VAULT_DIR / _ACTIVITY_DIRNAME / f"{today}.md"
+
+        try:
+            rel = Path(path).relative_to(VAULT_DIR)
+        except ValueError:
+            rel = Path(path)
+        target = f"[[{str(rel.with_suffix(''))}|{rel.stem}]]" if str(rel) else "?"
+
+        lines = [f"### {_fmt_time(now)} · {action}"]
+        lines.append(f"- File: {target}")
+        if detail:
+            lines.append(f"- Detail: {_truncate(detail, 160)}")
+        entry = _no_em_dash("\n".join(lines) + "\n")
+
+        if day_file.exists():
+            existing = day_file.read_text(encoding="utf-8").rstrip("\n")
+            content = f"{existing}\n\n{entry}"
+        else:
+            content = _header(today) + entry
+        _atomic_append(day_file, content)
+        return day_file
+    except Exception:  # noqa: BLE001 - logging must never break the request
+        return None
+
+
 def log_debrief_run(result: dict) -> Path | None:
     """Append one activity-log entry for an executed debrief. Failure-safe.
 

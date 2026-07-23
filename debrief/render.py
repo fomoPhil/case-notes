@@ -118,6 +118,20 @@ def markdown_to_html(md: str, title: str = "Document") -> str:
     )
 
 
+def markdown_to_fragment(md: str) -> str:
+    """Render markdown to a body-only HTML fragment (no document wrapper).
+
+    Suitable for embedding inside a page that already provides the Quiet Sage
+    styling (the records document view wraps this in a `.document` container).
+    """
+    import markdown as _markdown
+
+    return _markdown.markdown(
+        _no_em_dash(md or ""),
+        extensions=["extra", "tables", "sane_lists"],
+    )
+
+
 def pdf_available() -> bool:
     """True if WeasyPrint can import and produce a trivial PDF on this machine.
 
