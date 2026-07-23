@@ -534,6 +534,29 @@
   .actions-bar { display: flex; align-items: center; gap: 12px; margin-top: 26px; }
   .actions-bar .grow { flex: 1; }
 
+  /* Assistant entry point + cards */
+  .asst-entry { display: flex; align-items: center; gap: 12px; margin-top: 22px; flex-wrap: wrap; }
+  .btn-asst { border: 1px dashed var(--line); border-radius: var(--radius-sm); padding: 9px 14px; }
+  .btn-asst:hover { border-color: var(--soft-sage); background: var(--accent-soft); color: var(--accent-ink); }
+  .asst-hint { font-size: 12.5px; color: var(--ink-faint); }
+  .asst-card { display: flex; flex-direction: column; gap: 14px; }
+  .asst-lead { font-size: 14px; color: var(--ink-soft); text-wrap: pretty; }
+  .asst-textarea {
+    width: 100%; font-family: var(--font-sans); font-size: 15px; color: var(--ink);
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-sm);
+    padding: 12px 14px; resize: vertical; line-height: 1.5;
+  }
+  .asst-textarea:focus { outline: none; border-color: var(--soft-sage); box-shadow: 0 0 0 3px var(--focus); }
+  .asst-actions { display: flex; align-items: center; gap: 10px; }
+  .asst-actions .grow { flex: 1; }
+  #asstMic.recording { color: var(--terracotta); border-color: var(--terracotta); }
+  .asst-final p { font-family: var(--font-serif); font-size: 16px; line-height: 1.6; color: var(--ink); }
+  .asst-preview {
+    font-family: var(--font-serif); font-size: 13.5px; line-height: 1.5; color: var(--ink-soft);
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 12px; margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto;
+  }
+
   .result-action {
     display: flex; align-items: flex-start; gap: 12px;
     padding: 13px 0;
@@ -616,6 +639,8 @@ const App = {
   analyser: null,
   raf: null,
   procTimers: [],
+  recMode: "debrief",
+  assistant: null,
 };
 
 const el = document.getElementById("app");
@@ -707,7 +732,10 @@ function render() {
     el.appendChild(h(`<div class="banner banner-error">${esc(App.error)}</div>`));
   }
   ({ clients: renderClients, record: renderRecord, processing: renderProcessing,
-     review: renderReview, executing: renderExecuting, results: renderResults }[App.state] || renderClients)();
+     review: renderReview, executing: renderExecuting, results: renderResults,
+     assistant: renderAssistant, assistantThinking: renderAssistantThinking,
+     assistantReview: renderAssistantReview, assistantResults: renderAssistantResults
+   }[App.state] || renderClients)();
 }
 
 function renderClients() {
@@ -732,9 +760,20 @@ function renderClients() {
     grid.appendChild(card);
   });
   el.appendChild(grid);
+
+  const asstRow = h(`<div class="asst-entry">
+    <button class="btn btn-ghost btn-asst" id="asstEntry">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3a4 4 0 0 0-4 4v4a4 4 0 0 0 8 0V7a4 4 0 0 0-4-4z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+      Ask the assistant
+    </button>
+    <span class="asst-hint">Make a worksheet, draft an email, or look something up</span>
+  </div>`);
+  asstRow.querySelector("#asstEntry").onclick = () => { App.assistant = null; go("assistant"); };
+  el.appendChild(asstRow);
 }
 
 function renderRecord() {
+  App.recMode = "debrief";
   const c = App.client;
   const bars = Array.from({ length: 24 }, () => "<i></i>").join("");
   const stage = h(`<div class="panel record-stage enter">
@@ -969,6 +1008,192 @@ function renderResults() {
   el.appendChild(bar);
 }
 
+// ---------------------------------------------------------------------------
+// Assistant (in-app agent): ask -> propose -> approve -> execute
+// ---------------------------------------------------------------------------
+
+function renderAssistant() {
+  el.appendChild(h(`<div class="step-title">Ask the assistant</div>`));
+  const panel = h(`<div class="panel enter d1 asst-card">
+    <div class="asst-lead">Ask for a worksheet, an email draft, or something to look up. Nothing is saved until you approve it.</div>
+    <textarea class="asst-textarea" id="asstText" rows="3" placeholder="For example: make a one page box breathing worksheet for before meetings"></textarea>
+    <div class="asst-actions">
+      <button class="btn btn-ghost" id="asstMic"><span class="asst-mic-ic"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></span><span id="asstMicLabel">Record</span></button>
+      <div class="grow"></div>
+      <button class="btn btn-primary" id="asstSubmit">Ask the assistant</button>
+    </div>
+    <div class="local-note">${LOCK_SVG}Runs on this Mac. Nothing leaves it.</div>
+  </div>`);
+  panel.querySelector("#asstMic").onclick = toggleAssistantRecord;
+  panel.querySelector("#asstSubmit").onclick = () => {
+    const text = (document.getElementById("asstText").value || "").trim();
+    if (text) submitAssistant({ text });
+  };
+  el.appendChild(panel);
+
+  const bar = h(`<div class="actions-bar enter d2">
+    <button class="btn btn-ghost" id="asstBack">&larr; back to clients</button>
+  </div>`);
+  bar.querySelector("#asstBack").onclick = () => go("clients");
+  el.appendChild(bar);
+}
+
+async function toggleAssistantRecord() {
+  if (App.mediaRecorder && App.mediaRecorder.state === "recording") { stopRecord();
+    const l = document.getElementById("asstMicLabel"); if (l) l.textContent = "Record";
+    return;
+  }
+  App.recMode = "assistant";
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    App.error = "Microphone access was blocked. Allow the mic and try again."; render(); return;
+  }
+  App.chunks = [];
+  const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
+  App.mediaRecorder = new MediaRecorder(stream, { mimeType: mime });
+  App.mediaRecorder.ondataavailable = e => { if (e.data.size) App.chunks.push(e.data); };
+  App.mediaRecorder.onstop = onRecordingStopped;
+  App.mediaRecorder.start();
+  const mic = document.getElementById("asstMic");
+  if (mic) mic.classList.add("recording");
+  const l = document.getElementById("asstMicLabel"); if (l) l.textContent = "Stop and send";
+}
+
+async function submitAssistant({ text, blob }) {
+  go("assistantThinking");
+  try {
+    let r;
+    if (blob) {
+      const fd = new FormData();
+      fd.append("audio", blob, "assistant.webm");
+      if (App.client && App.client.client_id) fd.append("client_id", App.client.client_id);
+      r = await fetch("/api/assistant/plan", { method: "POST", body: fd });
+    } else {
+      const payload = { text };
+      if (App.client && App.client.client_id) payload.client_id = App.client.client_id;
+      r = await fetch("/api/assistant/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    }
+    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error((t.detail && (t.detail.fix || t.detail.error || t.detail)) || ("Server error " + r.status)); }
+    const data = await r.json();
+    if (data.route === "session_debrief") {
+      App.assistant = { sessionDebrief: true };
+      go("assistantResults");
+      return;
+    }
+    App.assistant = { finalText: data.final_text, proposals: (data.proposals || []).map(p => ({ ...p, include: true })), rawTranscript: data.raw_transcript };
+    go("assistantReview");
+  } catch (e) {
+    App.error = e.message; go("assistant");
+  }
+}
+
+function renderAssistantThinking() {
+  el.appendChild(h(`<div class="panel processing enter">
+    <div class="spinner"></div>
+    <div class="label">Reading the vault and drafting your request...</div>
+  </div>`));
+}
+
+function renderAssistantReview() {
+  const a = App.assistant || {};
+  el.appendChild(h(`<div class="step-title">The assistant prepared this</div>`));
+
+  if (a.finalText) {
+    el.appendChild(h(`<div class="panel enter d1 asst-final"><p>${esc(a.finalText)}</p></div>`));
+  }
+
+  const proposals = a.proposals || [];
+  if (!proposals.length) {
+    el.appendChild(h(`<div class="panel enter d2"><div class="hint" style="margin:8px auto">No documents or drafts to file. Nothing will be saved.</div></div>`));
+  } else {
+    el.appendChild(h(`<div class="step-title">Approve what to keep</div>`));
+    const list = h(`<div class="panel enter d2"></div>`);
+    proposals.forEach((p, i) => {
+      let title = "", body = "";
+      if (p.type === "worksheet") {
+        title = "Worksheet: " + (p.title || "Untitled");
+        const preview = (p.markdown_body || "").split("\n").filter(Boolean).slice(0, 4).join("\n");
+        body = `<pre class="asst-preview">${esc(preview)}</pre>` + (p.client_id ? `<div class="a-sub">Files under client ${esc(p.client_id)}</div>` : `<div class="a-sub">Files to the shared library</div>`);
+      } else if (p.type === "email") {
+        title = "Email draft to " + esc(p.client_id || "client");
+        body = `<div class="a-sub">Subject: ${esc(p.subject || "")}</div><pre class="asst-preview">${esc((p.body || "").slice(0, 400))}</pre>` + (p.attach_worksheet ? `<div class="a-sub">Attaches the worksheet above</div>` : "");
+      } else {
+        title = esc(p.type || "item");
+      }
+      const row = h(`<label class="action ${p.include ? "on" : "off"}">
+        <input type="checkbox" ${p.include ? "checked" : ""} data-i="${i}" />
+        <div class="body"><div class="a-title">${title}</div>${body}</div>
+      </label>`);
+      const cb = row.querySelector("input");
+      cb.onchange = () => { proposals[i].include = cb.checked; row.classList.toggle("on", cb.checked); row.classList.toggle("off", !cb.checked); };
+      list.appendChild(row);
+    });
+    el.appendChild(list);
+  }
+
+  const anyIncludable = proposals.length > 0;
+  const bar = h(`<div class="actions-bar enter d3">
+    <button class="btn btn-ghost" id="asstDiscard">Discard</button>
+    <div class="grow"></div>
+    ${anyIncludable ? `<button class="btn btn-primary" id="asstApprove">Approve and file</button>` : `<button class="btn btn-primary" id="asstDone">Done</button>`}
+  </div>`);
+  bar.querySelector("#asstDiscard").onclick = () => { App.assistant = null; go("assistant"); };
+  if (anyIncludable) bar.querySelector("#asstApprove").onclick = executeAssistant;
+  else bar.querySelector("#asstDone").onclick = () => { App.assistant = null; go("clients"); };
+  el.appendChild(bar);
+}
+
+async function executeAssistant() {
+  const a = App.assistant || {};
+  const proposals = (a.proposals || []).filter(p => p.include).map(({ include, ...rest }) => rest);
+  if (!proposals.length) { App.assistant = null; go("clients"); return; }
+  const payload = { proposals };
+  if (App.client && App.client.client_id) payload.client_id = App.client.client_id;
+  payload.request = a.rawTranscript || "";
+  go("assistantThinking");
+  try {
+    const r = await fetch("/api/assistant/execute", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error((t.detail && (t.detail.fix || t.detail.error || t.detail)) || ("Server error " + r.status)); }
+    const data = await r.json();
+    App.assistant = { ...a, results: data.results || [] };
+    go("assistantResults");
+  } catch (e) {
+    App.error = e.message; App.state = "assistantReview"; render();
+    el.insertBefore(h(`<div class="banner banner-error">${esc(e.message)}</div>`), el.firstChild);
+  }
+}
+
+function renderAssistantResults() {
+  const a = App.assistant || {};
+  if (a.sessionDebrief) {
+    el.appendChild(h(`<div class="step-title">This sounded like a session debrief</div>`));
+    el.appendChild(h(`<div class="panel enter d1 asst-final"><p>Use New debrief so it is filed properly as a clinical note. The assistant is for making resources, drafting emails, and looking things up.</p></div>`));
+    const bar = h(`<div class="actions-bar enter d2"><div class="grow"></div><button class="btn btn-primary" id="asstToClients">Back to clients</button></div>`);
+    bar.querySelector("#asstToClients").onclick = () => { App.assistant = null; go("clients"); };
+    el.appendChild(bar);
+    return;
+  }
+  el.appendChild(h(`<div class="step-title">Done</div>`));
+  const panel = h(`<div class="panel enter d1"></div>`);
+  (a.results || []).forEach(r => {
+    const title = r.type === "worksheet" ? "Worksheet filed" : r.type === "email" ? "Email draft" : esc(r.type);
+    const detail = r.status === "ok" ? (r.path || r.detail || "done") : (r.error || r.status);
+    panel.appendChild(h(`<div class="result-action">
+      <div class="status-dot status-${esc(r.status)}"></div>
+      <div><div class="r-title">${title}</div><div class="r-detail">${esc(detail)}</div></div>
+    </div>`));
+  });
+  if (!(a.results || []).length) panel.appendChild(h(`<div class="hint" style="margin:8px auto">Nothing was filed.</div>`));
+  el.appendChild(panel);
+  const bar = h(`<div class="actions-bar enter d2">
+    <div class="grow"></div>
+    <button class="btn btn-primary" id="asstAgain">Ask again</button>
+  </div>`);
+  bar.querySelector("#asstAgain").onclick = () => { App.assistant = null; go("assistant"); };
+  el.appendChild(bar);
+}
+
 async function toggleRecord() {
   if (App.mediaRecorder && App.mediaRecorder.state === "recording") { stopRecord(); return; }
   try {
@@ -1043,6 +1268,7 @@ function stopStream() {
 async function onRecordingStopped() {
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
   const blob = new Blob(App.chunks, { type: "audio/webm" });
+  if (App.recMode === "assistant") { submitAssistant({ blob }); return; }
   go("processing");
   const fd = new FormData();
   fd.append("audio", blob, "debrief.webm");
