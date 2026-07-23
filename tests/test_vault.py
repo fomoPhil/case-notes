@@ -220,6 +220,38 @@ def test_update_profile_merges_and_replaces_summary(vault):
     assert "## Sessions" in text, "Sessions tail must be preserved"
 
 
+def test_read_client_file_reads_profile(vault):
+    text = vault.read_client_file("C-0001", "_Profile.md")
+    assert "Bob Smith" in text
+
+
+def test_read_client_file_rejects_traversal(vault):
+    for bad in ("../C-0002/_Profile.md", "/etc/passwd", "..", "Sessions/../../secret"):
+        with pytest.raises((vault.VaultPathError, FileNotFoundError)):
+            vault.read_client_file("C-0001", bad)
+
+
+def test_read_client_file_rejects_bad_client_id(vault):
+    with pytest.raises(vault.VaultPathError):
+        vault.read_client_file("../Templates", "x.md")
+
+
+def test_search_vault_finds_and_snippets(vault):
+    hits = vault.search_vault("DBT")
+    assert hits, "expected at least one DBT hit"
+    assert all(set(h) == {"path", "title", "snippet"} for h in hits)
+    assert any("C-0003" in h["path"] for h in hits)
+
+
+def test_search_vault_empty_query(vault):
+    assert vault.search_vault("") == []
+
+
+def test_search_vault_skips_private(vault):
+    hits = vault.search_vault("psychotherapy")
+    assert all("Private" not in h["path"] for h in hits)
+
+
 def test_obsidian_uri_format(vault, monkeypatch):
     # Do not actually launch Obsidian during the test.
     monkeypatch.setattr(vault.subprocess, "run", lambda *a, **k: None)

@@ -545,6 +545,125 @@ def list_clients() -> list[dict]:
     return clients
 
 
+class VaultPathError(ValueError):
+    """Raised when a requested path escapes its allowed subtree of the vault."""
+
+
+def _safe_join(base: Path, relative: str) -> Path:
+    """Resolve `relative` inside `base`, rejecting escapes.
+
+    Rejects absolute paths, parent traversal, and symlink escapes: the resolved
+    path must stay within the resolved base directory. Returns the resolved path.
+    """
+    if relative is None:
+        raise VaultPathError("no path given")
+    rel = str(relative).strip()
+    if not rel:
+        raise VaultPathError("empty path")
+    if os.path.isabs(rel) or rel.startswith("~"):
+        raise VaultPathError(f"absolute paths are not allowed: {rel!r}")
+    base_resolved = base.resolve()
+    candidate = (base_resolved / rel).resolve()
+    if candidate != base_resolved and base_resolved not in candidate.parents:
+        raise VaultPathError(f"path escapes the allowed folder: {rel!r}")
+    return candidate
+
+
+def read_client_file(client_id: str, filename: str) -> str:
+    """Read a file inside Clients/<client_id>/, path-guarded.
+
+    Rejects absolute paths, "..", and symlink escapes. Raises VaultPathError on
+    a guard violation and FileNotFoundError when the file does not exist.
+    """
+    cid = str(client_id or "").strip()
+    if not cid or "/" in cid or "\\" in cid or cid.startswith("."):
+        raise VaultPathError(f"invalid client id: {client_id!r}")
+    client_root = _client_dir(cid)
+    if not client_root.exists():
+        raise FileNotFoundError(f"No such client folder: {cid}")
+    target = _safe_join(client_root, filename)
+    if not target.is_file():
+        raise FileNotFoundError(f"No such file for {cid}: {filename}")
+    return target.read_text(encoding="utf-8")
+
+
+def _snippet(text: str, query: str, width: int = 160) -> str:
+    """Return a short context window around the first match of query."""
+    lower = text.lower()
+    idx = lower.find(query.lower())
+    if idx == -1:
+        head = " ".join(text.split())
+        return head[:width]
+    start = max(0, idx - width // 3)
+    end = min(len(text), idx + len(query) + (2 * width) // 3)
+    frag = " ".join(text[start:end].split())
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(text) else ""
+    return f"{prefix}{frag}{suffix}"
+
+
+def _title_for(path: Path, fm: dict) -> str:
+    """Best-effort display title: profile name, frontmatter title, else stem."""
+    if fm:
+        if fm.get("name"):
+            return str(fm["name"])
+        if fm.get("title"):
+            return str(fm["title"])
+    return path.stem
+
+
+def search_vault(query: str, limit: int = 12) -> list[dict]:
+    """Case-insensitive substring search over the readable vault surfaces.
+
+    Searches client profiles and session notes, plus the Templates and
+    Interventions libraries. Returns up to `limit` hits, each:
+        {"path": <vault-relative path>, "title": str, "snippet": str}
+    Never touches the Private/ folder or the agent's own working memory.
+    """
+    q = str(query or "").strip()
+    if not q:
+        return []
+
+    roots = [
+        VAULT_DIR / "Clients",
+        VAULT_DIR / "Templates",
+        VAULT_DIR / "Interventions",
+    ]
+    results: list[dict] = []
+    seen: set[str] = set()
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.md")):
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            fm, _ = _split_frontmatter(text)
+            haystack = f"{path.name}\n{text}"
+            if q.lower() not in haystack.lower():
+                continue
+            try:
+                rel = str(path.relative_to(VAULT_DIR))
+            except ValueError:
+                rel = str(path)
+            if rel in seen:
+                continue
+            seen.add(rel)
+            results.append(
+                {
+                    "path": rel,
+                    "title": _title_for(path, fm),
+                    "snippet": _snippet(text, q),
+                }
+            )
+            if len(results) >= limit:
+                return results
+    return results
+
+
 def _latest_session_note(client_id: str) -> Path | None:
     """Return the most recent session note path, or None."""
     sessions = _client_dir(client_id) / "Sessions"

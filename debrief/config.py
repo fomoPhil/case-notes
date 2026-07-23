@@ -61,3 +61,6 @@ CALENDAR_NAME: str = _env_str("DEBRIEF_CALENDAR_NAME", "Debrief")
 
 # Default follow-up appointment length when the therapist does not say one.
 DEFAULT_SESSION_MINUTES: int = _env_int("DEBRIEF_SESSION_MINUTES", 50)
+
+# Max tool-calling turns the in-app agent may take before a forced finalize.
+AGENT_MAX_TURNS: int = _env_int("DEBRIEF_AGENT_MAX_TURNS", 12)

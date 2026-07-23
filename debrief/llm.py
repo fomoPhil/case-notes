@@ -142,3 +142,48 @@ def chat(
         raise RuntimeError(
             f"Failed to parse structured output as JSON: {exc}\nContent was:\n{content}"
         ) from exc
+
+
+def chat_tools(
+    messages: list,
+    tools: list,
+    max_tokens: int = 1500,
+    temperature: float = 0.2,
+) -> dict:
+    """Call the model once with OpenAI-style function tools, for the agent loop.
+
+    Returns body["choices"][0]["message"] untouched, so it may carry
+    "tool_calls". No response_format (tool-calling and json_schema do not mix).
+    Reuses the same URL, model, reasoning_effort, timeout, and error handling as
+    chat().
+
+    Raises:
+        RuntimeError: on transport failure, non-200, or a malformed body.
+    """
+    payload: dict = {
+        "model": MODEL,
+        "messages": messages,
+        "tools": tools,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        # Same load-bearing flag: keep thinking off on every request.
+        "reasoning_effort": "none",
+    }
+
+    try:
+        resp = requests.post(LMSTUDIO_URL, json=payload, timeout=_TIMEOUT_SECONDS)
+    except requests.RequestException as exc:
+        raise RuntimeError(f"LM Studio request failed: {exc}") from exc
+
+    if resp.status_code != 200:
+        raise RuntimeError(f"LM Studio returned {resp.status_code}: {resp.text}")
+
+    try:
+        body = resp.json()
+        message = body["choices"][0]["message"]
+    except (ValueError, KeyError, IndexError) as exc:
+        raise RuntimeError(f"Unexpected LM Studio response body: {resp.text}") from exc
+
+    if not isinstance(message, dict):
+        raise RuntimeError(f"Unexpected assistant message shape: {message!r}")
+    return message
