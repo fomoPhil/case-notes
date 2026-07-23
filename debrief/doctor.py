@@ -135,16 +135,31 @@ def run_checks() -> list[dict]:
     })
 
     # --- PDF stack (soft) -----------------------------------------------------
-    pdf_ok = _importable("weasyprint") and _importable("markdown")
+    # Reflect real render capability: markdown importable AND WeasyPrint can do a
+    # trivial render (import plus native pango/gobject actually loading).
+    pdf_fix = (
+        "uv sync --extra pdf (on macOS also: brew install pango if weasyprint "
+        "fails on native libs)."
+    )
+    if not _importable("markdown"):
+        pdf_ok, pdf_detail = False, "markdown library not importable"
+    else:
+        try:
+            from . import render
+
+            pdf_ok = render.pdf_available()
+            pdf_detail = (
+                "PDF rendering works (weasyprint + native libs)"
+                if pdf_ok
+                else "weasyprint present but native libs did not render (falling back to HTML)"
+            )
+        except Exception as exc:  # noqa: BLE001
+            pdf_ok, pdf_detail = False, f"PDF probe failed: {exc}"
     checks.append({
         "name": "PDF export (weasyprint + markdown)",
         "ok": pdf_ok,
-        "detail": "PDF stack available" if pdf_ok else "weasyprint/markdown not importable",
-        "fix": (
-            ""
-            if pdf_ok
-            else "uv sync --extra pdf (on macOS also: brew install pango if weasyprint fails on native libs)."
-        ),
+        "detail": pdf_detail,
+        "fix": "" if pdf_ok else pdf_fix,
         "hard": False,
     })
 

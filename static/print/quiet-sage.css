@@ -1,0 +1,203 @@
+/* Quiet Sage document typography.
+ *
+ * Shared by the in-app agent worksheet previews (Phase 2) and the client
+ * records document view (Phase 3). Newsreader for headings and body prose,
+ * Source Sans 3 for metadata and section labels. Fonts are self-hosted woff2
+ * under static/fonts/ and referenced relatively so WeasyPrint (base_url =
+ * static dir) and the browser both resolve them. No em dashes anywhere.
+ */
+
+@font-face {
+  font-family: "Newsreader";
+  src: url("fonts/newsreader-latin.woff2") format("woff2");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Source Sans 3";
+  src: url("fonts/source-sans-3-latin.woff2") format("woff2");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --cream: #F7F4EE;
+  --paper: #FFFFFF;
+  --ink: #2B2E2A;
+  --deep: #5F7A61;
+  --line: rgba(43, 46, 42, 0.12);
+  --muted: rgba(43, 46, 42, 0.55);
+  --serif: "Newsreader", Georgia, "Times New Roman", serif;
+  --sans: "Source Sans 3", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+@page {
+  size: letter;
+  margin: 2cm;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  /* Cream on screen only; print falls back to white paper below. */
+  background: var(--cream);
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 12pt;
+  line-height: 1.65;
+}
+
+/* The document sheet. On screen it floats on the cream; in print it is the page. */
+.document {
+  background: var(--paper);
+  max-width: 46rem;
+  margin: 2.5rem auto;
+  padding: 3.2rem 3.4rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  box-shadow: 0 10px 30px rgba(43, 46, 42, 0.07);
+}
+
+.document h1 {
+  font-family: var(--serif);
+  font-size: 22pt;
+  font-weight: 600;
+  line-height: 1.2;
+  margin: 0 0 0.2rem;
+}
+
+.document h2 {
+  font-family: var(--serif);
+  font-size: 16pt;
+  font-weight: 600;
+  margin: 1.6rem 0 0.5rem;
+}
+
+.document h3 {
+  font-family: var(--serif);
+  font-size: 13.5pt;
+  font-weight: 600;
+  margin: 1.3rem 0 0.4rem;
+}
+
+/* h4 through h6 read as uppercase section labels, like the mockup's DAP labels. */
+.document h4,
+.document h5,
+.document h6 {
+  font-family: var(--sans);
+  font-size: 10.5pt;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--deep);
+  margin: 1.4rem 0 0.4rem;
+}
+
+.document p {
+  margin: 0 0 0.85rem;
+  font-size: 12pt;
+  line-height: 1.65;
+}
+
+.document ul,
+.document ol {
+  margin: 0 0 0.9rem;
+  padding-left: 1.4rem;
+}
+
+.document li {
+  margin-bottom: 0.3rem;
+  line-height: 1.55;
+}
+
+.document strong { font-weight: 700; }
+.document em { font-style: italic; }
+
+.document a {
+  color: var(--deep);
+  text-decoration: none;
+}
+
+.document hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 1.6rem 0;
+}
+
+.document blockquote {
+  margin: 1rem 0;
+  padding: 0.2rem 0 0.2rem 1.1rem;
+  border-left: 3px solid var(--deep);
+  color: var(--muted);
+  font-style: italic;
+}
+
+.document code,
+.document pre {
+  font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10.5pt;
+}
+
+.document pre {
+  background: var(--cream);
+  padding: 0.8rem 1rem;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+.document table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0 1.2rem;
+  font-family: var(--sans);
+  font-size: 11pt;
+}
+
+.document th,
+.document td {
+  border: 1px solid var(--line);
+  padding: 0.5rem 0.7rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.document th {
+  background: var(--deep);
+  color: #fff;
+  font-weight: 600;
+  font-size: 10pt;
+  letter-spacing: 0.02em;
+}
+
+.document tr:nth-child(even) td {
+  background: rgba(168, 188, 161, 0.08);
+}
+
+/* A small meta line under the title (date, duration, etc.). */
+.document .doc-meta {
+  font-family: var(--sans);
+  font-size: 10.5pt;
+  color: var(--muted);
+  margin-bottom: 1.4rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+@media print {
+  body { background: #fff; }
+  .document {
+    margin: 0;
+    padding: 0;
+    max-width: none;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+}
