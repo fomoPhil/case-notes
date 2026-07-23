@@ -93,81 +93,36 @@ _FOLDERS = [
 ]
 
 
-def _thought_record_pdf(dest: Path) -> None:
-    """Generate a clean one-page CBT thought-record worksheet PDF."""
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import inch
-    from reportlab.platypus import (
-        SimpleDocTemplate,
-        Paragraph,
-        Spacer,
-        Table,
-        TableStyle,
-    )
+_THOUGHT_RECORD_TEMPLATE = (
+    Path(__file__).resolve().parent.parent / "prompts" / "templates" / "thought-record.md"
+)
 
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        "TR_Title", parent=styles["Title"], fontSize=20, spaceAfter=6
-    )
-    sub_style = ParagraphStyle(
-        "TR_Sub", parent=styles["Normal"], fontSize=10, textColor=colors.grey
-    )
-    cell_head = ParagraphStyle(
-        "TR_Head", parent=styles["Normal"], fontSize=10, leading=12,
-        textColor=colors.white, fontName="Helvetica-Bold",
-    )
-    cell_prompt = ParagraphStyle(
-        "TR_Prompt", parent=styles["Normal"], fontSize=8.5, leading=11,
-        textColor=colors.HexColor("#555555"),
-    )
 
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    doc = SimpleDocTemplate(
-        str(dest), pagesize=letter,
-        leftMargin=0.6 * inch, rightMargin=0.6 * inch,
-        topMargin=0.6 * inch, bottomMargin=0.6 * inch,
-    )
+def _seed_thought_record(dest_md: Path) -> None:
+    """Seed the CBT thought-record worksheet from the shared markdown template.
 
-    rows_spec = [
-        ("Situation", "What happened? Where, when, and who was involved?"),
-        ("Automatic thoughts", "What went through your mind? Rate belief 0 to 100 percent."),
-        ("Emotions", "What did you feel? Rate intensity 0 to 100 percent."),
-        ("Evidence for the thought", "Facts that support the automatic thought."),
-        ("Evidence against the thought", "Facts that do not support the automatic thought."),
-        ("Balanced thought", "A fairer, more accurate way to see the situation."),
-        ("Outcome", "Re-rate your emotion now. What will you do next?"),
-    ]
+    Renders a PDF beside the markdown source through the shared renderer when
+    WeasyPrint is available; otherwise the markdown alone is the artifact. The
+    markdown source is always written so the app owns a single template origin.
+    """
+    from . import render
 
-    header = Paragraph("Thought Record", title_style)
-    subtitle = Paragraph(
-        "A CBT worksheet for noticing and re-examining automatic thoughts. "
-        "Bring it to your next session.",
-        sub_style,
-    )
+    try:
+        md = _THOUGHT_RECORD_TEMPLATE.read_text(encoding="utf-8")
+    except OSError:
+        md = "# Thought Record\n\nSituation, Automatic thoughts, Emotions, Evidence for, Evidence against, Balanced thought, Outcome.\n"
 
-    data = [[Paragraph("Prompt", cell_head), Paragraph("Your notes", cell_head)]]
-    for label, prompt in rows_spec:
-        left = Paragraph(f"<b>{label}</b><br/><font size=8 color='#777777'>{prompt}</font>", cell_prompt)
-        data.append([left, Paragraph("", cell_prompt)])
+    dest_md.parent.mkdir(parents=True, exist_ok=True)
+    if not dest_md.exists():
+        _atomic_write(dest_md, md)
 
-    table = Table(data, colWidths=[2.6 * inch, 4.7 * inch], repeatRows=1)
-    style = [
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2f4f6f")),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#b8c4d0")),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 8),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-    ]
-    for i in range(1, len(data)):
-        if i % 2 == 0:
-            style.append(("BACKGROUND", (0, i), (-1, i), colors.HexColor("#f4f7fa")))
-    table.setStyle(TableStyle(style))
-
-    doc.build([header, subtitle, Spacer(1, 0.2 * inch), table])
+    pdf_path = dest_md.with_suffix(".pdf")
+    if not pdf_path.exists():
+        try:
+            render.render_pdf(md, "Thought Record", pdf_path)
+        except Exception:
+            # PDF is optional; the markdown source still attaches to emails.
+            pass
 
 
 def _seed_client(
@@ -280,20 +235,8 @@ def ensure_vault() -> None:
             "folder.\n",
         )
 
-    # Worksheet PDF for the mail-draft action.
-    pdf_path = VAULT_DIR / "Templates" / "Worksheets" / "thought-record.pdf"
-    if not pdf_path.exists():
-        try:
-            _thought_record_pdf(pdf_path)
-        except Exception:
-            # PDF generation is best-effort; a markdown fallback still attaches.
-            md_path = pdf_path.with_suffix(".md")
-            if not md_path.exists():
-                _atomic_write(
-                    md_path,
-                    "# Thought Record\n\nSituation, Automatic thoughts, Emotions, "
-                    "Evidence for, Evidence against, Balanced thought, Outcome.\n",
-                )
+    # Thought-record worksheet (markdown source + rendered PDF when available).
+    _seed_thought_record(VAULT_DIR / "Templates" / "Worksheets" / "thought-record.md")
 
     # Theme + intervention stubs referenced by the mock clients.
     _seed_stub(
