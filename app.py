@@ -14,6 +14,7 @@ Run:  .venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8377
 
 from __future__ import annotations
 
+import datetime as _dt
 import os
 import re
 import subprocess
@@ -27,7 +28,19 @@ from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from debrief import config, doctor, models, pipeline, vault
+from debrief import (
+    actions,
+    agent,
+    audit,
+    classify,
+    config,
+    doctor,
+    models,
+    pipeline,
+    render,
+    stt,
+    vault,
+)
 
 APP_HOST = "127.0.0.1"
 APP_PORT = 8377
@@ -257,6 +270,214 @@ async def api_execute(request: Request) -> JSONResponse:
             except OSError:
                 pass
     return JSONResponse(result)
+
+
+# ---------------------------------------------------------------------------
+# Assistant (in-app agent): plan (propose) + execute (approve)
+# ---------------------------------------------------------------------------
+
+
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _slug(text: str) -> str:
+    s = _SLUG_RE.sub("-", (text or "").lower()).strip("-")
+    return s or "worksheet"
+
+
+def _valid_client_id(client_id) -> str | None:
+    """Return a safe client id (no path parts) or None."""
+    if not client_id:
+        return None
+    cid = str(client_id).strip()
+    if not cid or "/" in cid or "\\" in cid or cid.startswith("."):
+        return None
+    return cid
+
+
+def _unique_path(base_dir: Path, slug: str, suffix: str) -> Path:
+    """A non-colliding path base_dir/<slug><suffix>, adding -2, -3 as needed."""
+    candidate = base_dir / f"{slug}{suffix}"
+    n = 2
+    while candidate.exists():
+        candidate = base_dir / f"{slug}-{n}{suffix}"
+        n += 1
+    return candidate
+
+
+def _worksheet_dir(client_id: str | None) -> Path:
+    """Target directory for a filed worksheet, always inside the vault."""
+    if client_id:
+        return config.VAULT_DIR / "Clients" / client_id / "Documents"
+    return config.VAULT_DIR / "Templates" / "Worksheets"
+
+
+def _file_worksheet(proposal: dict, fallback_client: str | None) -> dict:
+    """File a worksheet proposal into the vault. Returns a result dict.
+
+    Writes the Markdown source and, when the PDF renderer is available, a PDF
+    beside it. Falls back to Markdown only when the renderer is unavailable.
+    """
+    title = (proposal.get("title") or "Worksheet").strip()
+    body = (proposal.get("markdown_body") or "").strip()
+    client_id = _valid_client_id(proposal.get("client_id")) or fallback_client
+    target_dir = _worksheet_dir(client_id).resolve()
+    vault_root = config.VAULT_DIR.resolve()
+    if vault_root not in target_dir.parents and target_dir != vault_root:
+        return {"type": "worksheet", "status": "failed", "error": "target escaped the vault"}
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    slug = _slug(title)
+    md_path = _unique_path(target_dir, slug, ".md")
+    full_md = f"# {title}\n\n{body}\n"
+    md_path.write_text(full_md, encoding="utf-8")
+
+    pdf_path = md_path.with_suffix(".pdf")
+    try:
+        render.render_pdf(full_md, title, pdf_path)
+        return {"type": "worksheet", "status": "ok", "path": str(pdf_path)}
+    except render.PdfUnavailable:
+        return {
+            "type": "worksheet",
+            "status": "ok",
+            "path": str(md_path),
+            "detail": "Filed as Markdown (PDF renderer unavailable).",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"type": "worksheet", "status": "ok", "path": str(md_path), "detail": f"Markdown only: {exc}"}
+
+
+def _client_email(client_id: str | None) -> str | None:
+    if not client_id:
+        return None
+    try:
+        ctx = vault.client_context(client_id)
+    except Exception:  # noqa: BLE001
+        return None
+    return ctx.get("email")
+
+
+@app.post("/api/assistant/plan")
+async def api_assistant_plan(request: Request) -> JSONResponse:
+    """Transcribe (if audio) -> classify -> route to the debrief flow or agent."""
+    _require_model_ready()
+
+    transcript = ""
+    client_id = None
+    ctype = request.headers.get("content-type", "")
+
+    if ctype.startswith("multipart/form-data"):
+        form = await request.form()
+        client_id = _valid_client_id(form.get("client_id"))
+        text_field = form.get("text")
+        audio = form.get("audio")
+        if audio is not None and hasattr(audio, "read"):
+            data = await audio.read()
+            if not data:
+                raise HTTPException(status_code=400, detail="Empty audio upload.")
+            with tempfile.TemporaryDirectory(prefix="debrief_asst_") as tmp:
+                try:
+                    wav_path = _convert_to_wav(data, Path(tmp))
+                except Exception as exc:  # noqa: BLE001
+                    raise HTTPException(status_code=400, detail=str(exc))
+                try:
+                    transcript = stt.transcribe(wav_path)
+                except Exception as exc:  # noqa: BLE001
+                    raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}")
+        elif text_field:
+            transcript = str(text_field)
+    else:
+        try:
+            body = await request.json()
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}")
+        transcript = str(body.get("text") or "")
+        client_id = _valid_client_id(body.get("client_id"))
+
+    transcript = transcript.strip()
+    if not transcript:
+        raise HTTPException(status_code=400, detail="Nothing to work with (empty request).")
+
+    routing = classify.classify(transcript, has_selected_client=bool(client_id))
+    if routing["route"] == "session_debrief" and client_id:
+        return JSONResponse({"route": "session_debrief", "transcript": transcript})
+
+    hint = routing.get("client_hint") or client_id
+    try:
+        run = agent.run_agent(transcript, _dt.datetime.now(), client_hint=hint)
+    except agent.AgentUnavailable as exc:
+        raise HTTPException(status_code=503, detail={"error": str(exc), "fix": exc.hint})
+
+    return JSONResponse(
+        {
+            "route": "assistant",
+            "final_text": run["final_text"],
+            "proposals": run["proposals"],
+            "transcript": run["transcript"],
+            "raw_transcript": transcript,
+        }
+    )
+
+
+@app.post("/api/assistant/execute")
+async def api_assistant_execute(request: Request) -> JSONResponse:
+    """File approved worksheet proposals and stage approved email drafts."""
+    _require_model_ready()
+    try:
+        body = await request.json()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}")
+
+    proposals = body.get("proposals") or []
+    if not isinstance(proposals, list):
+        raise HTTPException(status_code=400, detail="proposals must be a list.")
+    req_client = _valid_client_id(body.get("client_id"))
+
+    results: list[dict] = []
+    last_worksheet_pdf: Path | None = None
+
+    for proposal in proposals:
+        if not isinstance(proposal, dict):
+            results.append({"type": "?", "status": "failed", "error": "malformed proposal"})
+            continue
+        ptype = proposal.get("type")
+
+        if ptype == "worksheet":
+            res = _file_worksheet(proposal, req_client)
+            if res.get("status") == "ok" and str(res.get("path", "")).endswith(".pdf"):
+                last_worksheet_pdf = Path(res["path"])
+            results.append(res)
+
+        elif ptype == "email":
+            client_id = _valid_client_id(proposal.get("client_id")) or req_client
+            email = _client_email(client_id)
+            if not email:
+                results.append(
+                    {"type": "email", "status": "failed", "error": "no client email on file"}
+                )
+                continue
+            subject = proposal.get("subject") or "A note from your therapist"
+            email_body = proposal.get("body") or ""
+            attachment = last_worksheet_pdf if proposal.get("attach_worksheet") else None
+            try:
+                ok = actions.create_mail_draft(email, subject, email_body, attachment)
+            except Exception as exc:  # noqa: BLE001
+                results.append({"type": "email", "status": "failed", "error": str(exc)})
+                continue
+            if ok:
+                results.append(
+                    {"type": "email", "status": "ok", "detail": f"Draft to {email} left open for review."}
+                )
+            else:
+                results.append({"type": "email", "status": "failed", "error": "Mail returned an error"})
+        else:
+            results.append({"type": str(ptype), "status": "failed", "error": "unknown proposal type"})
+
+    audit.log_assistant_run(
+        {"request": body.get("request") or "", "results": results, "errors": []}
+    )
+
+    return JSONResponse({"results": results})
 
 
 # ---------------------------------------------------------------------------

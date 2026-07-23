@@ -193,6 +193,63 @@ def _atomic_append(path: Path, content: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _build_assistant_entry(run: dict, now: _dt.datetime) -> str:
+    """Render one activity-log entry for an approved assistant run."""
+    request = _truncate(run.get("request") or "", 160)
+    results = run.get("results", []) or []
+
+    lines: list[str] = []
+    lines.append(f"### {_fmt_time(now)} · Assistant")
+    if request:
+        lines.append(f"- Request: {request}")
+    if not results:
+        lines.append("- Filed: nothing (no proposals approved)")
+    for r in results:
+        rtype = r.get("type", "item")
+        status = r.get("status", "?")
+        if status == "ok" and r.get("path"):
+            try:
+                rel = Path(r["path"]).relative_to(VAULT_DIR)
+                target = f"[[{str(rel.with_suffix(''))}|{rel.stem}]]"
+            except (ValueError, TypeError):
+                target = str(r.get("path"))
+            lines.append(f"- {rtype.capitalize()}: {target}")
+        elif status == "ok":
+            lines.append(f"- {rtype.capitalize()}: {r.get('detail', 'done')}")
+        else:
+            lines.append(f"- {rtype.capitalize()}: {status} ({r.get('error', '')})")
+
+    return _no_em_dash("\n".join(lines) + "\n")
+
+
+def log_assistant_run(run: dict) -> Path | None:
+    """Append one activity-log entry for an approved assistant execution.
+
+    Failure-safe, mirroring log_debrief_run: a logging failure is recorded in
+    run["errors"] and never raised.
+    """
+    try:
+        now = _dt.datetime.now()
+        today = now.date().isoformat()
+        day_file = VAULT_DIR / _ACTIVITY_DIRNAME / f"{today}.md"
+
+        entry = _build_assistant_entry(run, now)
+        if day_file.exists():
+            existing = day_file.read_text(encoding="utf-8").rstrip("\n")
+            content = f"{existing}\n\n{entry}"
+        else:
+            content = _header(today) + entry
+
+        _atomic_append(day_file, content)
+        return day_file
+    except Exception as exc:  # noqa: BLE001 - logging must never break the run
+        try:
+            run.setdefault("errors", []).append({"stage": "audit", "error": str(exc)})
+        except Exception:
+            pass
+        return None
+
+
 def log_debrief_run(result: dict) -> Path | None:
     """Append one activity-log entry for an executed debrief. Failure-safe.
 
