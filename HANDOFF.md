@@ -41,7 +41,7 @@ Voice → parakeet-mlx STT → Gemma 4 (glossary fix, then intent + DAP note as 
 4. Email is ALWAYS a draft, never auto-sent. Calendar entries use client first name/initials only. Voice Journal never schedules or drafts email.
 5. DAP note default; risk block is schema-mandatory when SI/HI appears; the audit trio (named intervention, client response, progress-toward-goal) required in every note; framework vocabulary injected per modality (Appendix B of plan).
 6. Private notes folder is never LLM-touched (45 CFR 164.501 psychotherapy-notes separation).
-7. Hermes (NousResearch/hermes-agent) is a 2-hour STRETCH only; zero core dependency.
+7. The external Hermes harness has been retired. Its second-brain behavior is now an in-app agent (`debrief/agent.py`, `/api/assistant/*`): a local tool-calling loop over the vault that stages proposals for the clinician to approve. No external agent framework is a dependency.
 8. Claims language: fictional demo and local processing only. Never claim "HIPAA compliant" or that a BAA is unnecessary. Suggestions are options; clinician decides.
 9. Vault: no iCloud folder, Sync off, new session notes are always new files.
 
