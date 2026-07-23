@@ -970,10 +970,16 @@ function buildDocCard(doc, d) {
       <button class="iconbtn" title="Email draft">✉</button>
     </div>
   </div>`);
-  card.onclick = (e) => { if (!e.target.closest(".acts")) openDocument(doc.path, { client: d, section: "Documents", title: doc.title }); };
+  const isMd = doc.path.toLowerCase().endsWith(".md");
+  card.onclick = (e) => {
+    if (e.target.closest(".acts")) return;
+    if (isMd) openDocument(doc.path, { client: d, section: "Documents", title: doc.title });
+    else if (doc.path.toLowerCase().endsWith(".pdf")) downloadPdf(doc.path);
+    else post("/api/open", { path: doc.path });  // open images/docx in their native app
+  };
   const [renameBtn, dlBtn, emailBtn] = card.querySelectorAll(".iconbtn");
   renameBtn.onclick = (e) => { e.stopPropagation(); inlineRenameCard(card, doc, d); };
-  dlBtn.onclick = (e) => { e.stopPropagation(); downloadPdf(doc.path); };
+  dlBtn.onclick = (e) => { e.stopPropagation(); if (isMd || doc.path.toLowerCase().endsWith(".pdf")) downloadPdf(doc.path); else post("/api/open", { path: doc.path }); };
   emailBtn.onclick = (e) => { e.stopPropagation(); emailDocument(d.client_id, doc.path); };
   return card;
 }

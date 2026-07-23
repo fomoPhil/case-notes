@@ -45,6 +45,19 @@ def test_list_documents_creates_folder_and_includes_sessions(records):
     assert all("Session" in d["title"] for d in sessions)
 
 
+def test_agent_worksheet_pair_collapses_to_one_card(records):
+    docs_dir = records.VAULT_DIR / "Clients" / "C-0001" / "Documents"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    (docs_dir / "box-breathing.md").write_text("# Box Breathing\n\nBreathe.\n", encoding="utf-8")
+    (docs_dir / "box-breathing.pdf").write_bytes(b"%PDF-1.7 fake")
+    docs = [d for d in records.list_documents("C-0001") if d["kind"] != "session-note"]
+    assert len(docs) == 1, "the .md + .pdf worksheet pair should collapse to one card"
+    card = docs[0]
+    assert card["kind"] == "worksheet-pdf"
+    assert card["agent_made"] is True
+    assert card["path"].endswith("box-breathing.md"), "keeps the editable markdown as canonical"
+
+
 def test_list_sessions_sorted_desc(records):
     sessions = records.list_sessions("C-0003")
     dates = [s["date"] for s in sessions]

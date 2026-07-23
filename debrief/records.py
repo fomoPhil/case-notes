@@ -195,6 +195,15 @@ def _document_meta(path: Path) -> dict:
         title = fm.get("title") or _first_h1(body) or path.stem.replace("-", " ").title()
     else:
         title = path.stem.replace("-", " ").title()
+    # An agent worksheet is stored as a markdown source with a rendered PDF
+    # sibling. Present it as one worksheet card (terra PDF badge) but keep the
+    # editable/renderable markdown path so the document view still works.
+    if (
+        path.suffix.lower() == ".md"
+        and path.parent.name == "Documents"
+        and path.with_suffix(".pdf").exists()
+    ):
+        kind = "worksheet-pdf"
     is_agent = kind == "worksheet-pdf" or (kind == "markdown" and bool(fm.get("agent_made")))
     return {
         "path": _rel(path),
@@ -228,8 +237,13 @@ def list_documents(client_id: str) -> list[dict]:
     docs_dir = _documents_dir(client_id, create=True)
     docs: list[dict] = []
     for p in sorted(docs_dir.iterdir()):
-        if p.is_file() and not p.name.startswith("."):
-            docs.append(_document_meta(p))
+        if not p.is_file() or p.name.startswith("."):
+            continue
+        # Collapse an agent worksheet's .md + .pdf pair into a single card,
+        # keeping the markdown (editable, renderable) as canonical.
+        if p.suffix.lower() == ".pdf" and p.with_suffix(".md").exists():
+            continue
+        docs.append(_document_meta(p))
     docs.sort(key=lambda m: m.get("modified") or "", reverse=True)
     return list_sessions(client_id) + docs
 
