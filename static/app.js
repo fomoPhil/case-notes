@@ -1,0 +1,1391 @@
+const App = {
+  state: "clients",
+  clients: [],
+  client: null,
+  plan: null,
+  result: null,
+  error: null,
+  mediaRecorder: null,
+  chunks: [],
+  seconds: 0,
+  timerId: null,
+  audioCtx: null,
+  analyser: null,
+  raf: null,
+  procTimers: [],
+  recMode: "debrief",
+  assistant: null,
+  // Records UI
+  nav: "home",            // sidebar highlight: home | client:<id> | lib:worksheets | lib:reference | trash
+  recordData: null,        // GET /api/clients/{id} payload
+  recordTab: "sessions",  // sessions | profile | documents
+  doc: null,               // current document view payload
+  docCrumb: null,          // breadcrumb context for the document view
+  library: null,           // GET /api/library payload
+  trash: null,             // GET /api/trash items
+  searchTimer: null,
+  overflowOpen: false,
+};
+
+let el = null;             // reassigned each render to the active container
+let stream = null;
+
+const FLOW_STATES = new Set([
+  "record", "processing", "review", "executing", "results",
+  "assistant", "assistantThinking", "assistantReview", "assistantResults",
+]);
+
+function h(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstChild; }
+function esc(s) { return (s == null ? "" : String(s)).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c])); }
+function fmtSecs(n) { const m = Math.floor(n/60), s = n%60; return `${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`; }
+
+function fmtClock(d) {
+  let h = d.getHours() % 12 || 12;
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${h}:${mm} ${d.getHours() >= 12 ? "PM" : "AM"}`;
+}
+function fmtDateTimeDisplay(d) {
+  const day = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  return `${day} at ${fmtClock(d)}`;
+}
+
+// Pure, deterministic gap detection over the plan JSON. No LLM involved.
+// Returns a list of nudge descriptors; rendering decides how each looks.
+function computeNudges(plan) {
+  const acts = (plan && plan.actions) || [];
+  const nudges = [];
+  if (!acts.some(a => a.type === "schedule_followup")) {
+    nudges.push({ id: "no-followup", text: "No follow-up booked.", sub: "Dictate again or add one below." });
+  }
+  if (!acts.some(a => a.type === "draft_client_email")) {
+    nudges.push({ id: "no-email", text: "No client email requested." });
+  }
+  const unsupported = (plan && plan.unsupported_requests) || [];
+  if (unsupported.length) {
+    nudges.push({ id: "unsupported", text: "Heard but can't do yet: " + unsupported.join("; ") });
+  }
+  if (plan && plan.note && plan.note.risk_present) {
+    nudges.push({ id: "risk", text: "Risk content documented.", sub: "Review the Risk section before executing." });
+  }
+  return nudges;
+}
+window.computeNudges = computeNudges;
+
+function addManualFollowup(dateVal, timeVal, durVal) {
+  const d = new Date(`${dateVal}T${timeVal}:00`);
+  if (isNaN(d.getTime())) return;
+  const first = (App.plan.client && App.plan.client.first_name) || "Client";
+  const duration = Math.max(5, parseInt(durVal, 10) || 50);
+  const iso = `${dateVal}T${timeVal}:00`;
+  App.plan.actions.push({
+    type: "schedule_followup",
+    datetime_utterance: "manually added",
+    resolved_datetime: iso,
+    datetime_display: fmtDateTimeDisplay(d),
+    duration_min: duration,
+    title: `${first} ${fmtClock(d)} session`,
+    label: `Book follow-up: ${fmtDateTimeDisplay(d)} (${duration} min)`,
+    enabled: true,
+  });
+  render();
+}
+
+function addWorksheetEmail() {
+  App.plan.actions.push({
+    type: "draft_client_email",
+    purpose: "confirmation and homework",
+    attachment: "thought record worksheet",
+    attachment_name: "thought record worksheet",
+    label: "Draft confirmation email with the thought record worksheet",
+    enabled: true,
+  });
+  render();
+}
+
+async function loadClients() {
+  try {
+    const r = await fetch("/api/clients");
+    if (!r.ok) throw new Error("Could not load clients (" + r.status + ")");
+    App.clients = await r.json();
+  } catch (e) { App.error = e.message; }
+  if (!applyHash()) render();
+}
+
+// Lightweight deep links so a record, document, or library view is bookmarkable
+// and shareable within the app. Never a security surface: paths still validate
+// server-side. Forms: #/client/<id>, #/note/<encoded path>, #/library/<which>, #/trash
+function applyHash() {
+  const hash = location.hash || "";
+  const client = hash.match(/^#\/client\/([^/]+)$/);
+  if (client) { const c = App.clients.find(x => x.client_id === client[1]); if (c) { openClient(c); return true; } }
+  const note = hash.match(/^#\/note\/(.+)$/);
+  if (note) {
+    const path = decodeURIComponent(note[1]);
+    const cm = path.match(/^Clients\/([^/]+)\//);
+    if (cm) { const c = App.clients.find(x => x.client_id === cm[1]); if (c) App.client = c; }
+    openDocument(path, { client: App.recordData, section: "Sessions", title: "" });
+    return true;
+  }
+  const lib = hash.match(/^#\/library\/(worksheets|reference)$/);
+  if (lib) { openLibrary(lib[1]); return true; }
+  if (hash === "#/trash") { openTrash(); return true; }
+  return false;
+}
+window.addEventListener("hashchange", applyHash);
+
+function clearProcTimers() { (App.procTimers || []).forEach(clearTimeout); App.procTimers = []; }
+
+function go(state) {
+  clearProcTimers();
+  App.overflowOpen = false;
+  App.state = state;
+  App.error = null;
+  if (state === "assistant") App.nav = "assistant";
+  else if (!["clientRecord", "document", "library", "trash"].includes(state)) App.nav = "home";
+  render();
+}
+
+const DISPATCH = {
+  clients: renderClients, record: renderRecord, processing: renderProcessing,
+  review: renderReview, executing: renderExecuting, results: renderResults,
+  assistant: renderAssistant, assistantThinking: renderAssistantThinking,
+  assistantReview: renderAssistantReview, assistantResults: renderAssistantResults,
+  clientRecord: renderClientRecord, document: renderDocument,
+  library: renderLibrary, trash: renderTrash,
+};
+
+// ---------------------------------------------------------------------------
+// Persistent shell: sidebar + main pane. Built once; the main pane swaps.
+// ---------------------------------------------------------------------------
+
+const LOCK_DOT = `<span class="dot"></span>`;
+
+function initials(name) {
+  return (name || "?").trim().split(/\s+/).map(w => w[0]).slice(0, 2).join("").toUpperCase();
+}
+
+function ensureShell() {
+  const shell = document.getElementById("shell");
+  if (shell.querySelector(".app-shell")) return;
+  shell.innerHTML = `
+    <div class="app-shell">
+      <aside class="side">
+        <div class="brand">Debrief</div>
+        <div class="side-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+          <input type="search" id="globalSearch" placeholder="Search records" autocomplete="off" />
+          <div id="searchResults"></div>
+        </div>
+        <button class="navitem" id="navNewDebrief"><span class="nav-ic">🎙</span> New debrief</button>
+        <button class="navitem" id="navAssistant"><span class="nav-ic">✦</span> Ask the assistant</button>
+        <div class="nav-sec">Clients</div>
+        <div id="navClients"></div>
+        <div class="nav-sec">Library</div>
+        <button class="navitem" id="navWorksheets"><span class="nav-ic">📄</span> Worksheets</button>
+        <button class="navitem" id="navReference"><span class="nav-ic">📚</span> Reference</button>
+        <button class="navitem" id="navTrash"><span class="nav-ic">🗑</span> Trash</button>
+        <div class="side-foot">${LOCK_DOT} Data secure on this Mac</div>
+      </aside>
+      <main class="main-pane" id="main-pane"></main>
+    </div>`;
+  shell.querySelector("#navNewDebrief").onclick = () => { App.client = null; go("clients"); };
+  shell.querySelector("#navAssistant").onclick = () => { App.assistant = null; go("assistant"); };
+  shell.querySelector("#navWorksheets").onclick = () => openLibrary("worksheets");
+  shell.querySelector("#navReference").onclick = () => openLibrary("reference");
+  shell.querySelector("#navTrash").onclick = () => openTrash();
+  const search = shell.querySelector("#globalSearch");
+  search.oninput = () => runSearch(search.value);
+  search.onkeydown = (e) => { if (e.key === "Escape") { search.value = ""; runSearch(""); } };
+  renderSidebarClients();
+}
+
+function renderSidebarClients() {
+  const box = document.getElementById("navClients");
+  if (!box) return;
+  box.innerHTML = "";
+  const styles = ["", "alt", "alt2"];
+  App.clients.forEach((c, i) => {
+    const item = h(`<button class="navitem"><span class="mono ${styles[i % 3]}">${esc(initials(c.name))}</span> ${esc(c.name)}</button>`);
+    item.onclick = () => openClient(c);
+    box.appendChild(item);
+  });
+}
+
+function updateNav() {
+  const map = {
+    home: "navNewDebrief",
+    assistant: "navAssistant",
+    "lib:worksheets": "navWorksheets",
+    "lib:reference": "navReference",
+    trash: "navTrash",
+  };
+  document.querySelectorAll(".navitem").forEach(n => n.classList.remove("on"));
+  const id = map[App.nav];
+  if (id) { const node = document.getElementById(id); if (node) node.classList.add("on"); }
+  if (App.nav && App.nav.startsWith("client:")) {
+    const cid = App.nav.slice(7);
+    const idx = App.clients.findIndex(c => c.client_id === cid);
+    if (idx >= 0) {
+      const nodes = document.querySelectorAll("#navClients .navitem");
+      if (nodes[idx]) nodes[idx].classList.add("on");
+    }
+  }
+}
+
+function render() {
+  ensureShell();
+  renderSidebarClients();
+  updateNav();
+  const pane = document.getElementById("main-pane");
+  pane.innerHTML = "";
+  if (FLOW_STATES.has(App.state)) {
+    el = h(`<div class="flow-wrap"></div>`);
+    pane.appendChild(el);
+  } else {
+    el = pane;
+  }
+  if (App.error && (App.state === "clients" || App.state === "record")) {
+    el.appendChild(h(`<div class="banner banner-error">${esc(App.error)}</div>`));
+  }
+  (DISPATCH[App.state] || renderClients)();
+}
+
+function renderClients() {
+  el.appendChild(h(`<div class="step-title">Choose a client to debrief</div>`));
+  const grid = h(`<div class="clients"></div>`);
+  if (!App.clients.length) grid.appendChild(h(`<div class="hint">No clients found in the vault.</div>`));
+  App.clients.forEach((c, i) => {
+    const risk = (c.risk_flags && c.risk_flags.length) ? `<span class="tag-risk">risk history on file</span>` : "";
+    const concerns = (c.presenting_concerns || []).join(", ");
+    const initials = (c.name || "?").trim().split(/\s+/).map(w => w[0]).slice(0, 2).join("").toUpperCase();
+    const card = h(`<button class="client-card enter d${Math.min(i+1,3)}">
+      <span class="mono">${esc(initials)}</span>
+      <span>
+        <div class="name">${esc(c.name)}</div>
+        <div class="meta">${esc(c.client_id)} &middot; ${esc(c.framework || "")}</div>
+        <div class="concerns">${esc(concerns)}</div>
+        ${risk}
+      </span>
+      <span class="card-arrow" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>
+    </button>`);
+    card.onclick = () => { App.client = c; go("record"); };
+    grid.appendChild(card);
+  });
+  el.appendChild(grid);
+
+  const asstRow = h(`<div class="asst-entry">
+    <button class="btn btn-ghost btn-asst" id="asstEntry">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3a4 4 0 0 0-4 4v4a4 4 0 0 0 8 0V7a4 4 0 0 0-4-4z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+      Ask the assistant
+    </button>
+    <span class="asst-hint">Make a worksheet, draft an email, or look something up</span>
+  </div>`);
+  asstRow.querySelector("#asstEntry").onclick = () => { App.assistant = null; go("assistant"); };
+  el.appendChild(asstRow);
+}
+
+function renderRecord() {
+  App.recMode = "debrief";
+  const c = App.client;
+  const bars = Array.from({ length: 24 }, () => "<i></i>").join("");
+  const stage = h(`<div class="panel record-stage enter">
+    <button class="backlink">&larr; back to clients</button>
+    <div class="record-client">Debrief for <b>${esc(c.name)}</b> &middot; ${esc(c.framework || "")}</div>
+    <div class="rec-wrap" id="recWrap">
+      <div class="ring"></div>
+      <div class="ring r2"></div>
+      <button class="rec-btn" id="recBtn" aria-label="Start recording">
+        <span class="icon-mic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></span>
+        <span class="icon-stop"><span class="sq"></span></span>
+      </button>
+    </div>
+    <div class="timer idle" id="timer">00:00</div>
+    <div class="wave" id="wave" aria-hidden="true">${bars}</div>
+    <div class="hint" id="recHint">Tap to record. Speak your note, the follow-up time, and any email you want drafted.</div>
+    <div class="dictate-guide">
+      <div class="dg-title">While you dictate</div>
+      <ul>
+        <li>What happened this session and how the client responded</li>
+        <li>A risk check, if it came up</li>
+        <li>When you would like the next appointment</li>
+        <li>Any email to send, with resources or reminders</li>
+        <li>Homework you assigned</li>
+      </ul>
+    </div>
+  </div>`);
+  stage.querySelector(".backlink").onclick = () => { stopStream(); go("clients"); };
+  stage.querySelector("#recBtn").onclick = toggleRecord;
+  el.appendChild(stage);
+}
+
+const CHECK_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12l5 5L20 6"/></svg>`;
+const LOCK_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>`;
+
+function renderProcessing() {
+  const steps = ["Transcribe the recording", "Tidy clinical terms", "Draft the DAP note", "Plan admin actions"];
+  const panel = h(`<div class="panel proc-steps enter">
+    ${steps.map((t, i) => `<div class="pstep ${i === 0 ? "active" : "todo"}"><span class="ic">${CHECK_SVG}</span><span class="t">${t}</span></div>`).join("")}
+    <div class="local-note">${LOCK_SVG}Everything runs on this Mac. Nothing leaves it.</div>
+  </div>`);
+  el.appendChild(panel);
+  // Optimistic pacing only; the real work finishes whenever the server replies.
+  // Transcription dominates and scales with audio length, later steps are steadier.
+  const advance = (i) => {
+    if (App.state !== "processing") return;
+    document.querySelectorAll(".pstep").forEach((s, j) => {
+      s.classList.toggle("done", j < i);
+      s.classList.toggle("active", j === i);
+      s.classList.toggle("todo", j > i);
+    });
+  };
+  const est = Math.max(4, Math.round((App.seconds || 30) * 0.35));
+  clearProcTimers();
+  App.procTimers = [
+    setTimeout(() => advance(1), est * 1000),
+    setTimeout(() => advance(2), (est + 4) * 1000),
+    setTimeout(() => advance(3), (est + 4 + 8) * 1000),
+  ];
+}
+
+function renderReview() {
+  const p = App.plan, note = p.note || {};
+  el.appendChild(h(`<div class="step-title">Review before anything runs</div>`));
+
+  const risk = note.risk_present && note.risk ? note.risk : null;
+  const notePanel = h(`<div class="panel doc enter d1"></div>`);
+  const sd = (p.session_meta && p.session_meta.session_date) || "";
+  let dateStr = "";
+  if (sd) {
+    const [y, m, d] = sd.split("-").map(Number);
+    if (y && m && d) dateStr = new Date(y, m - 1, d).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  }
+  notePanel.appendChild(h(`<div class="letterhead">
+    <span class="who">${esc((p.client && p.client.name) || "Client")}</span>
+    ${dateStr ? `<span class="date">${esc(dateStr)}</span>` : ""}
+    <span class="stamps">
+      <span class="stamp">${esc(p.client.framework || "")} DAP</span>
+      ${note.risk_present ? '<span class="stamp risk">risk documented</span>' : ""}
+    </span>
+  </div>`));
+  notePanel.appendChild(h(`<div class="dblrule"></div>`));
+  const sec = (label, text) => text ? `<div class="note-section"><h4>${label}</h4><p>${esc(text)}</p></div>` : "";
+  notePanel.appendChild(h(`<div>${sec("Data", note.data)}${sec("Assessment", note.assessment)}${sec("Plan", note.plan)}</div>`));
+  if (risk) {
+    const row = (l, v) => v ? `<div class="row"><b>${l}:</b> ${esc(v)}</div>` : "";
+    notePanel.appendChild(h(`<div class="risk">
+      <h4>Risk</h4>
+      ${row("Ideation", risk.ideation)}
+      ${row("Plan, intent, means", risk.plan_intent_means)}
+      ${row("Protective factors", risk.protective_factors)}
+      ${row("Interventions taken", risk.interventions_taken)}
+    </div>`));
+  }
+  const chips = [];
+  (note.interventions || []).forEach(x => chips.push(`<span class="chip">${esc(x)}</span>`));
+  (note.themes || []).forEach(x => chips.push(`<span class="chip theme">${esc(x)}</span>`));
+  if (chips.length) notePanel.appendChild(h(`<div class="chips">${chips.join("")}</div>`));
+  notePanel.appendChild(h(`<details class="transcript"><summary>corrected transcript</summary><p>${esc(p.corrected_transcript || p.transcript || "")}</p></details>`));
+  el.appendChild(notePanel);
+
+  el.appendChild(h(`<div class="step-title">Actions to run</div>`));
+  const actPanel = h(`<div class="panel enter d2"></div>`);
+
+  // Deterministic gap nudges above the checklist.
+  const nudges = computeNudges(p);
+  if (nudges.length) {
+    const box = h(`<div class="nudges"></div>`);
+    nudges.forEach(n => {
+      const card = h(`<div class="nudge"><span class="n-text">${esc(n.text)}</span>${n.sub ? `<div class="n-sub">${esc(n.sub)}</div>` : ""}</div>`);
+      if (n.id === "no-followup") {
+        const addRow = h(`<div class="nudge-add">
+          <input type="date" id="nfDate" aria-label="Follow-up date" />
+          <input type="time" id="nfTime" value="15:00" aria-label="Follow-up time" />
+          <input type="number" id="nfDur" value="50" min="5" step="5" aria-label="Duration in minutes" />
+          <span class="unit">min</span>
+          <button class="btn-small" id="nfAdd">Add appointment</button>
+        </div>`);
+        addRow.querySelector("#nfAdd").onclick = () => {
+          const dv = addRow.querySelector("#nfDate").value;
+          const tv = addRow.querySelector("#nfTime").value;
+          if (dv && tv) addManualFollowup(dv, tv, addRow.querySelector("#nfDur").value);
+        };
+        card.appendChild(addRow);
+      }
+      if (n.id === "no-email") {
+        const addRow = h(`<div class="nudge-add"><button class="btn-small" id="neAdd">Add worksheet email</button></div>`);
+        addRow.querySelector("#neAdd").onclick = addWorksheetEmail;
+        card.appendChild(addRow);
+      }
+      box.appendChild(card);
+    });
+    actPanel.appendChild(box);
+  }
+
+  const list = h(`<div class="actions-list"></div>`);
+  if (!p.actions.length) list.appendChild(h(`<div class="a-sub" style="color:var(--ink-faint)">No admin actions were requested in this debrief.</div>`));
+  p.actions.forEach((a, i) => {
+    const when = a.datetime_display ? `<div class="a-when">${esc(a.datetime_display)}</div>` : "";
+    const title = a.type === "schedule_followup" ? "Book follow-up appointment"
+                : a.type === "draft_client_email" ? "Draft client email" : esc(a.type);
+    const sub = a.type === "draft_client_email" && a.attachment_name ? `<div class="a-sub">Attaches the ${esc(a.attachment_name)}</div>`
+              : a.type === "schedule_followup" && a.title ? `<div class="a-sub">Calendar title: ${esc(a.title)}</div>` : "";
+    const row = h(`<label class="action on">
+      <input type="checkbox" checked data-i="${i}" />
+      <div class="body"><div class="a-title">${title}</div>${when}${sub}</div>
+    </label>`);
+    const cb = row.querySelector("input");
+    cb.onchange = () => { row.classList.toggle("on", cb.checked); row.classList.toggle("off", !cb.checked); };
+    list.appendChild(row);
+  });
+  actPanel.appendChild(list);
+
+  if ((p.next_session_suggestions || []).length) {
+    const sugg = h(`<div class="suggestions"><h4>Next session considerations</h4><ul></ul></div>`);
+    const ul = sugg.querySelector("ul");
+    p.next_session_suggestions.forEach(s => ul.appendChild(h(`<li>${esc(s)}</li>`)));
+    actPanel.appendChild(sugg);
+    actPanel.appendChild(h(`<div class="disclaimer">Clinical judgment and final session planning remain the therapist's responsibility.</div>`));
+  }
+  el.appendChild(actPanel);
+
+  if ((p.errors || []).length) {
+    el.appendChild(h(`<div class="banner banner-error">Some steps had trouble: ${esc(p.errors.map(e => e.stage + " (" + e.error + ")").join("; "))}</div>`));
+  }
+
+  const bar = h(`<div class="actions-bar enter d3">
+    <button class="btn btn-ghost" id="redo">Discard</button>
+    <div class="grow"></div>
+    <button class="btn btn-primary" id="approve">Approve and run</button>
+  </div>`);
+  bar.querySelector("#redo").onclick = () => go("record");
+  bar.querySelector("#approve").onclick = executePlan;
+  el.appendChild(bar);
+}
+
+function renderExecuting() {
+  el.appendChild(h(`<div class="panel processing enter">
+    <div class="spinner"></div>
+    <div class="label">Filing the note, booking, drafting, and reading the screen to verify...</div>
+  </div>`));
+}
+
+function renderResults() {
+  const r = App.result;
+  el.appendChild(h(`<div class="step-title">Done</div>`));
+  const panel = h(`<div class="panel enter d1"></div>`);
+  panel.appendChild(h(`<div class="note-head"><h3>What ran</h3></div>`));
+  (r.actions || []).forEach(a => {
+    const title = a.type === "schedule_followup" ? "Follow-up appointment"
+                : a.type === "draft_client_email" ? "Client email draft" : esc(a.type);
+    panel.appendChild(h(`<div class="result-action">
+      <div class="status-dot status-${esc(a.status)}"></div>
+      <div><div class="r-title">${title}</div><div class="r-detail">${esc(a.detail || a.status)}</div></div>
+    </div>`));
+  });
+  if (r.note_path) {
+    panel.appendChild(h(`<div class="result-action">
+      <div class="status-dot status-ok"></div>
+      <div><div class="r-title">Session note filed</div><div class="r-detail">${esc(r.note_path)}</div></div>
+    </div>`));
+  }
+  el.appendChild(panel);
+
+  if ((r.verification || []).length) {
+    el.appendChild(h(`<div class="step-title">Verified on screen</div>`));
+    const vpanel = h(`<div class="enter d2"></div>`);
+    r.verification.forEach(v => {
+      const ok = v.confirmed;
+      vpanel.appendChild(h(`<div class="verify-card ${ok ? "" : "unconfirmed"}">
+        <div class="verify-head"><span class="verify-surface">${esc(v.surface)}</span> &middot; ${ok ? "confirmed" : "not confirmed"}</div>
+        <div class="verify-quote">${esc(v.what_i_see || "")}</div>
+      </div>`));
+    });
+    el.appendChild(vpanel);
+  }
+
+  if ((r.errors || []).length) {
+    el.appendChild(h(`<div class="banner banner-error">${esc(r.errors.map(e => e.stage + ": " + e.error).join("; "))}</div>`));
+  }
+
+  if (r.timings) {
+    const t = Object.entries(r.timings).map(([k,v]) => `${k} ${v}s`).join("  &middot;  ");
+    el.appendChild(h(`<div class="timings">${t}</div>`));
+  }
+
+  const bar = h(`<div class="actions-bar enter d3">
+    <div class="grow"></div>
+    <button class="btn btn-primary" id="another">New debrief</button>
+  </div>`);
+  bar.querySelector("#another").onclick = () => { App.plan = null; App.result = null; go("clients"); };
+  el.appendChild(bar);
+}
+
+// ---------------------------------------------------------------------------
+// Assistant (in-app agent): ask -> propose -> approve -> execute
+// ---------------------------------------------------------------------------
+
+function renderAssistant() {
+  el.appendChild(h(`<div class="step-title">Ask the assistant</div>`));
+  const panel = h(`<div class="panel enter d1 asst-card">
+    <div class="asst-lead">Ask for a worksheet, an email draft, or something to look up. Nothing is saved until you approve it.</div>
+    <textarea class="asst-textarea" id="asstText" rows="3" placeholder="For example: make a one page box breathing worksheet for before meetings"></textarea>
+    <div class="asst-actions">
+      <button class="btn btn-ghost" id="asstMic"><span class="asst-mic-ic"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></span><span id="asstMicLabel">Record</span></button>
+      <div class="grow"></div>
+      <button class="btn btn-primary" id="asstSubmit">Ask the assistant</button>
+    </div>
+    <div class="local-note">${LOCK_SVG}Runs on this Mac. Nothing leaves it.</div>
+  </div>`);
+  panel.querySelector("#asstMic").onclick = toggleAssistantRecord;
+  panel.querySelector("#asstSubmit").onclick = () => {
+    const text = (document.getElementById("asstText").value || "").trim();
+    if (text) submitAssistant({ text });
+  };
+  el.appendChild(panel);
+
+  const bar = h(`<div class="actions-bar enter d2">
+    <button class="btn btn-ghost" id="asstBack">&larr; back to clients</button>
+  </div>`);
+  bar.querySelector("#asstBack").onclick = () => go("clients");
+  el.appendChild(bar);
+}
+
+async function toggleAssistantRecord() {
+  if (App.mediaRecorder && App.mediaRecorder.state === "recording") { stopRecord();
+    const l = document.getElementById("asstMicLabel"); if (l) l.textContent = "Record";
+    return;
+  }
+  App.recMode = "assistant";
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    App.error = "Microphone access was blocked. Allow the mic and try again."; render(); return;
+  }
+  App.chunks = [];
+  const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
+  App.mediaRecorder = new MediaRecorder(stream, { mimeType: mime });
+  App.mediaRecorder.ondataavailable = e => { if (e.data.size) App.chunks.push(e.data); };
+  App.mediaRecorder.onstop = onRecordingStopped;
+  App.mediaRecorder.start();
+  const mic = document.getElementById("asstMic");
+  if (mic) mic.classList.add("recording");
+  const l = document.getElementById("asstMicLabel"); if (l) l.textContent = "Stop and send";
+}
+
+async function submitAssistant({ text, blob }) {
+  go("assistantThinking");
+  try {
+    let r;
+    if (blob) {
+      const fd = new FormData();
+      fd.append("audio", blob, "assistant.webm");
+      if (App.client && App.client.client_id) fd.append("client_id", App.client.client_id);
+      r = await fetch("/api/assistant/plan", { method: "POST", body: fd });
+    } else {
+      const payload = { text };
+      if (App.client && App.client.client_id) payload.client_id = App.client.client_id;
+      r = await fetch("/api/assistant/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    }
+    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error((t.detail && (t.detail.fix || t.detail.error || t.detail)) || ("Server error " + r.status)); }
+    const data = await r.json();
+    if (data.route === "session_debrief") {
+      App.assistant = { sessionDebrief: true };
+      go("assistantResults");
+      return;
+    }
+    App.assistant = { finalText: data.final_text, proposals: (data.proposals || []).map(p => ({ ...p, include: true })), rawTranscript: data.raw_transcript };
+    go("assistantReview");
+  } catch (e) {
+    App.error = e.message; go("assistant");
+  }
+}
+
+function renderAssistantThinking() {
+  el.appendChild(h(`<div class="panel processing enter">
+    <div class="spinner"></div>
+    <div class="label">Reading the vault and drafting your request...</div>
+  </div>`));
+}
+
+function renderAssistantReview() {
+  const a = App.assistant || {};
+  el.appendChild(h(`<div class="step-title">The assistant prepared this</div>`));
+
+  if (a.finalText) {
+    el.appendChild(h(`<div class="panel enter d1 asst-final"><p>${esc(a.finalText)}</p></div>`));
+  }
+
+  const proposals = a.proposals || [];
+  if (!proposals.length) {
+    el.appendChild(h(`<div class="panel enter d2"><div class="hint" style="margin:8px auto">No documents or drafts to file. Nothing will be saved.</div></div>`));
+  } else {
+    el.appendChild(h(`<div class="step-title">Approve what to keep</div>`));
+    const list = h(`<div class="panel enter d2"></div>`);
+    proposals.forEach((p, i) => {
+      let title = "", body = "";
+      if (p.type === "worksheet") {
+        title = "Worksheet: " + esc(p.title || "Untitled");
+        const preview = (p.markdown_body || "").split("\n").filter(Boolean).slice(0, 4).join("\n");
+        body = `<pre class="asst-preview">${esc(preview)}</pre>` + (p.client_id ? `<div class="a-sub">Files under client ${esc(p.client_id)}</div>` : `<div class="a-sub">Files to the shared library</div>`);
+      } else if (p.type === "email") {
+        title = "Email draft to " + esc(p.client_id || "client");
+        body = `<div class="a-sub">Subject: ${esc(p.subject || "")}</div><pre class="asst-preview">${esc((p.body || "").slice(0, 400))}</pre>` + (p.attach_worksheet ? `<div class="a-sub">Attaches the worksheet above</div>` : "");
+      } else {
+        title = esc(p.type || "item");
+      }
+      const row = h(`<label class="action ${p.include ? "on" : "off"}">
+        <input type="checkbox" ${p.include ? "checked" : ""} data-i="${i}" />
+        <div class="body"><div class="a-title">${title}</div>${body}</div>
+      </label>`);
+      const cb = row.querySelector("input");
+      cb.onchange = () => { proposals[i].include = cb.checked; row.classList.toggle("on", cb.checked); row.classList.toggle("off", !cb.checked); };
+      list.appendChild(row);
+    });
+    el.appendChild(list);
+  }
+
+  const anyIncludable = proposals.length > 0;
+  const bar = h(`<div class="actions-bar enter d3">
+    <button class="btn btn-ghost" id="asstDiscard">Discard</button>
+    <div class="grow"></div>
+    ${anyIncludable ? `<button class="btn btn-primary" id="asstApprove">Approve and file</button>` : `<button class="btn btn-primary" id="asstDone">Done</button>`}
+  </div>`);
+  bar.querySelector("#asstDiscard").onclick = () => { App.assistant = null; go("assistant"); };
+  if (anyIncludable) bar.querySelector("#asstApprove").onclick = executeAssistant;
+  else bar.querySelector("#asstDone").onclick = () => { App.assistant = null; go("clients"); };
+  el.appendChild(bar);
+}
+
+async function executeAssistant() {
+  const a = App.assistant || {};
+  const proposals = (a.proposals || []).filter(p => p.include).map(({ include, ...rest }) => rest);
+  if (!proposals.length) { App.assistant = null; go("clients"); return; }
+  const payload = { proposals };
+  if (App.client && App.client.client_id) payload.client_id = App.client.client_id;
+  payload.request = a.rawTranscript || "";
+  go("assistantThinking");
+  try {
+    const r = await fetch("/api/assistant/execute", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error((t.detail && (t.detail.fix || t.detail.error || t.detail)) || ("Server error " + r.status)); }
+    const data = await r.json();
+    App.assistant = { ...a, results: data.results || [] };
+    go("assistantResults");
+  } catch (e) {
+    App.error = e.message; App.state = "assistantReview"; render();
+    el.insertBefore(h(`<div class="banner banner-error">${esc(e.message)}</div>`), el.firstChild);
+  }
+}
+
+function renderAssistantResults() {
+  const a = App.assistant || {};
+  if (a.sessionDebrief) {
+    el.appendChild(h(`<div class="step-title">This sounded like a session debrief</div>`));
+    el.appendChild(h(`<div class="panel enter d1 asst-final"><p>Use New debrief so it is filed properly as a clinical note. The assistant is for making resources, drafting emails, and looking things up.</p></div>`));
+    const bar = h(`<div class="actions-bar enter d2"><div class="grow"></div><button class="btn btn-primary" id="asstToClients">Back to clients</button></div>`);
+    bar.querySelector("#asstToClients").onclick = () => { App.assistant = null; go("clients"); };
+    el.appendChild(bar);
+    return;
+  }
+  el.appendChild(h(`<div class="step-title">Done</div>`));
+  const panel = h(`<div class="panel enter d1"></div>`);
+  (a.results || []).forEach(r => {
+    const title = r.type === "worksheet" ? "Worksheet filed" : r.type === "email" ? "Email draft" : esc(r.type);
+    const detail = r.status === "ok" ? (r.path || r.detail || "done") : (r.error || r.status);
+    panel.appendChild(h(`<div class="result-action">
+      <div class="status-dot status-${esc(r.status)}"></div>
+      <div><div class="r-title">${title}</div><div class="r-detail">${esc(detail)}</div></div>
+    </div>`));
+  });
+  if (!(a.results || []).length) panel.appendChild(h(`<div class="hint" style="margin:8px auto">Nothing was filed.</div>`));
+  el.appendChild(panel);
+  const bar = h(`<div class="actions-bar enter d2">
+    <div class="grow"></div>
+    <button class="btn btn-primary" id="asstAgain">Ask again</button>
+  </div>`);
+  bar.querySelector("#asstAgain").onclick = () => { App.assistant = null; go("assistant"); };
+  el.appendChild(bar);
+}
+
+async function toggleRecord() {
+  if (App.mediaRecorder && App.mediaRecorder.state === "recording") { stopRecord(); return; }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    App.error = "Microphone access was blocked. Allow the mic and try again."; render(); return;
+  }
+  App.chunks = [];
+  const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
+  App.mediaRecorder = new MediaRecorder(stream, { mimeType: mime });
+  App.mediaRecorder.ondataavailable = e => { if (e.data.size) App.chunks.push(e.data); };
+  App.mediaRecorder.onstop = onRecordingStopped;
+  App.mediaRecorder.start();
+  App.seconds = 0;
+  const btn = document.getElementById("recBtn");
+  if (btn) { btn.classList.add("recording"); btn.setAttribute("aria-label", "Stop recording"); }
+  const wrap = document.getElementById("recWrap");
+  if (wrap) wrap.classList.add("recording");
+  const timerEl = document.getElementById("timer");
+  if (timerEl) timerEl.classList.remove("idle");
+  const wave = document.getElementById("wave");
+  if (wave) wave.classList.add("on");
+  startMeter();
+  const hint = document.getElementById("recHint");
+  if (hint) hint.textContent = "Recording. Tap again when you are done.";
+  App.timerId = setInterval(() => {
+    App.seconds++;
+    const t = document.getElementById("timer");
+    if (t) t.textContent = fmtSecs(App.seconds);
+  }, 1000);
+}
+
+// Live input level meter: drives the waveform bars from the real mic stream.
+// Purely decorative, so every failure path is swallowed and never blocks recording.
+function startMeter() {
+  try {
+    App.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = App.audioCtx.createMediaStreamSource(stream);
+    App.analyser = App.audioCtx.createAnalyser();
+    App.analyser.fftSize = 256;
+    App.analyser.smoothingTimeConstant = 0.75;
+    src.connect(App.analyser);
+    const bars = Array.from(document.querySelectorAll("#wave i"));
+    const data = new Uint8Array(App.analyser.frequencyBinCount);
+    const loop = () => {
+      App.analyser.getByteFrequencyData(data);
+      for (let i = 0; i < bars.length; i++) {
+        const v = data[2 + Math.floor(i * (data.length * 0.6) / bars.length)] / 255;
+        bars[i].style.transform = `scaleY(${Math.max(0.12, Math.pow(v, 1.4)).toFixed(3)})`;
+      }
+      App.raf = requestAnimationFrame(loop);
+    };
+    loop();
+  } catch (e) { /* meter is optional */ }
+}
+function stopMeter() {
+  if (App.raf) { cancelAnimationFrame(App.raf); App.raf = null; }
+  if (App.audioCtx) { App.audioCtx.close().catch(() => {}); App.audioCtx = null; }
+  App.analyser = null;
+}
+
+function stopRecord() {
+  if (App.timerId) { clearInterval(App.timerId); App.timerId = null; }
+  stopMeter();
+  if (App.mediaRecorder && App.mediaRecorder.state === "recording") App.mediaRecorder.stop();
+}
+function stopStream() {
+  stopRecord();
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+}
+
+async function onRecordingStopped() {
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  const blob = new Blob(App.chunks, { type: "audio/webm" });
+  if (App.recMode === "assistant") { submitAssistant({ blob }); return; }
+  go("processing");
+  const fd = new FormData();
+  fd.append("audio", blob, "debrief.webm");
+  fd.append("client_id", App.client.client_id);
+  try {
+    const r = await fetch("/api/debrief", { method: "POST", body: fd });
+    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Server error " + r.status)); }
+    App.plan = await r.json();
+    go("review");
+  } catch (e) {
+    App.error = e.message; go("record");
+  }
+}
+
+async function executePlan() {
+  const boxes = Array.from(document.querySelectorAll(".action input[type=checkbox]"));
+  const plan = JSON.parse(JSON.stringify(App.plan));
+  boxes.forEach(b => { const i = +b.dataset.i; if (plan.actions[i]) plan.actions[i].enabled = b.checked; });
+  plan.verify = true;
+  go("executing");
+  try {
+    const r = await fetch("/api/execute", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(plan) });
+    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Server error " + r.status)); }
+    App.result = await r.json();
+    go("results");
+  } catch (e) {
+    App.state = "review"; render();
+    el.insertBefore(h(`<div class="banner banner-error">${esc(e.message)}</div>`), el.firstChild);
+  }
+}
+
+// ===========================================================================
+// Records UI: client record, document view, library, trash, search
+// ===========================================================================
+
+const FTYPE = {
+  "session-note": { badge: "note", label: "NOTE" },
+  "worksheet-pdf": { badge: "pdf", label: "PDF" },
+  "upload-pdf": { badge: "pdf", label: "PDF" },
+  "upload-image": { badge: "img", label: "IMG" },
+  "upload-docx": { badge: "docx", label: "DOC" },
+  "markdown": { badge: "note", label: "MD" },
+};
+
+function firstName(name) { return (name || "").trim().split(/\s+/)[0] || "client"; }
+
+function fmtNextSession(iso) {
+  if (!iso) return "Not scheduled";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return esc(String(iso));
+  const day = d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  return `${day} · ${fmtClock(d)}`;
+}
+
+async function openClient(c) {
+  App.client = c;
+  App.nav = "client:" + c.client_id;
+  App.recordTab = "sessions";
+  App.state = "clientRecord";
+  App.recordData = null;
+  App.error = null;
+  render();
+  try {
+    const r = await fetch("/api/clients/" + encodeURIComponent(c.client_id));
+    if (!r.ok) throw new Error("Could not load record (" + r.status + ")");
+    App.recordData = await r.json();
+  } catch (e) { App.error = e.message; }
+  if (App.state === "clientRecord") render();
+}
+
+function renderClientRecord() {
+  const d = App.recordData;
+  const c = App.client || {};
+  const name = (d && d.profile && d.profile.name) || c.name || "Client";
+  el.appendChild(h(`<div class="crumb"><span class="link" id="crHome">Clients</span> / <b>${esc(name)}</b></div>`));
+  el.querySelector("#crHome").onclick = () => { App.client = null; go("clients"); };
+
+  if (!d) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Opening record...</div></div>`)); return; }
+  const pf = d.profile || {};
+  const framework = pf.framework || c.framework || "";
+  const concerns = (pf.presenting_concerns || []).join(", ");
+  const head = h(`<div class="chead">
+    <div class="bigmono">${esc(initials(name))}</div>
+    <div>
+      <h1>${esc(name)}</h1>
+      <div class="c-meta">${esc(pf.client_id || c.client_id || "")}${framework ? " · " + esc(framework) : ""}${concerns ? " · " + esc(concerns) : ""}</div>
+    </div>
+    <div class="c-next">Next session<b>${esc(fmtNextSession(d.next_session))}</b></div>
+  </div>`);
+  el.appendChild(head);
+
+  const tabs = h(`<div class="ctabs">
+    <button class="ctab ${App.recordTab === "sessions" ? "on" : ""}" data-tab="sessions">Sessions</button>
+    <button class="ctab ${App.recordTab === "profile" ? "on" : ""}" data-tab="profile">Profile</button>
+    <button class="ctab ${App.recordTab === "documents" ? "on" : ""}" data-tab="documents">Documents</button>
+  </div>`);
+  tabs.querySelectorAll(".ctab").forEach(t => t.onclick = () => { App.recordTab = t.dataset.tab; render(); });
+  el.appendChild(tabs);
+
+  if (App.recordTab === "sessions") renderSessionsTab(d);
+  else if (App.recordTab === "profile") renderProfileTab(d);
+  else renderDocumentsTab(d);
+}
+
+function renderSessionsTab(d) {
+  const sessions = d.sessions || [];
+  const card = h(`<div class="rcard"></div>`);
+  if (!sessions.length) card.appendChild(h(`<div class="hint" style="padding:24px">No session notes yet. Use New debrief to record one.</div>`));
+  sessions.forEach(s => {
+    const dd = (s.date || "").split("-");
+    const day = dd[2] || "";
+    const mon = dd[1] ? ["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][+dd[1]] : "";
+    const chip = s.risk_flag
+      ? `<span class="rchip risk">⚑ Risk flag noted</span>`
+      : `<span class="rchip ok">✓ Filed</span>`;
+    const row = h(`<button class="sesscard">
+      <div class="sdate"><div class="d">${esc(day)}</div><div class="m">${esc(mon)}</div></div>
+      <div>
+        <h4>${esc(s.title)}</h4>
+        <p>${esc(s.preview || "")}</p>
+        ${chip}
+      </div>
+    </button>`);
+    row.onclick = () => openDocument(s.path, { client: d, section: "Sessions", title: s.title });
+    card.appendChild(row);
+  });
+  el.appendChild(card);
+}
+
+function renderProfileTab(d) {
+  const pf = d.profile || {};
+  const grid = h(`<div style="max-width:520px"></div>`);
+  const card = h(`<div class="rcard"><div class="profcard"></div></div>`);
+  const rows = card.querySelector(".profcard");
+  const addRow = (k, v) => { if (v) rows.appendChild(h(`<div class="profrow"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`)); };
+  addRow("Client id", pf.client_id);
+  addRow("Status", pf.status);
+  addRow("Framework", pf.framework);
+  addRow("Intake date", pf.intake_date);
+  addRow("Email", pf.email);
+  addRow("Diagnosis", (pf.diagnosis || []).join(", "));
+  addRow("Concerns", (pf.presenting_concerns || []).join(", "));
+  // Treatment goals come from the summary body; show any risk flags too.
+  if ((pf.risk_flags || []).length) addRow("Risk flags", pf.risk_flags.join(", "));
+  grid.appendChild(card);
+  if (d.summary) {
+    grid.appendChild(h(`<h3 class="rsec" style="margin-top:22px">Summary</h3>`));
+    grid.appendChild(h(`<div class="rcard"><div class="profcard" style="font-size:14.5px;line-height:1.6;color:var(--ink-soft)">${esc(d.summary)}</div></div>`));
+  }
+  el.appendChild(grid);
+}
+
+function renderDocumentsTab(d) {
+  const docs = d.documents || [];
+  const wrap = h(`<div class="docs" style="margin-top:0"></div>`);
+  const grid = h(`<div class="docgrid"></div>`);
+  docs.forEach(doc => grid.appendChild(buildDocCard(doc, d)));
+
+  const hiddenInput = h(`<input type="file" style="display:none" accept=".pdf,.png,.jpg,.jpeg,.docx,.md" />`);
+  hiddenInput.onchange = () => { if (hiddenInput.files.length) uploadFile(hiddenInput.files[0], d.client_id); };
+  const add = h(`<button class="doc add">＋ Add document</button>`);
+  add.onclick = () => hiddenInput.click();
+  grid.appendChild(add);
+  grid.appendChild(hiddenInput);
+
+  // Drag and drop onto the grid.
+  grid.addEventListener("dragover", (e) => { e.preventDefault(); grid.classList.add("drop-active"); });
+  grid.addEventListener("dragleave", () => grid.classList.remove("drop-active"));
+  grid.addEventListener("drop", (e) => {
+    e.preventDefault(); grid.classList.remove("drop-active");
+    if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0], d.client_id);
+  });
+
+  wrap.appendChild(grid);
+  el.appendChild(wrap);
+}
+
+function buildDocCard(doc, d) {
+  const ft = FTYPE[doc.kind] || FTYPE.markdown;
+  const meta = (doc.agent_made ? "Created by agent" : "Uploaded") + (doc.date_display ? " · " + doc.date_display : "");
+  const card = h(`<div class="doc">
+    <div class="ftype ${ft.badge}">${ft.label}</div>
+    <div style="flex:1;min-width:0"><h5>${esc(doc.title)}</h5><div class="d-sub">${esc(meta)}</div></div>
+    <div class="acts">
+      <button class="iconbtn" title="Rename">✎</button>
+      <button class="iconbtn" title="Download PDF">⬇</button>
+      <button class="iconbtn" title="Email draft">✉</button>
+    </div>
+  </div>`);
+  card.onclick = (e) => { if (!e.target.closest(".acts")) openDocument(doc.path, { client: d, section: "Documents", title: doc.title }); };
+  const [renameBtn, dlBtn, emailBtn] = card.querySelectorAll(".iconbtn");
+  renameBtn.onclick = (e) => { e.stopPropagation(); inlineRenameCard(card, doc, d); };
+  dlBtn.onclick = (e) => { e.stopPropagation(); downloadPdf(doc.path); };
+  emailBtn.onclick = (e) => { e.stopPropagation(); emailDocument(d.client_id, doc.path); };
+  return card;
+}
+
+function inlineRenameCard(card, doc, d) {
+  const titleEl = card.querySelector("h5");
+  const input = h(`<input class="doc-rename-input" value="${esc(doc.title)}" />`);
+  titleEl.replaceWith(input);
+  input.focus();
+  input.select();
+  const commit = async () => {
+    const v = input.value.trim();
+    if (v && v !== doc.title) { await renameDocument(doc.path, v); openClient(App.client); }
+    else render();
+  };
+  input.onkeydown = (e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") render(); };
+  input.onblur = commit;
+}
+
+async function uploadFile(file, clientId) {
+  const fd = new FormData();
+  fd.append("client_id", clientId);
+  fd.append("file", file, file.name);
+  try {
+    const r = await fetch("/api/documents/upload", { method: "POST", body: fd });
+    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Upload failed " + r.status)); }
+    openClient(App.client);
+  } catch (e) { App.error = e.message; render(); }
+}
+
+async function renameDocument(path, newTitle) {
+  try {
+    const r = await fetch("/api/documents/rename", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, new_title: newTitle }) });
+    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Rename failed " + r.status)); }
+    return (await r.json()).path;
+  } catch (e) { App.error = e.message; render(); }
+}
+
+function downloadPdf(path) {
+  window.open("/api/documents/pdf?path=" + encodeURIComponent(path), "_blank");
+}
+
+async function emailDocument(clientId, path, subject, body) {
+  try {
+    const payload = { client_id: clientId, path };
+    if (subject) payload.subject = subject;
+    if (body) payload.body = body;
+    const r = await fetch("/api/documents/email", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Could not draft email " + r.status)); }
+    toast("Mail draft opened for review. Nothing was sent.");
+  } catch (e) { toast(e.message); }
+}
+
+function toast(msg) {
+  const t = h(`<div class="banner" style="position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:60;background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow);color:var(--ink)">${esc(msg)}</div>`);
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3200);
+}
+
+// ---------------------------------------------------------------------------
+// Document view
+// ---------------------------------------------------------------------------
+
+async function openDocument(path, crumb) {
+  App.state = "document";
+  App.doc = null;
+  App.docCrumb = crumb || null;
+  App.error = null;
+  render();
+  try {
+    const r = await fetch("/api/notes?path=" + encodeURIComponent(path));
+    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Could not open note " + r.status)); }
+    App.doc = await r.json();
+  } catch (e) { App.error = e.message; }
+  if (App.state === "document") render();
+}
+
+function renderDocument() {
+  const doc = App.doc;
+  const crumb = App.docCrumb || {};
+  const d = crumb.client;
+  const clientName = (d && d.profile && d.profile.name) || (App.client && App.client.name) || "Client";
+  const bc = h(`<div class="crumb"><span class="link" id="dcClient">${esc(clientName)}</span> / ${esc(crumb.section || "Documents")} / <b>${esc((doc && frontTitle(doc)) || crumb.title || "Document")}</b></div>`);
+  el.appendChild(bc);
+  bc.querySelector("#dcClient").onclick = () => { if (d) openClient(App.client); else go("clients"); };
+
+  if (App.error) el.appendChild(h(`<div class="banner banner-error">${esc(App.error)}</div>`));
+  if (!doc) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Opening document...</div></div>`)); return; }
+
+  const fm = doc.frontmatter || {};
+  const isSession = doc.kind === "session-note";
+  const title = frontTitle(doc);
+
+  const bar = h(`<div class="docbar">
+    <span class="doc-title" title="Click to rename">${esc(title)}</span>
+    <span class="pencil">✎ rename</span>
+    <span class="spacer"></span>
+    <button class="rbtn" id="docEdit">✎ Edit</button>
+    <button class="rbtn" id="docDownload">⬇ Download PDF</button>
+    <button class="rbtn primary" id="docEmail">✉ Email draft to ${esc(firstName(clientName))}</button>
+    <span class="overflow-wrap"><button class="rbtn" id="docMore">···</button></span>
+  </div>`);
+  el.appendChild(bar);
+
+  const titleEl = bar.querySelector(".doc-title");
+  const startRename = () => beginTitleRename(titleEl, doc);
+  titleEl.onclick = startRename;
+  bar.querySelector(".pencil").onclick = startRename;
+  bar.querySelector("#docDownload").onclick = () => downloadPdf(doc.path);
+  bar.querySelector("#docEmail").onclick = () => emailDocumentFromView(doc);
+  bar.querySelector("#docEdit").onclick = () => beginEdit(doc, isSession);
+  const moreWrap = bar.querySelector(".overflow-wrap");
+  bar.querySelector("#docMore").onclick = (e) => { e.stopPropagation(); toggleOverflow(moreWrap, doc); };
+
+  // The rendered page.
+  const paper = h(`<div class="paper-wrap"><div class="paper"></div></div>`);
+  paper.querySelector(".paper").innerHTML = doc.html;
+  // Frontmatter chips (filed date, verified).
+  const chips = [];
+  if (isSession) {
+    const df = (fm.session_date || "").toString().slice(0, 10);
+    if (df) chips.push(`<span class="filedchip">✓ Filed ${esc(df)}</span>`);
+    if ((fm.actions_taken || []).some(a => String(a).includes("verified"))) chips.push(`<span class="filedchip">verified on screen</span>`);
+  }
+  if (chips.length) paper.querySelector(".paper").appendChild(h(`<div class="paper-chips">${chips.join("")}</div>`));
+  el.appendChild(paper);
+}
+
+function frontTitle(doc) {
+  const fm = doc.frontmatter || {};
+  if (fm.title) return String(fm.title);
+  if (doc.kind === "session-note") {
+    const n = fm.session_number;
+    return n ? `Session ${n}, ${fm.format || "DAP"} note` : `${fm.format || "DAP"} note`;
+  }
+  return (App.docCrumb && App.docCrumb.title) || "Document";
+}
+
+function beginTitleRename(titleEl, doc) {
+  const current = titleEl.textContent;
+  const input = h(`<input class="doc-title-input" value="${esc(current)}" />`);
+  titleEl.replaceWith(input);
+  input.focus(); input.select();
+  const commit = async () => {
+    const v = input.value.trim();
+    if (v && v !== current) {
+      const newPath = await renameDocument(doc.path, v);
+      if (newPath) { doc.path = newPath; if (App.docCrumb) App.docCrumb.title = v; }
+    }
+    render();
+  };
+  input.onkeydown = (e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") render(); };
+  input.onblur = commit;
+}
+
+function beginEdit(doc, isSession) {
+  const paper = el.querySelector(".paper");
+  if (!paper) return;
+  paper.innerHTML = "";
+  if (isSession) {
+    paper.appendChild(h(`<div class="amend-note">Filed notes keep their history; your change is added as a dated amendment.</div>`));
+  }
+  const bodyMd = stripFrontmatter(doc.markdown);
+  const area = h(`<textarea class="doc-edit-area">${esc(isSession ? "" : bodyMd)}</textarea>`);
+  if (isSession) area.placeholder = "Write an amendment. It will be appended with today's date.";
+  paper.appendChild(area);
+  const row = h(`<div class="actions-bar" style="margin-top:14px">
+    <button class="rbtn" id="editCancel">Cancel</button><div class="grow" style="flex:1"></div>
+    <button class="rbtn primary" id="editSave">${isSession ? "Add amendment" : "Save"}</button>
+  </div>`);
+  paper.appendChild(row);
+  area.focus();
+  row.querySelector("#editCancel").onclick = () => render();
+  row.querySelector("#editSave").onclick = async () => {
+    const text = area.value.trim();
+    if (!text) { render(); return; }
+    if (isSession) await amendNote(doc.path, text);
+    else await saveDocument(doc.path, text);
+    openDocument(doc.path, App.docCrumb);
+  };
+}
+
+function stripFrontmatter(md) {
+  if (md && md.startsWith("---")) {
+    const end = md.indexOf("\n---", 3);
+    if (end !== -1) return md.slice(md.indexOf("\n", end + 1) + 1).replace(/^\n+/, "");
+  }
+  return md || "";
+}
+
+async function amendNote(path, text) {
+  try {
+    const r = await fetch("/api/notes/amend", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, text }) });
+    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Amend failed " + r.status)); }
+  } catch (e) { toast(e.message); }
+}
+
+async function saveDocument(path, markdown) {
+  try {
+    const r = await fetch("/api/documents/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, markdown }) });
+    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Save failed " + r.status)); }
+  } catch (e) { toast(e.message); }
+}
+
+function emailDocumentFromView(doc) {
+  const cid = (App.client && App.client.client_id) || (App.docCrumb && App.docCrumb.client && App.docCrumb.client.client_id);
+  if (cid) emailDocument(cid, doc.path);
+  else toast("Open this document from a client record to email it.");
+}
+
+function toggleOverflow(wrap, doc) {
+  const existing = wrap.querySelector(".overflow-menu");
+  if (existing) { existing.remove(); return; }
+  const menu = h(`<div class="overflow-menu">
+    <button data-a="reveal">Reveal in Finder</button>
+    <button data-a="open">Open</button>
+    <button class="danger" data-a="trash">Move to Trash</button>
+  </div>`);
+  wrap.appendChild(menu);
+  menu.querySelector('[data-a="reveal"]').onclick = () => { post("/api/reveal", { path: doc.path }); menu.remove(); };
+  menu.querySelector('[data-a="open"]').onclick = () => { post("/api/open", { path: doc.path }); menu.remove(); };
+  menu.querySelector('[data-a="trash"]').onclick = async () => {
+    menu.remove();
+    await post("/api/trash", { path: doc.path });
+    toast("Moved to Trash. Restore it from the Trash view.");
+    if (App.client) openClient(App.client); else go("clients");
+  };
+  const closer = (e) => { if (!wrap.contains(e.target)) { menu.remove(); document.removeEventListener("click", closer); } };
+  setTimeout(() => document.addEventListener("click", closer), 0);
+}
+
+async function post(url, body) {
+  try {
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Error " + r.status)); }
+    return await r.json();
+  } catch (e) { toast(e.message); }
+}
+
+// ---------------------------------------------------------------------------
+// Library
+// ---------------------------------------------------------------------------
+
+const LIB_THUMBS = { breathing: "🫁", thought: "📝", sleep: "🌙", values: "🧭", grounding: "⚓", record: "📝" };
+function libThumb(title) {
+  const t = (title || "").toLowerCase();
+  for (const k in LIB_THUMBS) if (t.includes(k)) return LIB_THUMBS[k];
+  return "📄";
+}
+
+async function openLibrary(which) {
+  App.nav = "lib:" + which;
+  App.state = "library";
+  App.library = App.library || null;
+  App.libWhich = which;
+  App.error = null;
+  render();
+  try {
+    const r = await fetch("/api/library");
+    if (!r.ok) throw new Error("Could not load library (" + r.status + ")");
+    App.library = await r.json();
+  } catch (e) { App.error = e.message; }
+  if (App.state === "library") render();
+}
+
+function renderLibrary() {
+  const which = App.libWhich || "worksheets";
+  const lib = App.library;
+  el.appendChild(h(`<div class="lib-head">
+    <div class="grow">
+      <h1>${which === "reference" ? "Reference library" : "Worksheet library"}</h1>
+      <div class="c-meta">Reusable client resources. Ask the assistant for a new one by voice, or add your own.</div>
+    </div>
+    <button class="rbtn primary" id="libAsk">🎙 Ask for a worksheet</button>
+  </div>`));
+  el.querySelector("#libAsk").onclick = () => { App.assistant = null; go("assistant"); };
+  if (App.error) el.appendChild(h(`<div class="banner banner-error">${esc(App.error)}</div>`));
+  if (!lib) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Loading library...</div></div>`)); return; }
+
+  const items = which === "reference" ? (lib.reference || []) : (lib.worksheets || []);
+  const grid = h(`<div class="libgrid"></div>`);
+  if (!items.length) grid.appendChild(h(`<div class="hint">Nothing here yet.</div>`));
+  items.forEach(it => {
+    const isAgent = it.agent_made;
+    const card = h(`<div class="libcard">
+      <div class="thumb">${libThumb(it.title)}</div>
+      <h5>${esc(it.title)}</h5>
+      <p>${esc(it.kind === "worksheet-pdf" || it.kind === "markdown" ? "Reusable client resource." : "")}</p>
+      <div class="lib-row">
+        <span class="rchip ${isAgent ? "agent" : "ok"}">${isAgent ? "✦ Agent-made" : "Template"}</span>
+        <span class="lib-send">Email to client…</span>
+      </div>
+    </div>`);
+    card.querySelector(".lib-send").onclick = (e) => { e.stopPropagation(); pickClientThen(cid => emailDocument(cid, it.path)); };
+    card.onclick = () => openDocument(it.path, { section: which === "reference" ? "Reference" : "Worksheets", title: it.title });
+    grid.appendChild(card);
+  });
+  el.appendChild(grid);
+}
+
+function pickClientThen(cb) {
+  const backdrop = h(`<div class="modal-backdrop"><div class="modal"><h4>Email to which client?</h4><div class="picks"></div><div style="text-align:right;margin-top:8px"><button class="rbtn" id="pickCancel">Cancel</button></div></div></div>`);
+  const picks = backdrop.querySelector(".picks");
+  App.clients.forEach(c => {
+    const b = h(`<button class="pick">${esc(c.name)} <span style="color:var(--ink-faint)">${esc(c.client_id)}</span></button>`);
+    b.onclick = () => { backdrop.remove(); cb(c.client_id); };
+    picks.appendChild(b);
+  });
+  backdrop.querySelector("#pickCancel").onclick = () => backdrop.remove();
+  backdrop.onclick = (e) => { if (e.target === backdrop) backdrop.remove(); };
+  document.body.appendChild(backdrop);
+}
+
+// ---------------------------------------------------------------------------
+// Trash
+// ---------------------------------------------------------------------------
+
+async function openTrash() {
+  App.nav = "trash";
+  App.state = "trash";
+  App.trash = null;
+  App.error = null;
+  render();
+  try {
+    const r = await fetch("/api/trash");
+    if (!r.ok) throw new Error("Could not load trash (" + r.status + ")");
+    App.trash = (await r.json()).items || [];
+  } catch (e) { App.error = e.message; }
+  if (App.state === "trash") render();
+}
+
+function renderTrash() {
+  el.appendChild(h(`<h1 style="font-family:var(--font-serif);font-size:26px;font-weight:600;margin-bottom:16px">Trash</h1>`));
+  if (App.error) el.appendChild(h(`<div class="banner banner-error">${esc(App.error)}</div>`));
+  if (App.trash === null) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Loading...</div></div>`)); return; }
+  const list = h(`<div class="trash-list"></div>`);
+  if (!App.trash.length) list.appendChild(h(`<div class="hint">Trash is empty.</div>`));
+  App.trash.forEach(item => {
+    const row = h(`<div class="trash-row">
+      <div class="t-body"><div class="t-title">${esc(item.title)}</div><div class="t-when">${esc(item.original)} · ${esc((item.trashed_at || "").slice(0, 10))}</div></div>
+      <button class="rbtn">Restore</button>
+    </div>`);
+    row.querySelector("button").onclick = async () => { await post("/api/trash/restore", { token: item.token }); openTrash(); };
+    list.appendChild(row);
+  });
+  el.appendChild(list);
+  el.appendChild(h(`<div class="trash-note">Items are removed after 30 days.</div>`));
+}
+
+// ---------------------------------------------------------------------------
+// Global search
+// ---------------------------------------------------------------------------
+
+function runSearch(q) {
+  clearTimeout(App.searchTimer);
+  const box = document.getElementById("searchResults");
+  if (!box) return;
+  const query = (q || "").trim();
+  if (!query) { box.innerHTML = ""; box.className = ""; return; }
+  App.searchTimer = setTimeout(async () => {
+    try {
+      const r = await fetch("/api/search?q=" + encodeURIComponent(query));
+      if (!r.ok) return;
+      const data = await r.json();
+      renderSearchResults(box, data, query);
+    } catch (e) { /* ignore */ }
+  }, 220);
+}
+
+function renderSearchResults(box, data, query) {
+  box.innerHTML = "";
+  box.className = "search-results";
+  const groups = [
+    ["Clients", data.clients || []],
+    ["Notes", data.notes || []],
+    ["Library", data.library || []],
+  ];
+  let any = false;
+  groups.forEach(([label, hits]) => {
+    if (!hits.length) return;
+    any = true;
+    box.appendChild(h(`<div class="search-group-label">${esc(label)}</div>`));
+    hits.forEach(hit => {
+      const item = h(`<button class="search-hit"><div class="sh-title">${esc(hit.title)}</div><div class="sh-snip">${esc(hit.snippet || "")}</div></button>`);
+      item.onclick = () => { closeSearch(); openSearchHit(hit); };
+      box.appendChild(item);
+    });
+  });
+  if (!any) box.appendChild(h(`<div class="search-empty">No matches for "${esc(query)}".</div>`));
+}
+
+function closeSearch() {
+  const s = document.getElementById("globalSearch");
+  const box = document.getElementById("searchResults");
+  if (s) s.value = "";
+  if (box) { box.innerHTML = ""; box.className = ""; }
+}
+
+function openSearchHit(hit) {
+  const p = hit.path || "";
+  const m = p.match(/^Clients\/([^/]+)\/_Profile\.md$/);
+  if (m) {
+    const c = App.clients.find(x => x.client_id === m[1]);
+    if (c) { openClient(c); return; }
+  }
+  const cm = p.match(/^Clients\/([^/]+)\//);
+  const crumb = { section: "Sessions", title: hit.title };
+  if (cm) {
+    const c = App.clients.find(x => x.client_id === cm[1]);
+    if (c) App.client = c;
+  }
+  openDocument(p, crumb);
+}
+
+loadClients();
