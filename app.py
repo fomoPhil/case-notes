@@ -25,6 +25,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -216,6 +217,21 @@ def _convert_to_wav(src_bytes: bytes, workdir: Path) -> str:
     return str(wav)
 
 
+def _debrief_sync(data: bytes, client_id: str) -> dict:
+    """Blocking half of /api/debrief; runs in a worker thread."""
+    with tempfile.TemporaryDirectory(prefix="debrief_") as tmp:
+        try:
+            wav_path = _convert_to_wav(data, Path(tmp))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        try:
+            return pipeline.transcribe_and_extract(wav_path, client_id)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Debrief failed: {exc}")
+
+
 @app.post("/api/debrief")
 async def api_debrief(
     audio: UploadFile,
@@ -226,15 +242,7 @@ async def api_debrief(
     data = await audio.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty audio upload.")
-    with tempfile.TemporaryDirectory(prefix="debrief_") as tmp:
-        try:
-            wav_path = _convert_to_wav(data, Path(tmp))
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        try:
-            plan = pipeline.transcribe_and_extract(wav_path, client_id)
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Debrief failed: {exc}")
+    plan = await run_in_threadpool(_debrief_sync, data, client_id)
     # Keep the original upload so execute can archive it into the vault.
     try:
         plan["audio_token"] = _store_original_audio(data)
@@ -260,7 +268,7 @@ async def api_execute(request: Request) -> JSONResponse:
     if stored is not None:
         plan["audio_path"] = str(stored)
     try:
-        result = pipeline.execute_plan(plan, verify=verify)
+        result = await run_in_threadpool(pipeline.execute_plan, plan, verify=verify)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Execution failed: {exc}")
     finally:
@@ -357,6 +365,19 @@ def _client_email(client_id: str | None) -> str | None:
     return ctx.get("email")
 
 
+def _transcribe_upload_sync(data: bytes) -> str:
+    """Blocking convert + transcribe for assistant audio; runs in a worker thread."""
+    with tempfile.TemporaryDirectory(prefix="debrief_asst_") as tmp:
+        try:
+            wav_path = _convert_to_wav(data, Path(tmp))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=str(exc))
+        try:
+            return stt.transcribe(wav_path)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}")
+
+
 @app.post("/api/assistant/plan")
 async def api_assistant_plan(request: Request) -> JSONResponse:
     """Transcribe (if audio) -> classify -> route to the debrief flow or agent."""
@@ -375,15 +396,7 @@ async def api_assistant_plan(request: Request) -> JSONResponse:
             data = await audio.read()
             if not data:
                 raise HTTPException(status_code=400, detail="Empty audio upload.")
-            with tempfile.TemporaryDirectory(prefix="debrief_asst_") as tmp:
-                try:
-                    wav_path = _convert_to_wav(data, Path(tmp))
-                except Exception as exc:  # noqa: BLE001
-                    raise HTTPException(status_code=400, detail=str(exc))
-                try:
-                    transcript = stt.transcribe(wav_path)
-                except Exception as exc:  # noqa: BLE001
-                    raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}")
+            transcript = await run_in_threadpool(_transcribe_upload_sync, data)
         elif text_field:
             transcript = str(text_field)
     else:
@@ -398,13 +411,17 @@ async def api_assistant_plan(request: Request) -> JSONResponse:
     if not transcript:
         raise HTTPException(status_code=400, detail="Nothing to work with (empty request).")
 
-    routing = classify.classify(transcript, has_selected_client=bool(client_id))
+    routing = await run_in_threadpool(
+        classify.classify, transcript, has_selected_client=bool(client_id)
+    )
     if routing["route"] == "session_debrief" and client_id:
         return JSONResponse({"route": "session_debrief", "transcript": transcript})
 
     hint = routing.get("client_hint") or client_id
     try:
-        run = agent.run_agent(transcript, _dt.datetime.now(), client_hint=hint)
+        run = await run_in_threadpool(
+            agent.run_agent, transcript, _dt.datetime.now(), client_hint=hint
+        )
     except agent.AgentUnavailable as exc:
         raise HTTPException(status_code=503, detail={"error": str(exc), "fix": exc.hint})
 
@@ -433,8 +450,16 @@ async def api_assistant_execute(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail="proposals must be a list.")
     req_client = _valid_client_id(body.get("client_id"))
 
+    results = await run_in_threadpool(
+        _execute_proposals_sync, proposals, req_client, body.get("request") or ""
+    )
+    return JSONResponse({"results": results})
+
+
+def _execute_proposals_sync(proposals: list, req_client: str | None, request_text: str) -> list[dict]:
+    """Blocking half of /api/assistant/execute; runs in a worker thread."""
     results: list[dict] = []
-    last_worksheet_pdf: Path | None = None
+    last_worksheet_file: Path | None = None
 
     for proposal in proposals:
         if not isinstance(proposal, dict):
@@ -444,8 +469,8 @@ async def api_assistant_execute(request: Request) -> JSONResponse:
 
         if ptype == "worksheet":
             res = _file_worksheet(proposal, req_client)
-            if res.get("status") == "ok" and str(res.get("path", "")).endswith(".pdf"):
-                last_worksheet_pdf = Path(res["path"])
+            if res.get("status") == "ok" and res.get("path"):
+                last_worksheet_file = Path(res["path"])
             results.append(res)
 
         elif ptype == "email":
@@ -458,26 +483,33 @@ async def api_assistant_execute(request: Request) -> JSONResponse:
                 continue
             subject = proposal.get("subject") or "A note from your therapist"
             email_body = proposal.get("body") or ""
-            attachment = last_worksheet_pdf if proposal.get("attach_worksheet") else None
+            attachment = None
+            missing_attachment = False
+            if proposal.get("attach_worksheet"):
+                if last_worksheet_file is not None and last_worksheet_file.exists():
+                    attachment = last_worksheet_file
+                else:
+                    missing_attachment = True
             try:
                 ok = actions.create_mail_draft(email, subject, email_body, attachment)
             except Exception as exc:  # noqa: BLE001
                 results.append({"type": "email", "status": "failed", "error": str(exc)})
                 continue
             if ok:
-                results.append(
-                    {"type": "email", "status": "ok", "detail": f"Draft to {email} left open for review."}
-                )
+                detail = f"Draft to {email} left open for review."
+                if missing_attachment:
+                    detail += (
+                        " Note: the worksheet attachment was not available"
+                        " (it may have been unchecked above), so the draft has no attachment."
+                    )
+                results.append({"type": "email", "status": "ok", "detail": detail})
             else:
                 results.append({"type": "email", "status": "failed", "error": "Mail returned an error"})
         else:
             results.append({"type": str(ptype), "status": "failed", "error": "unknown proposal type"})
 
-    audit.log_assistant_run(
-        {"request": body.get("request") or "", "results": results, "errors": []}
-    )
-
-    return JSONResponse({"results": results})
+    audit.log_assistant_run({"request": request_text, "results": results, "errors": []})
+    return results
 
 
 # ---------------------------------------------------------------------------

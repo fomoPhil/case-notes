@@ -45,7 +45,7 @@ def test_plan_assistant_route(client, monkeypatch):
         app_module.agent, "run_agent",
         lambda text, now, client_hint=None: {
             "final_text": "Prepared a worksheet.",
-            "proposals": [{"type": "worksheet", "title": "Box Breathing", "markdown_body": "Breathe.", "client_id": None, "preview_pdf": None}],
+            "proposals": [{"type": "worksheet", "title": "Box Breathing", "markdown_body": "Breathe.", "client_id": None}],
             "transcript": [{"step": "final", "text": "Prepared a worksheet."}],
         },
     )

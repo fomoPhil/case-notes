@@ -22,17 +22,14 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
-import re
-import tempfile
 from pathlib import Path
 
-from . import llm, render, vault
+from . import llm, vault
 from .config import AGENT_MAX_TURNS
 
 _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "agent_system.md"
 
 # Where worksheet preview PDFs are staged before approval. Outside the vault.
-_PREVIEW_DIR = Path(tempfile.gettempdir()) / "debrief_agent_previews"
 
 _MAX_ARG_RETRIES = 2
 
@@ -159,11 +156,6 @@ def _no_em_dash(text: str) -> str:
     return (text or "").replace("—", "-").replace("―", "-")
 
 
-def _slug(text: str) -> str:
-    s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
-    return s or "worksheet"
-
-
 def _load_system_prompt(now: _dt.datetime) -> str:
     template = _PROMPT_PATH.read_text(encoding="utf-8")
     now_str = now.strftime("%A, %B %d, %Y").replace(" 0", " ")
@@ -220,25 +212,12 @@ def _stage_worksheet(args: dict, proposals: list[dict]) -> str:
     if isinstance(client_id, str):
         client_id = client_id.strip() or None
 
-    preview_pdf = None
-    if body and render.pdf_available():
-        try:
-            _PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
-            dest = _PREVIEW_DIR / f"{_slug(title)}-{len(proposals)}.pdf"
-            render.render_pdf(f"# {title}\n\n{body}", title, dest)
-            preview_pdf = str(dest)
-        except render.PdfUnavailable:
-            preview_pdf = None
-        except Exception:  # noqa: BLE001 - preview is best effort
-            preview_pdf = None
-
     proposals.append(
         {
             "type": "worksheet",
             "title": title,
             "markdown_body": body,
             "client_id": client_id,
-            "preview_pdf": preview_pdf,
         }
     )
     where = f"client {client_id}" if client_id else "the shared library"

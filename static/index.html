@@ -1112,7 +1112,7 @@ function renderAssistantReview() {
     proposals.forEach((p, i) => {
       let title = "", body = "";
       if (p.type === "worksheet") {
-        title = "Worksheet: " + (p.title || "Untitled");
+        title = "Worksheet: " + esc(p.title || "Untitled");
         const preview = (p.markdown_body || "").split("\n").filter(Boolean).slice(0, 4).join("\n");
         body = `<pre class="asst-preview">${esc(preview)}</pre>` + (p.client_id ? `<div class="a-sub">Files under client ${esc(p.client_id)}</div>` : `<div class="a-sub">Files to the shared library</div>`);
       } else if (p.type === "email") {

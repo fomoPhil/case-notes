@@ -45,12 +45,6 @@ class _Script:
         return _final_msg("Done.")
 
 
-@pytest.fixture(autouse=True)
-def _no_pdf(monkeypatch):
-    # Keep worksheet staging hermetic and fast (no real PDF render).
-    monkeypatch.setattr(agent.render, "pdf_available", lambda: False)
-
-
 def test_happy_path_two_tool_calls_then_final(monkeypatch):
     monkeypatch.setattr(agent.vault, "list_clients", lambda: [
         {"client_id": "C-0001", "name": "Bob Smith", "framework": "CBT"}
@@ -68,7 +62,7 @@ def test_happy_path_two_tool_calls_then_final(monkeypatch):
     p = out["proposals"][0]
     assert p["type"] == "worksheet"
     assert p["title"] == "Box Breathing"
-    assert p["preview_pdf"] is None
+    assert "preview_pdf" not in p
 
 
 def test_malformed_args_retry(monkeypatch):
