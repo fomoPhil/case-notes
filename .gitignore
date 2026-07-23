@@ -6,4 +6,4 @@ demo_vault/
 .claude/settings.local.json
 .DS_Store
 recordings/
-DebriefVault/.obsidian/
+DebriefVault/

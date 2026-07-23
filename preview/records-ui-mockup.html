@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Debrief · Records UI direction</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Source+Sans+3:wght@400;500;600;700&display=swap');
+
+:root{
+  --cream:#F7F4EE; --sage:#A8BCA1; --deep:#5F7A61; --ink:#2B2E2A;
+  --terra:#C97B5D; --amber:#E4B363;
+  --paper:#FFFFFF; --line:rgba(43,46,42,.10); --muted:rgba(43,46,42,.55);
+  --serif:'Newsreader', Georgia, serif;
+  --sans:'Source Sans 3', -apple-system, sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#EDE9E0;font-family:var(--sans);color:var(--ink);padding:32px 24px 64px}
+
+.switcher{max-width:1160px;margin:0 auto 20px;display:flex;gap:8px;align-items:center}
+.switcher .label{font-size:13px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-right:8px}
+.tabbtn{font-family:var(--sans);font-size:14px;font-weight:600;padding:8px 16px;border-radius:99px;border:1px solid var(--line);background:#fff;color:var(--muted);cursor:pointer;transition:all .15s}
+.tabbtn.active{background:var(--deep);border-color:var(--deep);color:#fff}
+.tabbtn:hover:not(.active){border-color:var(--sage);color:var(--ink)}
+
+.screen{display:none;max-width:1160px;margin:0 auto}
+.screen.active{display:block}
+
+.frame{background:var(--cream);border-radius:16px;border:1px solid var(--line);box-shadow:0 24px 60px rgba(43,46,42,.10);overflow:hidden;display:grid;grid-template-columns:248px 1fr;min-height:680px}
+
+/* ---------- sidebar ---------- */
+.side{background:#F2EEE6;border-right:1px solid var(--line);padding:20px 14px;display:flex;flex-direction:column;gap:2px}
+.side .brand{font-family:var(--serif);font-size:21px;font-weight:600;color:var(--deep);padding:4px 10px 16px;letter-spacing:.01em}
+.side .sec{font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:14px 10px 6px}
+.navitem{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:9px;font-size:14.5px;font-weight:500;color:var(--ink);cursor:pointer}
+.navitem:hover{background:rgba(168,188,161,.18)}
+.navitem.on{background:rgba(95,122,97,.13);color:var(--deep);font-weight:600}
+.mono{width:26px;height:26px;border-radius:50%;background:var(--sage);color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.mono.b{background:var(--deep)} .mono.c{background:#B99A7B}
+.navitem .ic{width:26px;text-align:center;font-size:15px;opacity:.75}
+.side .foot{margin-top:auto;padding:10px;font-size:12px;color:var(--muted);display:flex;align-items:center;gap:7px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--deep)}
+
+/* ---------- main ---------- */
+.main{padding:30px 36px;overflow:auto}
+.crumb{font-size:13px;color:var(--muted);margin-bottom:14px}
+.crumb b{color:var(--ink);font-weight:600}
+
+.chead{display:flex;align-items:center;gap:16px;margin-bottom:6px}
+.chead .bigmono{width:52px;height:52px;border-radius:50%;background:var(--deep);color:#fff;font-family:var(--serif);font-size:21px;display:flex;align-items:center;justify-content:center}
+.chead h1{font-family:var(--serif);font-size:29px;font-weight:600}
+.chead .meta{font-size:13.5px;color:var(--muted);margin-top:2px}
+.chead .next{margin-left:auto;text-align:right;font-size:13px;color:var(--muted)}
+.chead .next b{display:block;color:var(--deep);font-size:14.5px;font-weight:600}
+
+.ctabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:20px 0 24px}
+.ctab{padding:9px 16px;font-size:14.5px;font-weight:600;color:var(--muted);border-bottom:2px solid transparent;cursor:pointer}
+.ctab.on{color:var(--deep);border-bottom-color:var(--deep)}
+.ctab:hover:not(.on){color:var(--ink)}
+
+.cols{display:grid;grid-template-columns:1.5fr 1fr;gap:22px;align-items:start}
+h3.sec{font-family:var(--serif);font-size:17px;font-weight:600;margin-bottom:12px}
+
+.card{background:var(--paper);border:1px solid var(--line);border-radius:12px}
+.sesscard{display:flex;gap:14px;padding:15px 18px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .12s}
+.sesscard:last-child{border-bottom:none}
+.sesscard:hover{background:rgba(168,188,161,.08)}
+.sesscard .date{width:52px;flex-shrink:0;text-align:center;padding-top:2px}
+.sesscard .date .d{font-family:var(--serif);font-size:19px;font-weight:600;color:var(--deep)}
+.sesscard .date .m{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.sesscard h4{font-size:15px;font-weight:600;margin-bottom:3px}
+.sesscard p{font-size:13.5px;color:var(--muted);line-height:1.45}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;padding:2.5px 9px;border-radius:99px;margin-top:7px}
+.chip.risk{background:rgba(228,179,99,.22);color:#8A6420}
+.chip.ok{background:rgba(95,122,97,.12);color:var(--deep)}
+.chip.agent{background:rgba(201,123,93,.14);color:#A05A3E}
+
+.profcard{padding:18px}
+.profrow{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line);font-size:14px}
+.profrow:last-child{border-bottom:none}
+.profrow .k{color:var(--muted)}
+.profrow .v{font-weight:600;text-align:right}
+.goals{padding:14px 18px 16px;border-top:1px solid var(--line)}
+.goals .k{font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.goals li{font-size:14px;line-height:1.5;margin-left:18px;margin-bottom:4px}
+
+.docs{margin-top:22px}
+.docgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.doc{background:var(--paper);border:1px solid var(--line);border-radius:11px;padding:13px 15px;display:flex;gap:12px;align-items:center;cursor:pointer;position:relative;transition:border-color .12s}
+.doc:hover{border-color:var(--sage)}
+.ftype{width:38px;height:44px;border-radius:6px;flex-shrink:0;display:flex;align-items:flex-end;justify-content:center;padding-bottom:5px;font-size:9.5px;font-weight:800;letter-spacing:.05em;color:#fff}
+.ftype.note{background:var(--deep)} .ftype.pdf{background:var(--terra)} .ftype.img{background:var(--amber)} .ftype.docx{background:#7C93B8}
+.doc h5{font-size:14px;font-weight:600;margin-bottom:2px}
+.doc span{font-size:12.5px;color:var(--muted)}
+.doc .acts{position:absolute;right:12px;top:50%;transform:translateY(-50%);display:none;gap:6px}
+.doc:hover .acts{display:flex}
+.iconbtn{width:29px;height:29px;border-radius:8px;border:1px solid var(--line);background:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;cursor:pointer}
+.iconbtn:hover{background:var(--cream);border-color:var(--sage)}
+
+/* ---------- screen 2 : document ---------- */
+.docbar{display:flex;align-items:center;gap:10px;margin-bottom:20px}
+.docbar .title{font-family:var(--serif);font-size:25px;font-weight:600;border-bottom:1.5px dashed transparent;cursor:text}
+.docbar .title:hover{border-bottom-color:var(--sage)}
+.docbar .pencil{font-size:13px;color:var(--muted)}
+.docbar .spacer{flex:1}
+.btn{font-family:var(--sans);font-size:14px;font-weight:600;padding:9px 16px;border-radius:9px;border:1px solid var(--line);background:#fff;color:var(--ink);cursor:pointer;display:inline-flex;gap:7px;align-items:center;transition:all .12s}
+.btn:hover{border-color:var(--sage);background:rgba(168,188,161,.1)}
+.btn.primary{background:var(--deep);border-color:var(--deep);color:#fff}
+.btn.primary:hover{background:#516a53}
+.paper{background:var(--paper);border:1px solid var(--line);border-radius:4px;box-shadow:0 10px 30px rgba(43,46,42,.07);max-width:660px;margin:0 auto;padding:52px 58px;font-family:var(--serif)}
+.paper .doctop{display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:22px}
+.paper .doctop h2{font-size:22px;font-weight:600}
+.paper .doctop span{font-family:var(--sans);font-size:12.5px;color:var(--muted)}
+.paper h6{font-family:var(--sans);font-size:11.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--deep);margin:20px 0 7px}
+.paper p{font-size:16px;line-height:1.65;color:var(--ink)}
+.filedchip{display:inline-flex;align-items:center;gap:6px;font-family:var(--sans);font-size:12px;font-weight:700;color:var(--deep);background:rgba(95,122,97,.1);padding:4px 11px;border-radius:99px}
+
+/* ---------- screen 3 : library ---------- */
+.libgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.libcard{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:18px;cursor:pointer;transition:border-color .12s;display:flex;flex-direction:column;gap:8px}
+.libcard:hover{border-color:var(--sage)}
+.libcard .thumb{height:88px;border-radius:8px;background:linear-gradient(135deg,rgba(168,188,161,.25),rgba(95,122,97,.12));display:flex;align-items:center;justify-content:center;font-size:30px}
+.libcard h5{font-family:var(--serif);font-size:16.5px;font-weight:600}
+.libcard p{font-size:13px;color:var(--muted);line-height:1.45;flex:1}
+.libcard .row{display:flex;justify-content:space-between;align-items:center}
+.libcard .send{font-size:13px;font-weight:700;color:var(--deep)}
+
+.why{max-width:1160px;margin:26px auto 0;background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px 22px;font-size:13.5px;line-height:1.6;color:var(--muted)}
+.why b{color:var(--ink)}
+</style>
+</head>
+<body>
+
+<div class="switcher">
+  <span class="label">Debrief records UI</span>
+  <button class="tabbtn active" onclick="show(0,this)">1 · Client record</button>
+  <button class="tabbtn" onclick="show(1,this)">2 · Session note</button>
+  <button class="tabbtn" onclick="show(2,this)">3 · Resource library</button>
+</div>
+
+<!-- ============ SCREEN 1 : CLIENT RECORD ============ -->
+<div class="screen active">
+<div class="frame">
+  <aside class="side">
+    <div class="brand">Debrief</div>
+    <div class="navitem"><span class="ic">🎙</span> New debrief</div>
+    <div class="sec">Clients</div>
+    <div class="navitem on"><span class="mono b">BS</span> Bob Smith</div>
+    <div class="navitem"><span class="mono">MC</span> Maya Chen</div>
+    <div class="navitem"><span class="mono c">DO</span> Daniel Ortiz</div>
+    <div class="sec">Library</div>
+    <div class="navitem"><span class="ic">📄</span> Worksheets</div>
+    <div class="navitem"><span class="ic">📚</span> Reference</div>
+    <div class="foot"><span class="dot"></span> Data secure on this Mac</div>
+  </aside>
+  <main class="main">
+    <div class="chead">
+      <div class="bigmono">BS</div>
+      <div>
+        <h1>Bob Smith</h1>
+        <div class="meta">he/him · Weekly · CBT for generalized anxiety</div>
+      </div>
+      <div class="next">Next session<b>Fri Jul 25 · 2:00 PM</b></div>
+    </div>
+    <div class="ctabs">
+      <div class="ctab on">Sessions</div>
+      <div class="ctab">Profile</div>
+      <div class="ctab">Documents</div>
+    </div>
+    <div class="cols">
+      <div>
+        <h3 class="sec">Session notes</h3>
+        <div class="card">
+          <div class="sesscard">
+            <div class="date"><div class="d">18</div><div class="m">Jul</div></div>
+            <div>
+              <h4>Session 8 · DAP note</h4>
+              <p>Practiced cognitive restructuring around work deadlines. Reported better sleep this week. Assigned box breathing before standing meetings.</p>
+              <span class="chip ok">✓ Filed &amp; verified</span>
+            </div>
+          </div>
+          <div class="sesscard">
+            <div class="date"><div class="d">11</div><div class="m">Jul</div></div>
+            <div>
+              <h4>Session 7 · DAP note</h4>
+              <p>Elevated distress around performance review. Safety check completed; no plan or intent. Follow-up moved to 1 week.</p>
+              <span class="chip risk">⚑ Risk flag noted</span>
+            </div>
+          </div>
+          <div class="sesscard">
+            <div class="date"><div class="d">27</div><div class="m">Jun</div></div>
+            <div>
+              <h4>Session 6 · DAP note</h4>
+              <p>Reviewed thought record homework. Identified catastrophizing pattern in three of five entries.</p>
+              <span class="chip ok">✓ Filed &amp; verified</span>
+            </div>
+          </div>
+        </div>
+        <div class="docs">
+          <h3 class="sec">Documents</h3>
+          <div class="docgrid">
+            <div class="doc">
+              <div class="ftype pdf">PDF</div>
+              <div><h5>Box Breathing · 1-pager</h5><span>Created by agent · Jul 18</span></div>
+              <div class="acts"><div class="iconbtn" title="Rename">✎</div><div class="iconbtn" title="Download PDF">⬇</div><div class="iconbtn" title="Email draft">✉</div></div>
+            </div>
+            <div class="doc">
+              <div class="ftype docx">DOC</div>
+              <div><h5>Intake questionnaire</h5><span>Uploaded · Jun 2</span></div>
+              <div class="acts"><div class="iconbtn">✎</div><div class="iconbtn">⬇</div><div class="iconbtn">✉</div></div>
+            </div>
+            <div class="doc">
+              <div class="ftype img">IMG</div>
+              <div><h5>Thought record (photo)</h5><span>Uploaded · Jul 11</span></div>
+              <div class="acts"><div class="iconbtn">✎</div><div class="iconbtn">⬇</div><div class="iconbtn">✉</div></div>
+            </div>
+            <div class="doc" style="border-style:dashed;justify-content:center;color:var(--muted);font-size:14px;font-weight:600">＋ Add document</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <h3 class="sec">Profile</h3>
+        <div class="card">
+          <div class="profcard">
+            <div class="profrow"><span class="k">Client since</span><span class="v">Apr 2026</span></div>
+            <div class="profrow"><span class="k">Cadence</span><span class="v">Weekly, Fridays</span></div>
+            <div class="profrow"><span class="k">Modality</span><span class="v">CBT</span></div>
+            <div class="profrow"><span class="k">Emergency contact</span><span class="v">Jane Smith</span></div>
+          </div>
+          <div class="goals">
+            <div class="k">Treatment goals</div>
+            <ul>
+              <li>Reduce work-related anxiety episodes to fewer than 2 per week</li>
+              <li>Build a daily 10-minute regulation practice</li>
+              <li>Improve sleep onset to under 30 minutes</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</div>
+
+<!-- ============ SCREEN 2 : SESSION NOTE ============ -->
+<div class="screen">
+<div class="frame">
+  <aside class="side">
+    <div class="brand">Debrief</div>
+    <div class="navitem"><span class="ic">🎙</span> New debrief</div>
+    <div class="sec">Clients</div>
+    <div class="navitem on"><span class="mono b">BS</span> Bob Smith</div>
+    <div class="navitem"><span class="mono">MC</span> Maya Chen</div>
+    <div class="navitem"><span class="mono c">DO</span> Daniel Ortiz</div>
+    <div class="sec">Library</div>
+    <div class="navitem"><span class="ic">📄</span> Worksheets</div>
+    <div class="navitem"><span class="ic">📚</span> Reference</div>
+    <div class="foot"><span class="dot"></span> Data secure on this Mac</div>
+  </aside>
+  <main class="main">
+    <div class="crumb">Bob Smith / Sessions / <b>Session 8</b></div>
+    <div class="docbar">
+      <span class="title">Session 8 · DAP note</span><span class="pencil">✎ rename</span>
+      <span class="spacer"></span>
+      <button class="btn">✎ Edit</button>
+      <button class="btn">⬇ Download PDF</button>
+      <button class="btn primary">✉ Email draft to Bob</button>
+    </div>
+    <div class="paper">
+      <div class="doctop">
+        <h2>Progress Note · DAP</h2>
+        <span>July 18, 2026 · 50 min · Telehealth</span>
+      </div>
+      <h6>Data</h6>
+      <p>Bob arrived on time and engaged readily. He reported completing the thought record on four of seven days and described one anxiety episode before Tuesday's standing meeting, resolved with paced breathing. Sleep onset improved to roughly 25 minutes on most nights.</p>
+      <h6>Assessment</h6>
+      <p>Continued progress toward goal 1. Cognitive restructuring skills are generalizing to the workplace context. No safety concerns this session; mood observed as euthymic with full range of affect.</p>
+      <h6>Plan</h6>
+      <p>Continue weekly cadence. Assigned box breathing one-pager before standing meetings. Follow-up booked for July 25 at 2:00 PM. Worksheet drafted for email delivery pending therapist review.</p>
+      <div style="margin-top:26px"><span class="filedchip">✓ Filed Jul 18, 3:12 PM · verified on screen</span></div>
+    </div>
+  </main>
+</div>
+</div>
+
+<!-- ============ SCREEN 3 : LIBRARY ============ -->
+<div class="screen">
+<div class="frame">
+  <aside class="side">
+    <div class="brand">Debrief</div>
+    <div class="navitem"><span class="ic">🎙</span> New debrief</div>
+    <div class="sec">Clients</div>
+    <div class="navitem"><span class="mono b">BS</span> Bob Smith</div>
+    <div class="navitem"><span class="mono">MC</span> Maya Chen</div>
+    <div class="navitem"><span class="mono c">DO</span> Daniel Ortiz</div>
+    <div class="sec">Library</div>
+    <div class="navitem on"><span class="ic">📄</span> Worksheets</div>
+    <div class="navitem"><span class="ic">📚</span> Reference</div>
+    <div class="foot"><span class="dot"></span> Data secure on this Mac</div>
+  </aside>
+  <main class="main">
+    <div class="chead" style="margin-bottom:18px">
+      <div>
+        <h1 style="font-family:var(--serif);font-size:27px;font-weight:600">Worksheet library</h1>
+        <div class="meta">Reusable client resources. Ask the agent for a new one by voice, or add your own.</div>
+      </div>
+      <div class="next"><button class="btn primary">🎙 Ask for a worksheet</button></div>
+    </div>
+    <div class="libgrid">
+      <div class="libcard">
+        <div class="thumb">🫁</div>
+        <h5>Box Breathing · 1-pager</h5>
+        <p>Four-count breathing cycle with a practice log. Written for pre-meeting anxiety.</p>
+        <div class="row"><span class="chip agent">✦ Agent-made</span><span class="send">Email to client…</span></div>
+      </div>
+      <div class="libcard">
+        <div class="thumb">📝</div>
+        <h5>CBT Thought Record</h5>
+        <p>Situation, thought, feeling, evidence, and reframe columns. Weekly homework staple.</p>
+        <div class="row"><span class="chip ok">Template</span><span class="send">Email to client…</span></div>
+      </div>
+      <div class="libcard">
+        <div class="thumb">🌙</div>
+        <h5>Sleep Hygiene Checklist</h5>
+        <p>Evening wind-down checklist with a two-week tracking grid.</p>
+        <div class="row"><span class="chip agent">✦ Agent-made</span><span class="send">Email to client…</span></div>
+      </div>
+      <div class="libcard">
+        <div class="thumb">🧭</div>
+        <h5>Values Compass</h5>
+        <p>ACT-style values sort with a one-page reflection prompt.</p>
+        <div class="row"><span class="chip ok">Template</span><span class="send">Email to client…</span></div>
+      </div>
+      <div class="libcard">
+        <div class="thumb">⚓</div>
+        <h5>5-4-3-2-1 Grounding</h5>
+        <p>Sensory grounding walkthrough for acute anxiety moments.</p>
+        <div class="row"><span class="chip agent">✦ Agent-made</span><span class="send">Email to client…</span></div>
+      </div>
+      <div class="libcard" style="border-style:dashed;align-items:center;justify-content:center;color:var(--muted)">
+        <div style="font-size:26px">＋</div>
+        <h5 style="color:var(--muted)">Add or import</h5>
+      </div>
+    </div>
+  </main>
+</div>
+</div>
+
+<div class="why">
+  <b>Why this design:</b> the vault is presented as a <b>client record system, not a file browser</b>. Folders and .md files never appear; the app owns filenames and paths so renames can't break the agent's links. Every document renders as a finished page (Newsreader on paper) with three universal actions: Edit, Download PDF, Email draft. Email is always a Mail draft, matching the app's never-auto-send rule. The Library is where agent-created worksheets live so they can be reused across clients instead of being one-offs. Hover a document card on screen 1 to see the rename / download / email quick actions.
+</div>
+
+<script>
+function show(i,btn){
+  document.querySelectorAll('.screen').forEach((s,j)=>s.classList.toggle('active',j===i));
+  document.querySelectorAll('.tabbtn').forEach(b=>b.classList.toggle('active',b===btn));
+}
+</script>
+</body>
+</html>

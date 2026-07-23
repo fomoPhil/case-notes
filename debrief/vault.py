@@ -208,6 +208,52 @@ def _seed_client(
         _atomic_write(plan_path, "".join(lines))
 
 
+def _seed_session_note(
+    client_dir: Path,
+    client_id: str,
+    session_date: _dt.date,
+    session_number: int,
+    framework: str,
+    data: str,
+    assessment: str,
+    plan: str,
+    interventions: list[str],
+    themes: list[str],
+) -> None:
+    """Seed a short past session note if missing, matching write_session_note
+    frontmatter conventions exactly."""
+    sessions = client_dir / "Sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    path = sessions / f"{session_date.isoformat()}-session.md"
+    if path.exists():
+        return
+    frontmatter = {
+        "type": "session-note",
+        "client_id": client_id,
+        "session_date": _iso_date(session_date),
+        "session_number": session_number,
+        "format": "DAP",
+        "modality": "in-person",
+        "duration_min": 50,
+        "framework": framework,
+        "interventions": interventions,
+        "themes": themes,
+        "risk_assessment": "none-discussed",
+        "actions_taken": ["note-filed"],
+        "tags": [f"client/{client_id}", "type/session"],
+    }
+    parts = [
+        _dump_frontmatter(frontmatter),
+        f"\n## Data\n\n{data}\n",
+        f"\n## Assessment\n\n{assessment}\n",
+        f"\n## Plan\n\n{plan}\n",
+        "\n## Next Session Considerations\n\n",
+        "\nClinical judgment and final session planning remain the "
+        "therapist's responsibility.\n",
+    ]
+    _atomic_write(path, "".join(parts))
+
+
 def _seed_stub(path: Path, fm: dict, heading: str) -> None:
     """Create a small stub note (theme or intervention) so backlinks resolve."""
     if not path.exists():
@@ -274,6 +320,16 @@ def ensure_vault() -> None:
         VAULT_DIR / "Interventions" / "values-clarification.md",
         {"type": "intervention", "framework": "ACT"},
         "Values Clarification",
+    )
+    _seed_stub(
+        VAULT_DIR / "Themes" / "Emotion-Dysregulation.md",
+        {"type": "theme", "tags": ["theme/emotion-dysregulation"]},
+        "Emotion-Dysregulation",
+    )
+    _seed_stub(
+        VAULT_DIR / "Interventions" / "dbt-skills-training.md",
+        {"type": "intervention", "framework": "DBT"},
+        "DBT Skills Training",
     )
 
     # Mock client C-0001: Bob Smith, CBT, SI history flag.
@@ -369,6 +425,100 @@ def ensure_vault() -> None:
                 ],
             },
         ],
+    )
+
+    # Mock client C-0003: Maya Chen, DBT.
+    _seed_client(
+        VAULT_DIR / "Clients" / "C-0003",
+        {
+            "type": "client-profile",
+            "client_id": "C-0003",
+            "name": "Maya Chen",
+            "email": "maya@example.com",
+            "status": "active",
+            "intake_date": _dt.date(2026, 3, 10),
+            "last_session": _dt.date(2026, 7, 14),
+            "next_session": "2026-07-23T16:00:00",
+            "diagnosis": ["F60.3"],
+            "presenting_concerns": ["emotion dysregulation", "relationship conflict"],
+            "framework": "DBT",
+            "themes": ["Emotion-Dysregulation"],
+            "risk_flags": [],
+            "summary_updated": "2026-07-14T17:30:00",
+        },
+        summary=(
+            "Maya is a graduate student presenting with intense emotional swings and "
+            "recurring conflict in close relationships, often followed by shame and "
+            "withdrawal. Treatment uses dialectical behavior therapy: weekly diary "
+            "cards, chain analysis of target behaviors, and skills training across "
+            "distress tolerance, emotion regulation, and interpersonal effectiveness. "
+            "No current risk concerns. She engages well with chain analysis and has "
+            "started using TIPP skills during escalation instead of sending messages "
+            "she later regrets."
+        ),
+        goals=[
+            {
+                "goal": "Reduce the frequency and intensity of emotional escalation episodes.",
+                "status": "in-progress",
+                "objectives": [
+                    "Complete a diary card every day and review it in session.",
+                    "Use a distress tolerance skill before responding during conflict.",
+                ],
+            },
+            {
+                "goal": "Build stable, effective communication in close relationships.",
+                "status": "in-progress",
+                "objectives": [
+                    "Practice one DEAR MAN request each week and record the outcome.",
+                    "Identify early warning signs of escalation using chain analysis.",
+                ],
+            },
+        ],
+    )
+    _seed_session_note(
+        VAULT_DIR / "Clients" / "C-0003",
+        "C-0003",
+        _dt.date(2026, 6, 30),
+        16,
+        "DBT",
+        data=(
+            "Maya reviewed her diary card, which showed two escalation episodes this "
+            "week, both triggered by delayed text replies from her partner. She used "
+            "paced breathing once before responding and rated the urge to send an "
+            "angry message as reduced from 8 to 4."
+        ),
+        assessment=(
+            "Skill use is generalizing to in-the-moment triggers. Interpretations of "
+            "delayed replies as rejection remain the main vulnerability."
+        ),
+        plan=(
+            "Continue daily diary cards. Chain analysis of the second episode next "
+            "session. Assign one DEAR MAN practice with her partner this week."
+        ),
+        interventions=["dbt-skills-training"],
+        themes=["Emotion-Dysregulation"],
+    )
+    _seed_session_note(
+        VAULT_DIR / "Clients" / "C-0003",
+        "C-0003",
+        _dt.date(2026, 7, 14),
+        17,
+        "DBT",
+        data=(
+            "Maya completed the DEAR MAN practice and reported it went better than "
+            "expected: her partner agreed to a check-in routine. Diary card showed "
+            "one escalation episode, resolved with TIPP skills within twenty minutes."
+        ),
+        assessment=(
+            "Clear progress on both treatment goals. Interpersonal effectiveness "
+            "skills are moving from rehearsal into real interactions."
+        ),
+        plan=(
+            "Reinforce the check-in routine. Begin emotion regulation module work on "
+            "opposite action for shame following conflict."
+        ),
+        interventions=["dbt-skills-training"],
+        themes=["Emotion-Dysregulation"],
     )
 
 

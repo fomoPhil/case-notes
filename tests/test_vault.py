@@ -46,20 +46,34 @@ def test_worksheet_generated(vault):
         assert pdf.read_bytes()[:4] == b"%PDF", "worksheet is not a valid PDF"
 
 
-def test_list_clients_returns_both_mocks(vault):
+def test_list_clients_returns_all_mocks(vault):
     clients = vault.list_clients()
     ids = sorted(c["client_id"] for c in clients)
-    assert ids == ["C-0001", "C-0002"]
+    assert ids == ["C-0001", "C-0002", "C-0003"]
     by_id = {c["client_id"]: c for c in clients}
     assert by_id["C-0001"]["name"] == "Bob Smith"
     assert by_id["C-0001"]["framework"] == "CBT"
     assert by_id["C-0001"]["risk_flags"], "Bob should carry an SI history flag"
     assert by_id["C-0002"]["framework"] == "ACT"
     assert by_id["C-0002"]["email"] == "jane@example.com"
+    assert by_id["C-0003"]["name"] == "Maya Chen"
+    assert by_id["C-0003"]["framework"] == "DBT"
+    assert by_id["C-0003"]["email"].endswith("@example.com")
+
+
+def test_third_client_has_seeded_sessions(vault):
+    sessions = vault.VAULT_DIR / "Clients" / "C-0003" / "Sessions"
+    notes = sorted(sessions.glob("*.md"))
+    assert len(notes) == 2, "C-0003 should seed two past session notes"
+    for note in notes:
+        fm = _read_frontmatter(note)
+        assert fm["type"] == "session-note"
+        assert fm["client_id"] == "C-0003"
+        assert fm["framework"] == "DBT"
 
 
 def test_treatment_plans_have_two_goals(vault):
-    for cid in ("C-0001", "C-0002"):
+    for cid in ("C-0001", "C-0002", "C-0003"):
         plan = vault.VAULT_DIR / "Clients" / cid / "Treatment-Plan.md"
         text = plan.read_text(encoding="utf-8")
         assert text.count("## Goal ") == 2, f"{cid} plan should have 2 goals"
