@@ -114,9 +114,76 @@ def test_rename_document_renames_file_and_rewrites_links(records):
     assert "[[shiny-new-title|the note]]" in profile.read_text(encoding="utf-8")
 
 
+def _seed_worksheet_pair(records, client_id="C-0001", stem="box-breathing"):
+    docs_dir = records.VAULT_DIR / "Clients" / client_id / "Documents"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    (docs_dir / f"{stem}.md").write_text(f"# {stem.title()}\n\nBreathe.\n", encoding="utf-8")
+    (docs_dir / f"{stem}.pdf").write_bytes(b"%PDF-1.7 fake")
+    return docs_dir
+
+
+def test_rename_worksheet_by_md_moves_pdf_sibling(records):
+    docs_dir = _seed_worksheet_pair(records)
+    new_rel = records.rename_title("Clients/C-0001/Documents/box-breathing.md", "Calm Breathing")
+    assert new_rel.endswith("calm-breathing.md")
+    assert (docs_dir / "calm-breathing.md").is_file()
+    assert (docs_dir / "calm-breathing.pdf").is_file(), "pdf sibling rides along"
+    assert not (docs_dir / "box-breathing.md").exists()
+    assert not (docs_dir / "box-breathing.pdf").exists()
+    cards = [d for d in records.list_documents("C-0001") if d["kind"] != "session-note"]
+    assert len(cards) == 1 and cards[0]["kind"] == "worksheet-pdf"
+
+
+def test_rename_worksheet_by_pdf_still_moves_md_sibling(records):
+    docs_dir = _seed_worksheet_pair(records)
+    new_rel = records.rename_title("Clients/C-0001/Documents/box-breathing.pdf", "Calm Breathing")
+    assert new_rel.endswith("calm-breathing.pdf")
+    assert (docs_dir / "calm-breathing.pdf").is_file()
+    assert (docs_dir / "calm-breathing.md").is_file(), "md source rides along"
+
+
+def test_rename_library_file_rewrites_client_wikilinks(records):
+    docs_dir = records.VAULT_DIR / "Clients" / "C-0001" / "Documents"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    (docs_dir / "homework.md").write_text(
+        "# Homework\n\nComplete the [[thought-record]] this week.\n", encoding="utf-8"
+    )
+    assert (records.VAULT_DIR / "Templates" / "Worksheets" / "thought-record.md").is_file()
+    records.rename_title("Templates/Worksheets/thought-record.md", "CBT Thought Log")
+    text = (docs_dir / "homework.md").read_text(encoding="utf-8")
+    assert "[[cbt-thought-log]]" in text
+    assert "[[thought-record]]" not in text
+
+
 # ---------------------------------------------------------------------------
 # Trash / restore / sweep
 # ---------------------------------------------------------------------------
+
+
+def test_trash_and_restore_worksheet_by_md(records):
+    docs_dir = _seed_worksheet_pair(records)
+    token = records.trash("Clients/C-0001/Documents/box-breathing.md")
+    assert not (docs_dir / "box-breathing.md").exists()
+    assert not (docs_dir / "box-breathing.pdf").exists(), "pdf goes to trash too"
+    restored = records.restore(token)
+    assert restored.endswith("box-breathing.md")
+    assert (docs_dir / "box-breathing.md").is_file()
+    assert (docs_dir / "box-breathing.pdf").is_file(), "pdf comes back too"
+
+
+def test_restore_with_name_collision_does_not_clobber(records):
+    docs_dir = records.VAULT_DIR / "Clients" / "C-0001" / "Documents"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    orig = docs_dir / "daily.md"
+    orig.write_text("# Old\n", encoding="utf-8")
+    token = records.trash("Clients/C-0001/Documents/daily.md")
+    # The freed name is reused before restore (mirrors _session_note_path reuse).
+    orig.write_text("# Brand New\n", encoding="utf-8")
+    restored = records.restore(token)
+    assert restored != "Clients/C-0001/Documents/daily.md"
+    assert restored.endswith("daily-restored.md")
+    assert orig.read_text(encoding="utf-8") == "# Brand New\n", "newer file untouched"
+    assert (records.VAULT_DIR / restored).read_text(encoding="utf-8") == "# Old\n"
 
 
 def test_trash_and_restore_round_trip(records):

@@ -160,7 +160,12 @@ def _preview(body: str, width: int = 180) -> str:
 
 
 def _session_meta(path: Path) -> dict:
-    fm, body = _split_frontmatter(path.read_text(encoding="utf-8"))
+    try:
+        fm, body = _split_frontmatter(path.read_text(encoding="utf-8"))
+    except Exception:
+        fm, body = {}, ""
+    if not isinstance(fm, dict):
+        fm = {}
     number = fm.get("session_number")
     fmt = fm.get("format", "DAP")
     default_title = (
@@ -188,10 +193,14 @@ def _document_meta(path: Path) -> dict:
     kind = _kind_for(path)
     fm: dict = {}
     if path.suffix.lower() == ".md":
+        # A broken read or malformed/scalar frontmatter must not 500 a listing:
+        # fall back to an empty dict and let the title come from the H1 or stem.
         try:
             fm, body = _split_frontmatter(path.read_text(encoding="utf-8"))
-        except OSError:
-            body = ""
+        except Exception:
+            fm, body = {}, ""
+        if not isinstance(fm, dict):
+            fm = {}
         title = fm.get("title") or _first_h1(body) or path.stem.replace("-", " ").title()
     else:
         title = path.stem.replace("-", " ").title()
@@ -314,12 +323,11 @@ def append_amendment(rel_path: str, text: str, now: _dt.datetime | None = None) 
 # ---------------------------------------------------------------------------
 
 
-def _rewrite_links(client_dir: Path, old_stem: str, new_stem: str) -> None:
+def _rewrite_links(roots: list[Path], old_stem: str, new_stem: str) -> None:
     """Rewrite [[wikilinks]] and ![[embeds]] referencing old_stem across the
-    client folder and _Activity/, matched on the file stem."""
+    given roots, matched on the file stem."""
     if old_stem == new_stem:
         return
-    roots = [client_dir, VAULT_DIR / "_Activity"]
     # Match the stem when it appears as a whole path segment inside [[ ]].
     pattern = re.compile(r"(!?\[\[)([^\]]*?)(\]\])")
 
@@ -403,18 +411,36 @@ def rename_title(rel_path: str, new_title: str) -> str:
     new_stem = new_path.stem
     if new_path != target:
         os.replace(target, new_path)
-        # A worksheet PDF's sibling markdown source rides along.
-        sibling = target.with_suffix(".md")
-        if suffix == ".pdf" and sibling.exists():
-            os.replace(sibling, new_path.with_suffix(".md"))
+        # A worksheet is an .md source + rendered .pdf pair. Whichever half the
+        # UI acted on, the other half rides along to the same new stem (the UI's
+        # canonical path is the .md, but a .pdf-first rename must also work).
+        if suffix in (".md", ".pdf"):
+            other = ".pdf" if suffix == ".md" else ".md"
+            sibling = target.with_suffix(other)
+            if sibling.exists():
+                os.replace(sibling, new_path.with_suffix(other))
 
-    # Rewrite links inside the owning client folder (best effort) and _Activity.
-    client_dir = target
+    # Rewrite links so the agent's [[wikilinks]] never break. A client's own
+    # documents only need the client folder and _Activity; a shared library
+    # file (Templates/Worksheets, Interventions) can be linked from any client,
+    # so we rewrite across every LLM-visible tree. Private/ and _Trash/ are
+    # never touched.
+    clients_root = VAULT_DIR / "Clients"
+    client_dir = None
     for parent in target.parents:
         if parent.parent.name == "Clients":
             client_dir = parent
             break
-    _rewrite_links(client_dir, old_stem, new_stem)
+    if client_dir is not None:
+        roots = [client_dir, VAULT_DIR / "_Activity"]
+    else:
+        roots = [
+            clients_root,
+            VAULT_DIR / "_Activity",
+            VAULT_DIR / "Templates",
+            VAULT_DIR / "Interventions",
+        ]
+    _rewrite_links(roots, old_stem, new_stem)
     return _rel(new_path)
 
 
@@ -449,12 +475,16 @@ def trash(rel_path: str, now: _dt.datetime | None = None) -> str:
     dest = bucket / original_rel
     dest.parent.mkdir(parents=True, exist_ok=True)
     os.replace(target, dest)
-    # A worksheet PDF carries its markdown source into the trash too.
-    if target.suffix.lower() == ".pdf" and target.with_suffix(".md").exists():
-        sib = target.with_suffix(".md")
-        sib_dest = bucket / _rel(sib)
-        sib_dest.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(sib, sib_dest)
+    # A worksheet's .md/.pdf pair goes to the trash together, whichever half the
+    # UI acted on (the canonical path is the .md, but .pdf-first must also work).
+    suffix = target.suffix.lower()
+    if suffix in (".md", ".pdf"):
+        other = ".pdf" if suffix == ".md" else ".md"
+        sib = target.with_suffix(other)
+        if sib.exists():
+            sib_dest = bucket / _rel(sib)
+            sib_dest.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(sib, sib_dest)
     meta = {"original": original_rel, "trashed_at": now.replace(microsecond=0).isoformat()}
     _atomic_write(bucket / ".trashmeta.json", json.dumps(meta, indent=2))
     return token
@@ -476,12 +506,22 @@ def restore(token: str) -> str:
     if not src.exists():
         raise FileNotFoundError(f"Trashed file is missing for token {tok}")
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # The freed name may have been reused while this sat in the trash (e.g. a new
+    # same-day session note). Never clobber it: restore to a unique sibling.
+    if dest.exists():
+        dest = _unique_sibling(dest.parent, f"{dest.stem}-restored", dest.suffix)
     os.replace(src, dest)
-    # Restore a worksheet's markdown source if it was trashed alongside.
-    if dest.suffix.lower() == ".pdf":
-        sib_src = bucket / str(Path(original_rel).with_suffix(".md"))
+    # Restore a worksheet's partner half if it was trashed alongside, under the
+    # same final stem so the pair stays matched.
+    orig_suffix = Path(original_rel).suffix.lower()
+    if orig_suffix in (".md", ".pdf"):
+        other = ".pdf" if orig_suffix == ".md" else ".md"
+        sib_src = bucket / str(Path(original_rel).with_suffix(other))
         if sib_src.exists():
-            os.replace(sib_src, dest.with_suffix(".md"))
+            sib_dest = dest.with_suffix(other)
+            if sib_dest.exists():
+                sib_dest = _unique_sibling(dest.parent, f"{dest.stem}-restored", other)
+            os.replace(sib_src, sib_dest)
     shutil.rmtree(bucket, ignore_errors=True)
     return _rel(dest)
 
