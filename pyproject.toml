@@ -12,7 +12,7 @@ dependencies = [
   "python-multipart>=0.0.12,<1",
   "requests>=2.32,<3",
   "uvicorn[standard]>=0.30,<1",
-  "mlx-whisper>=0.4,<1; platform_system == 'Darwin'",
+  "parakeet-mlx>=0.3; platform_system == 'Darwin'",
 ]
 
 [project.optional-dependencies]
