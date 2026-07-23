@@ -25,6 +25,9 @@ const App = {
   trash: null,             // GET /api/trash items
   searchTimer: null,
   overflowOpen: false,
+  // Setup wizard
+  status: null,            // GET /api/status payload
+  setupPerms: null,        // { calendar, mail, screen } permission results
 };
 
 let el = null;             // reassigned each render to the active container
@@ -33,6 +36,7 @@ let stream = null;
 const FLOW_STATES = new Set([
   "record", "processing", "review", "executing", "results",
   "assistant", "assistantThinking", "assistantReview", "assistantResults",
+  "setupWizard",
 ]);
 
 function h(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstChild; }
@@ -108,7 +112,20 @@ async function loadClients() {
     if (!r.ok) throw new Error("Could not load clients (" + r.status + ")");
     App.clients = await r.json();
   } catch (e) { App.error = e.message; }
+  // First run: if the setup marker is absent and we were opened at the root
+  // (not a deep link), show the setup wizard. Deep links are never hijacked.
+  if (!location.hash) {
+    await refreshStatus();
+    if (App.status && App.status.first_run) { go("setupWizard"); return; }
+  }
   if (!applyHash()) render();
+}
+
+async function refreshStatus() {
+  try {
+    const r = await fetch("/api/status");
+    if (r.ok) App.status = await r.json();
+  } catch (e) { /* status is best-effort; the app still works without it */ }
 }
 
 // Lightweight deep links so a record, document, or library view is bookmarkable
@@ -141,6 +158,7 @@ function go(state) {
   App.state = state;
   App.error = null;
   if (state === "assistant") App.nav = "assistant";
+  else if (state === "setupWizard") App.nav = "setup";
   else if (!["clientRecord", "document", "library", "trash"].includes(state)) App.nav = "home";
   render();
 }
@@ -152,6 +170,7 @@ const DISPATCH = {
   assistantReview: renderAssistantReview, assistantResults: renderAssistantResults,
   clientRecord: renderClientRecord, document: renderDocument,
   library: renderLibrary, trash: renderTrash,
+  setupWizard: renderSetupWizard,
 };
 
 // ---------------------------------------------------------------------------
@@ -184,7 +203,10 @@ function ensureShell() {
         <button class="navitem" id="navWorksheets"><span class="nav-ic">📄</span> Worksheets</button>
         <button class="navitem" id="navReference"><span class="nav-ic">📚</span> Reference</button>
         <button class="navitem" id="navTrash"><span class="nav-ic">🗑</span> Trash</button>
-        <div class="side-foot">${LOCK_DOT} Data secure on this Mac</div>
+        <div class="side-tail">
+          <button class="navitem navitem-setup" id="navSetup"><span class="nav-ic">⚙</span> Setup</button>
+          <div class="side-foot">${LOCK_DOT} Data secure on this Mac</div>
+        </div>
       </aside>
       <main class="main-pane" id="main-pane"></main>
     </div>`;
@@ -193,6 +215,7 @@ function ensureShell() {
   shell.querySelector("#navWorksheets").onclick = () => openLibrary("worksheets");
   shell.querySelector("#navReference").onclick = () => openLibrary("reference");
   shell.querySelector("#navTrash").onclick = () => openTrash();
+  shell.querySelector("#navSetup").onclick = () => openSetup();
   const search = shell.querySelector("#globalSearch");
   search.oninput = () => runSearch(search.value);
   search.onkeydown = (e) => { if (e.key === "Escape") { search.value = ""; runSearch(""); } };
@@ -218,6 +241,7 @@ function updateNav() {
     "lib:worksheets": "navWorksheets",
     "lib:reference": "navReference",
     trash: "navTrash",
+    setup: "navSetup",
   };
   document.querySelectorAll(".navitem").forEach(n => n.classList.remove("on"));
   const id = map[App.nav];
@@ -1393,6 +1417,182 @@ function openSearchHit(hit) {
     if (c) App.client = c;
   }
   openDocument(p, crumb);
+}
+
+// ===========================================================================
+// Setup wizard: model check, vault intro, macOS permission triggers
+// ===========================================================================
+
+async function openSetup() {
+  App.state = "setupWizard";
+  App.nav = "setup";
+  App.error = null;
+  render();
+  await refreshStatus();
+  if (App.state === "setupWizard") render();
+}
+
+async function recheckStatus() {
+  await refreshStatus();
+  if (App.state === "setupWizard") render();
+}
+
+function copyText(text, btn) {
+  const done = () => { if (btn) { const old = btn.textContent; btn.textContent = "Copied"; setTimeout(() => { btn.textContent = old; }, 1400); } };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(() => {});
+  }
+}
+
+function renderSetupWizard() {
+  const s = App.status;
+  el.appendChild(h(`<div class="setup-head enter">
+    <h1>Welcome to Debrief</h1>
+    <p class="setup-lead">A couple of quick checks so everything runs smoothly on this Mac. Nothing here leaves your computer.</p>
+  </div>`));
+  if (!s) {
+    el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Checking your setup...</div></div>`));
+    refreshStatus().then(() => { if (App.state === "setupWizard") render(); });
+    return;
+  }
+  el.appendChild(renderSetupStep1(s));
+  el.appendChild(renderSetupStep2(s));
+  el.appendChild(renderSetupStep3());
+  const bar = h(`<div class="actions-bar enter d3 setup-finish">
+    <div class="grow"></div>
+    <button class="btn btn-primary" id="setupFinish">Finish setup</button>
+  </div>`);
+  bar.querySelector("#setupFinish").onclick = finishSetup;
+  el.appendChild(bar);
+  el.appendChild(h(`<div class="setup-foot">You can run setup again later from the sidebar.</div>`));
+}
+
+function setupCheckRow(c) {
+  const cls = c.ok ? "ok" : (c.hard ? "fail" : "warn");
+  const mark = c.ok ? "✓" : (c.hard ? "✕" : "!");
+  return h(`<div class="setup-check ${cls}">
+    <span class="sc-mark">${mark}</span>
+    <div class="sc-body">
+      <div class="sc-name">${esc(c.name)}</div>
+      <div class="sc-detail">${esc(c.detail || "")}</div>
+      ${!c.ok && c.fix ? `<div class="sc-fix">${esc(c.fix)}</div>` : ""}
+    </div>
+  </div>`);
+}
+
+const LMS_LOAD_CMD = "lms load gemma-4-12b-it-qat --context-length 64000";
+
+function renderSetupStep1(s) {
+  const ready = !!s.ready;
+  const reachable = (s.servers || []).filter(x => x.reachable);
+  const card = h(`<div class="panel setup-card enter d1">
+    <div class="setup-step-head">
+      <span class="setup-num">1</span>
+      <h2>Your local AI</h2>
+      <span class="setup-badge ${ready ? "ok" : ""}">${ready ? "Ready" : "Needs attention"}</span>
+    </div>
+    <p class="setup-note">Debrief runs a private AI model on this Mac with LM Studio. Nothing is sent to the cloud.</p>
+  </div>`);
+  const checks = h(`<div class="setup-checks"></div>`);
+  (s.checks || []).forEach(c => checks.appendChild(setupCheckRow(c)));
+  card.appendChild(checks);
+  if (reachable.length) {
+    card.appendChild(h(`<div class="setup-sub">Model server reachable: ${esc(reachable.map(x => x.provider).join(", "))}</div>`));
+  }
+  const help = h(`<div class="setup-help">
+    <a class="setup-link" href="https://lmstudio.ai" target="_blank" rel="noreferrer">Download LM Studio</a>
+    <div class="setup-code-label">Then load the model (in LM Studio's terminal, or the lms command line):</div>
+    <div class="setup-code"><code>${esc(LMS_LOAD_CMD)}</code><button class="copybtn" id="copyLms">Copy</button></div>
+  </div>`);
+  help.querySelector("#copyLms").onclick = (e) => copyText(LMS_LOAD_CMD, e.currentTarget);
+  card.appendChild(help);
+  const actions = h(`<div class="setup-actions"><button class="btn btn-ghost" id="recheck1">Re-check</button></div>`);
+  actions.querySelector("#recheck1").onclick = recheckStatus;
+  card.appendChild(actions);
+  return card;
+}
+
+function renderSetupStep2(s) {
+  const path = (s.vault && s.vault.path) || "";
+  const card = h(`<div class="panel setup-card enter d2">
+    <div class="setup-step-head"><span class="setup-num">2</span><h2>Your vault</h2></div>
+    <p class="setup-note">Every client record, note, and worksheet is plain Markdown stored on this Mac. You own the files.</p>
+    <div class="setup-code"><code>${esc(path)}</code><button class="copybtn" id="copyVault">Copy</button></div>
+    <p class="setup-sub">To keep your vault somewhere else, set the DEBRIEF_VAULT_DIR environment variable to a folder you choose.</p>
+    <p class="setup-sub">You can optionally open this folder in Obsidian to browse it visually. Debrief works fine without it.</p>
+  </div>`);
+  card.querySelector("#copyVault").onclick = (e) => copyText(path, e.currentTarget);
+  return card;
+}
+
+const PERMS = [
+  { key: "calendar", label: "Calendar", url: "/api/permissions/calendar", unlocks: "Lets Debrief book follow-up appointments in a dedicated Debrief calendar." },
+  { key: "mail", label: "Mail", url: "/api/permissions/mail", unlocks: "Lets Debrief prepare email drafts to clients for your review. It never sends." },
+  { key: "screen", label: "Screen Recording", url: "/api/permissions/screen", unlocks: "Lets Debrief read the screen to verify what it did." },
+];
+
+const PERM_ASKED = "We just asked macOS to show the permission prompt. Click Allow in the system dialog, then Re-check.";
+
+function renderSetupStep3() {
+  App.setupPerms = App.setupPerms || { calendar: null, mail: null, screen: null };
+  const card = h(`<div class="panel setup-card enter d3">
+    <div class="setup-step-head">
+      <span class="setup-num">3</span>
+      <h2>Mac permissions</h2>
+      <button class="setup-skip" id="permSkip">Skip for now</button>
+    </div>
+    <p class="setup-note">These are only needed for calendar booking, email drafts, and on-screen verification. Grant them now, or skip and do it later.</p>
+  </div>`);
+  const rows = h(`<div class="perm-rows"></div>`);
+  PERMS.forEach(p => rows.appendChild(buildPermRow(p)));
+  card.appendChild(rows);
+  card.querySelector("#permSkip").onclick = () => toast("You can grant permissions later from Setup in the sidebar.");
+  return card;
+}
+
+function permClass(g) { return g === true ? "ok" : g === false ? "fail" : "warn"; }
+
+function permMessage(res) {
+  if (res.granted === true) return res.hint || "Access is granted.";
+  return PERM_ASKED + (res.hint ? " " + res.hint : "");
+}
+
+function buildPermRow(p) {
+  const res = (App.setupPerms || {})[p.key];
+  const row = h(`<div class="perm-row">
+    <div class="perm-info">
+      <div class="perm-name">${esc(p.label)}</div>
+      <div class="perm-unlocks">${esc(p.unlocks)}</div>
+      ${res ? `<div class="perm-result ${permClass(res.granted)}">${esc(permMessage(res))}</div>` : ""}
+    </div>
+    <div class="perm-cta">
+      <button class="btn btn-ghost perm-grant" id="grant-${esc(p.key)}">${res ? "Re-check" : "Grant"}</button>
+    </div>
+  </div>`);
+  row.querySelector(".perm-grant").onclick = () => triggerPermission(p);
+  return row;
+}
+
+async function triggerPermission(p) {
+  const btn = document.getElementById("grant-" + p.key);
+  if (btn) { btn.disabled = true; btn.textContent = "Asking..."; }
+  App.setupPerms = App.setupPerms || {};
+  try {
+    const r = await fetch(p.url, { method: "POST" });
+    App.setupPerms[p.key] = await r.json().catch(() => ({ granted: "unknown", hint: "No response from the app." }));
+  } catch (e) {
+    App.setupPerms[p.key] = { granted: "unknown", hint: e.message };
+  }
+  if (App.state === "setupWizard") render();
+}
+
+async function finishSetup() {
+  try {
+    await fetch("/api/setup/complete", { method: "POST" });
+  } catch (e) { /* best effort; the app opens regardless */ }
+  App.status = null;
+  App.setupPerms = null;
+  go("clients");
 }
 
 loadClients();

@@ -62,6 +62,10 @@ First run downloads the speech-to-text model (a few hundred MB); after that ever
 
 Open http://127.0.0.1:8377. The client vault scaffolds itself on first run with three fictional clients. Pick one, record a spoken debrief, review the note and action plan, and approve it.
 
+### First run
+
+The app opens with a setup screen. It checks your model server and Gemma model, shows where your vault lives, and walks you through the three macOS permissions (Calendar, Mail, Screen Recording) with a Grant button that shows each system prompt so you can click Allow. Screen Recording needs the app quit and reopened after you allow it. You can skip permissions and grant them later, and reopen the wizard any time from Setup in the sidebar. Running `debrief-doctor` in the terminal shows the same model and vault checks.
+
 For development you can also run the server directly with `HF_HUB_OFFLINE=1 .venv/bin/python app.py`. To check your setup at any time, run `uv run debrief-doctor`.
 
 ## Roadmap

@@ -43,6 +43,7 @@ from debrief import (
     render,
     stt,
     vault,
+    verify,
 )
 from debrief.vault import VaultPathError
 
@@ -856,6 +857,142 @@ async def api_library() -> JSONResponse:
     """Worksheet templates and reference interventions."""
     lib = await run_in_threadpool(records.get_library)
     return JSONResponse(lib)
+
+
+# ---------------------------------------------------------------------------
+# First-run wizard: permission triggers + setup marker
+# ---------------------------------------------------------------------------
+#
+# Each permission endpoint makes the smallest possible real call that trips the
+# relevant macOS TCC prompt, so the wizard can say "click Allow, then Re-check"
+# instead of leaving the user to hunt through System Settings. Everything here
+# is best-effort: a failure returns a friendly result, never a 500.
+
+
+# The macOS "Automation" TCC denial. osascript surfaces it as error -1743
+# ("Not authorized to send Apple events to <app>").
+_TCC_DENIED = "-1743"
+
+
+def _classify_osascript(ok: bool, out: str, deny_hint: str, ok_hint: str) -> dict:
+    """Map an osascript (ok, output) pair into a permission result dict.
+
+    granted=True on success, False on the TCC denial (-1743 / Not authorized),
+    and "unknown" for any other error, with the error text carried in hint.
+    """
+    if ok:
+        return {"granted": True, "hint": ok_hint}
+    text = (out or "").strip()
+    if _TCC_DENIED in text or "not authorized" in text.lower():
+        return {"granted": False, "hint": deny_hint}
+    return {"granted": "unknown", "hint": f"Could not tell yet: {text}" if text else "Could not tell yet."}
+
+
+def _calendar_permission_sync() -> dict:
+    """Ask Calendar for the name of the dedicated Debrief calendar, creating it
+    if missing (same rule as actions.create_calendar_event). This is a pure
+    read/create with no events, purely to trip the Automation prompt."""
+    cal = actions.CALENDAR_NAME
+    script = (
+        'tell application "Calendar"\n'
+        f'  if not (exists calendar "{cal}") then\n'
+        f'    make new calendar with properties {{name:"{cal}"}}\n'
+        "  end if\n"
+        f'  return name of calendar "{cal}"\n'
+        "end tell\n"
+    )
+    ok, out = actions._run_osascript(script)
+    return _classify_osascript(
+        ok,
+        out,
+        deny_hint=(
+            "Open System Settings, Privacy and Security, Automation, and allow "
+            "Debrief (or your terminal) to control Calendar, then Re-check."
+        ),
+        ok_hint="Calendar access is granted. Debrief can book follow-up appointments.",
+    )
+
+
+def _mail_permission_sync() -> dict:
+    """Benign Mail scripting call: ask Mail its own name. It targets Mail by a
+    tell block (so it sends a real Apple event to Mail and trips Mail's
+    Automation prompt), and never creates a draft or sends anything."""
+    script = 'tell application "Mail" to get name\n'
+    ok, out = actions._run_osascript(script)
+    return _classify_osascript(
+        ok,
+        out,
+        deny_hint=(
+            "Open System Settings, Privacy and Security, Automation, and allow "
+            "Debrief (or your terminal) to control Mail, then Re-check."
+        ),
+        ok_hint="Mail access is granted. Debrief can prepare email drafts for your review.",
+    )
+
+
+def _screen_permission_sync() -> dict:
+    """Attempt one screencapture via the verify.py capture path. Treats a real,
+    non-trivial image on disk as granted. Screen Recording notoriously needs an
+    app restart after granting, so the hint always says so."""
+    hint = (
+        "Screen Recording lets Debrief read the screen to verify what it did. "
+        "If macOS just prompted you, allow Debrief, then quit and reopen the "
+        "app so the grant takes effect, then Re-check."
+    )
+    tmp = Path(tempfile.gettempdir()) / f"debrief_perm_{uuid.uuid4().hex}.png"
+    try:
+        ok = verify._capture_and_downscale(str(tmp))
+        size = tmp.stat().st_size if tmp.exists() else 0
+        granted = bool(ok and size > 1024)
+    except Exception:  # noqa: BLE001
+        granted = False
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return {"granted": granted, "hint": hint}
+
+
+@app.post("/api/permissions/calendar")
+async def api_permission_calendar() -> JSONResponse:
+    """Trip the Calendar Automation prompt. Returns {granted, hint}."""
+    return JSONResponse(await run_in_threadpool(_calendar_permission_sync))
+
+
+@app.post("/api/permissions/mail")
+async def api_permission_mail() -> JSONResponse:
+    """Trip the Mail Automation prompt (no draft created). Returns {granted, hint}."""
+    return JSONResponse(await run_in_threadpool(_mail_permission_sync))
+
+
+@app.post("/api/permissions/screen")
+async def api_permission_screen() -> JSONResponse:
+    """Trip the Screen Recording prompt via a screencapture. Returns {granted, hint}."""
+    return JSONResponse(await run_in_threadpool(_screen_permission_sync))
+
+
+@app.post("/api/setup/complete")
+def api_setup_complete() -> JSONResponse:
+    """Write the .debrief_setup_done marker so first_run reports false."""
+    marker = config.VAULT_DIR / _SETUP_MARKER
+    try:
+        config.VAULT_DIR.mkdir(parents=True, exist_ok=True)
+        marker.write_text("done\n", encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not write setup marker: {exc}")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/setup/reset")
+def api_setup_reset() -> JSONResponse:
+    """Delete the setup marker (dev convenience: reopen the wizard)."""
+    marker = config.VAULT_DIR / _SETUP_MARKER
+    try:
+        marker.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return JSONResponse({"ok": True})
 
 
 # ---------------------------------------------------------------------------
