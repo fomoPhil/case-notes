@@ -35,17 +35,18 @@ you what to do, and where it helps, a button that takes you straight to the righ
 place (the LM Studio download page, LM Studio's model search, or the Obsidian
 download page). You never see a raw technical error.
 
-## First run: a one-time permission step (important)
+## First run: the in-app setup wizard
 
-The very first time the **Debrief.app icon** starts the app server itself, macOS
-will show up to **three permission prompts** (for **Calendar**, **Mail**, and
-**Screen Recording**). This is normal and only happens once. Just click **OK** on
-each. macOS asks because the app has its own identity, separate from the Terminal.
+On first launch, Debrief opens a short **setup wizard** in the window itself. It
+checks the AI model server, shows where your vault lives, and walks you through
+the three macOS permissions (**Calendar**, **Mail**, **Screen Recording**) with a
+**Grant** button that shows the system prompt so you can click **Allow**. The
+launcher no longer explains permissions; the wizard owns that. You can reopen it
+any time from **Setup** in the sidebar, and `debrief-doctor` in the Terminal
+prints the same model and vault checks.
 
-**How to avoid the prompts entirely on demo day:** start the server once from the
-Terminal (see below). The launcher detects an already-running server and will
-**not** restart it, so the app keeps using the Terminal's already-granted
-permissions and no prompts fire.
+Screen Recording needs the app to be quit and reopened after you allow it. The
+wizard says so on that step.
 
 ## Recommended demo-day flow
 
