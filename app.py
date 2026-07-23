@@ -26,6 +26,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -38,10 +39,12 @@ from debrief import (
     doctor,
     models,
     pipeline,
+    records,
     render,
     stt,
     vault,
 )
+from debrief.vault import VaultPathError
 
 APP_HOST = "127.0.0.1"
 APP_PORT = 8377
@@ -84,6 +87,11 @@ async def _lifespan(_app: FastAPI):
     # Make sure the vault + mock clients exist before the first request.
     try:
         vault.ensure_vault()
+    except Exception:
+        pass
+    # Sweep expired trash (older than 30 days) on startup. Best effort.
+    try:
+        records.sweep_trash(_dt.datetime.now())
     except Exception:
         pass
     yield
@@ -510,6 +518,344 @@ def _execute_proposals_sync(proposals: list, req_client: str | None, request_tex
 
     audit.log_assistant_run({"request": request_text, "results": results, "errors": []})
     return results
+
+
+# ---------------------------------------------------------------------------
+# Client records: read, amend, rename, upload, pdf, email, reveal, trash, search
+# ---------------------------------------------------------------------------
+
+
+def _guard_or_400(rel_path: str) -> Path:
+    """Resolve a browser-supplied vault-relative path or raise 400."""
+    try:
+        return records._guard(rel_path)
+    except VaultPathError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+def _client_detail_sync(client_id: str) -> dict:
+    ctx = vault.client_context(client_id)
+    return {
+        "client_id": client_id,
+        "profile": ctx.get("profile", {}),
+        "summary": ctx.get("summary", ""),
+        "next_session": ctx.get("next_session"),
+        "sessions": records.list_sessions(client_id),
+        "documents": [
+            d for d in records.list_documents(client_id) if d["kind"] != "session-note"
+        ],
+    }
+
+
+@app.get("/api/clients/{client_id}")
+async def api_client_detail(client_id: str) -> JSONResponse:
+    """Full record for one client: profile, sessions, documents, next session."""
+    cid = _valid_client_id(client_id)
+    if not cid:
+        raise HTTPException(status_code=400, detail="Invalid client id.")
+    try:
+        detail = await run_in_threadpool(_client_detail_sync, cid)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"No such client: {cid}")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Could not read client: {exc}")
+    # Profile frontmatter can hold YAML date objects; coerce to JSON-safe types.
+    return JSONResponse(jsonable_encoder(detail))
+
+
+def _note_view_sync(rel_path: str) -> dict:
+    note = records.read_note(rel_path)
+    fragment = render.markdown_to_fragment(
+        vault._split_frontmatter(note["markdown"])[1]
+    )
+    return {
+        "path": rel_path,
+        "markdown": note["markdown"],
+        "html": fragment,
+        "frontmatter": note["frontmatter"],
+        "kind": note["kind"],
+    }
+
+
+@app.get("/api/notes")
+async def api_note(path: str) -> JSONResponse:
+    """Read a markdown note: raw markdown, rendered HTML fragment, frontmatter."""
+    _guard_or_400(path)
+    try:
+        view = await run_in_threadpool(_note_view_sync, path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Note not found.")
+    except VaultPathError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse(view)
+
+
+@app.post("/api/notes/amend")
+async def api_note_amend(request: Request) -> JSONResponse:
+    """Append a dated amendment to a filed note (never rewrites history)."""
+    body = await request.json()
+    path = body.get("path")
+    text = body.get("text")
+    _guard_or_400(path)
+    try:
+        new_path = await run_in_threadpool(
+            records.append_amendment, path, text, _dt.datetime.now()
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Note not found.")
+    except (VaultPathError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    audit.log_records_change("Amended", new_path, "Dated amendment added.")
+    return JSONResponse({"path": new_path})
+
+
+@app.post("/api/documents/save")
+async def api_document_save(request: Request) -> JSONResponse:
+    """Rewrite a non-session markdown document (library/worksheet). Session
+    notes are never rewritten; amend them instead."""
+    body = await request.json()
+    path = body.get("path")
+    markdown = body.get("markdown")
+    target = _guard_or_400(path)
+    if target.parent.name == "Sessions" or target.suffix.lower() != ".md":
+        raise HTTPException(
+            status_code=400,
+            detail="Session notes keep their history. Add an amendment instead.",
+        )
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    def _save() -> None:
+        vault._atomic_write(target, markdown or "")
+
+    await run_in_threadpool(_save)
+    audit.log_records_change("Edited", path, "Document rewritten.")
+    return JSONResponse({"path": path})
+
+
+@app.post("/api/documents/upload")
+async def api_document_upload(
+    client_id: str = Form(...),
+    file: UploadFile = None,
+) -> JSONResponse:
+    """Upload a file into a client's Documents/ folder (allowlisted types)."""
+    cid = _valid_client_id(client_id)
+    if not cid:
+        raise HTTPException(status_code=400, detail="Invalid client id.")
+    if file is None:
+        raise HTTPException(status_code=400, detail="No file uploaded.")
+    data = await file.read()
+
+    def _save() -> dict:
+        return records.save_upload(cid, file.filename, data)
+
+    try:
+        meta = await run_in_threadpool(_save)
+    except VaultPathError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    audit.log_records_change("Uploaded", meta["path"], f"Added {meta['title']}.")
+    return JSONResponse(meta)
+
+
+@app.post("/api/documents/rename")
+async def api_document_rename(request: Request) -> JSONResponse:
+    """Rename a document's title. Session notes keep their filename."""
+    body = await request.json()
+    path = body.get("path")
+    new_title = body.get("new_title")
+    _guard_or_400(path)
+    try:
+        new_path = await run_in_threadpool(records.rename_title, path, new_title)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="File not found.")
+    except (VaultPathError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    audit.log_records_change("Renamed", new_path, f"Title set to {new_title}.")
+    return JSONResponse({"path": new_path})
+
+
+def _resolve_pdf_sync(rel_path: str) -> tuple[Path, str]:
+    """Return (pdf_or_original_path, download_filename). Raises for bad kinds."""
+    target = records._guard(rel_path)
+    if not target.is_file():
+        raise FileNotFoundError(rel_path)
+    kind = records._kind_for(target)
+    if target.suffix.lower() == ".md":
+        pdf = records.render_cache_pdf(rel_path)
+        # Prefer a frontmatter/H1 title for the download filename.
+        note = records.read_note(rel_path)
+        title = note["frontmatter"].get("title") or target.stem
+        return pdf, f"{records._slug(str(title))}.pdf"
+    if kind in ("upload-pdf", "worksheet-pdf") or target.suffix.lower() == ".pdf":
+        return target, target.name
+    raise ValueError(f"cannot produce a PDF for {kind}")
+
+
+@app.get("/api/documents/pdf")
+async def api_document_pdf(path: str):
+    """Return a PDF: rendered for markdown, passthrough for PDFs, 400 otherwise."""
+    _guard_or_400(path)
+    try:
+        pdf_path, filename = await run_in_threadpool(_resolve_pdf_sync, path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="File not found.")
+    except render.PdfUnavailable as exc:
+        raise HTTPException(status_code=503, detail={"error": str(exc), "fix": exc.fix})
+    except (VaultPathError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return FileResponse(
+        str(pdf_path), media_type="application/pdf", filename=filename
+    )
+
+
+def _email_document_sync(client_id: str, rel_path: str, subject: str, body: str) -> dict:
+    email = _client_email(client_id)
+    if not email:
+        return {"status": "failed", "error": "no client email on file"}
+    target = records._guard(rel_path)
+    if not target.is_file():
+        return {"status": "failed", "error": "file not found"}
+    # Markdown -> rendered PDF attachment; uploads attach the original file.
+    attachment = target
+    if target.suffix.lower() == ".md":
+        try:
+            attachment = records.render_cache_pdf(rel_path)
+        except render.PdfUnavailable:
+            attachment = target  # attach the markdown source as a fallback
+    ok = actions.create_mail_draft(email, subject, body, attachment)
+    if ok:
+        audit.log_records_change("Emailed", rel_path, f"Draft to {email} opened.")
+        return {"status": "ok", "detail": f"Draft to {email} left open for review."}
+    return {"status": "failed", "error": "Mail returned an error"}
+
+
+@app.post("/api/documents/email")
+async def api_document_email(request: Request) -> JSONResponse:
+    """Draft a Mail message to the client with the document attached. NEVER sends."""
+    body = await request.json()
+    cid = _valid_client_id(body.get("client_id"))
+    if not cid:
+        raise HTTPException(status_code=400, detail="Invalid client id.")
+    path = body.get("path")
+    _guard_or_400(path)
+    subject = body.get("subject") or "A resource from your therapist"
+    email_body = body.get("body") or ""
+    result = await run_in_threadpool(_email_document_sync, cid, path, subject, email_body)
+    if result.get("status") != "ok":
+        raise HTTPException(status_code=400, detail=result.get("error", "Could not draft email."))
+    return JSONResponse(result)
+
+
+def _reveal_sync(rel_path: str) -> None:
+    target = records._guard(rel_path)
+    if not target.is_file():
+        raise FileNotFoundError(rel_path)
+    reveal_target = target
+    if target.suffix.lower() == ".md":
+        try:
+            reveal_target = records.render_cache_pdf(rel_path)
+        except render.PdfUnavailable:
+            reveal_target = target
+    subprocess.run(["open", "-R", str(reveal_target)], check=False)
+
+
+def _open_sync(rel_path: str) -> None:
+    target = records._guard(rel_path)
+    if not target.is_file():
+        raise FileNotFoundError(rel_path)
+    subprocess.run(["open", str(target)], check=False)
+
+
+@app.post("/api/reveal")
+async def api_reveal(request: Request) -> JSONResponse:
+    """Reveal a file in Finder (open -R). Markdown reveals its rendered PDF."""
+    body = await request.json()
+    path = body.get("path")
+    _guard_or_400(path)
+    try:
+        await run_in_threadpool(_reveal_sync, path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="File not found.")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/open")
+async def api_open(request: Request) -> JSONResponse:
+    """Open a file with its default macOS application."""
+    body = await request.json()
+    path = body.get("path")
+    _guard_or_400(path)
+    try:
+        await run_in_threadpool(_open_sync, path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="File not found.")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/trash")
+async def api_trash(request: Request) -> JSONResponse:
+    """Move a file to the vault trash. Returns a restore token."""
+    body = await request.json()
+    path = body.get("path")
+    _guard_or_400(path)
+    try:
+        token = await run_in_threadpool(records.trash, path, _dt.datetime.now())
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="File not found.")
+    except VaultPathError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    audit.log_records_change("Moved to trash", path, "")
+    return JSONResponse({"token": token})
+
+
+@app.post("/api/trash/restore")
+async def api_trash_restore(request: Request) -> JSONResponse:
+    """Restore a trashed file from its token."""
+    body = await request.json()
+    token = body.get("token")
+    try:
+        restored = await run_in_threadpool(records.restore, token)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Nothing to restore for that token.")
+    except VaultPathError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    audit.log_records_change("Restored", restored, "")
+    return JSONResponse({"path": restored})
+
+
+@app.get("/api/trash")
+async def api_trash_list() -> JSONResponse:
+    """List trashed items awaiting restore or the 30-day sweep."""
+    items = await run_in_threadpool(records.list_trash)
+    return JSONResponse({"items": items})
+
+
+@app.get("/api/search")
+async def api_search(q: str = "") -> JSONResponse:
+    """Grouped vault search: clients, notes, and library."""
+    query = (q or "").strip()
+    if not query:
+        return JSONResponse({"clients": [], "notes": [], "library": []})
+    hits = await run_in_threadpool(vault.search_vault, query)
+    clients, notes, library = [], [], []
+    for hit in hits:
+        p = hit.get("path", "")
+        if p.startswith("Clients/") and p.endswith("_Profile.md"):
+            clients.append(hit)
+        elif p.startswith("Templates/") or p.startswith("Interventions/"):
+            library.append(hit)
+        else:
+            notes.append(hit)
+    return JSONResponse({"clients": clients, "notes": notes, "library": library})
+
+
+@app.get("/api/library")
+async def api_library() -> JSONResponse:
+    """Worksheet templates and reference interventions."""
+    lib = await run_in_threadpool(records.get_library)
+    return JSONResponse(lib)
 
 
 # ---------------------------------------------------------------------------
