@@ -55,10 +55,14 @@ The vault is plain markdown files on disk. [Obsidian](https://obsidian.md) is a 
 
 ```bash
 uv sync
-HF_HUB_OFFLINE=1 .venv/bin/python app.py
+uv run debrief
 ```
 
+First run downloads the speech-to-text model (a few hundred MB); after that everything works fully offline (set HF_HUB_OFFLINE=1 to force it).
+
 Open http://127.0.0.1:8377. The client vault scaffolds itself on first run with three fictional clients. Pick one, record a spoken debrief, review the note and action plan, and approve it.
+
+For development you can also run the server directly with `HF_HUB_OFFLINE=1 .venv/bin/python app.py`. To check your setup at any time, run `uv run debrief-doctor`.
 
 ## Roadmap
 

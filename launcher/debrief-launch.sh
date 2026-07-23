@@ -31,6 +31,7 @@ REPO_ROOT="$(cd -P "$LAUNCHER_DIR/.." >/dev/null 2>&1 && pwd)"
 
 LMS_BIN="/Users/philwoolley/.lmstudio/bin/lms"
 VENV_PYTHON="$REPO_ROOT/.venv/bin/python"
+DEBRIEF_DOCTOR="$REPO_ROOT/.venv/bin/debrief-doctor"
 SERVER_LOG="$LAUNCHER_DIR/server.log"
 
 LM_URL="http://localhost:1234/api/v0/models"
@@ -233,6 +234,40 @@ OSA
 }
 
 # ---------------------------------------------------------------------------
+# Step B2 — Readiness gate: hand the health verdict to debrief-doctor
+# ---------------------------------------------------------------------------
+
+# The old ad-hoc curl reachability checks are gone. debrief-doctor is now the
+# single source of truth for "is Debrief ready": it probes the model server,
+# confirms the gemma model is loaded, and checks the vault and ffmpeg. We run it
+# AFTER ensure_lm_server + ensure_model have started the server and loaded the
+# model, gate on its exit code, and surface its plain-text output in the dialog.
+run_doctor() {
+  log "Running debrief-doctor readiness checks..."
+  local output rc
+  if [ -x "$DEBRIEF_DOCTOR" ]; then
+    output="$("$DEBRIEF_DOCTOR" 2>&1)"
+    rc=$?
+  elif [ -x "$VENV_PYTHON" ]; then
+    output="$("$VENV_PYTHON" -m debrief.doctor 2>&1)"
+    rc=$?
+  else
+    log "debrief-doctor not found; skipping readiness gate."
+    return 0
+  fi
+
+  # Echo the full table to our logs for debugging.
+  printf '%s\n' "$output" >&2
+
+  if [ "$rc" -ne 0 ]; then
+    fail "doctor" "Debrief is not quite ready:
+
+$output"
+  fi
+  log "debrief-doctor passed."
+}
+
+# ---------------------------------------------------------------------------
 # Step C — App server (started once; never restarted if already up)
 # ---------------------------------------------------------------------------
 
@@ -320,6 +355,7 @@ main() {
   log "Starting Debrief (repo: $REPO_ROOT)"
   ensure_lm_server
   ensure_model
+  run_doctor
   ensure_app_server
   open_ui
   log "Debrief is ready."
