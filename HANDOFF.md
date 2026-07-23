@@ -2,6 +2,8 @@
 
 Read this first, then IMPLEMENTATION_PLAN.md. This file is the session-to-session state of the project. Update it whenever meaningful state changes.
 
+Status update: the hackathon is over (2nd place). The project is now in its public open source phase per the current plan; the hackathon build is frozen at the v0.1-hackathon tag.
+
 ## What this project is (3 sentences)
 
 **Debrief** is a clinician-controlled documentation agent for solo therapists, built for the "Build with Gemma: JustBuild" hackathon (July 17-18, 2026, in-person at Pattern, Lehi UT), **Track 2: Voice-to-Action Agents**. The therapist can speak one post-session debrief or use a between-session Voice Journal; the agent creates a review-required draft, can book a follow-up and draft an email only for an approved debrief, then uses Gemma 4 vision to verify the visible result. The demo uses fictional data and local processing; it makes no healthcare-compliance claim.
@@ -21,11 +23,11 @@ Read this first, then IMPLEMENTATION_PLAN.md. This file is the session-to-sessio
 | Track decision | Track 2 (pivoted from Track 1 on 7/17; Track 2 requires screen understanding + real actions; our answer is deterministic actions + vision verification) |
 | Implementation plan | DONE: IMPLEMENTATION_PLAN.md (LLM-ready, full architecture + timeline + demo script) |
 | **SI refusal test (was the #1 risk)** | **PASSED 2026-07-17**: `gemma-4-12b-it-qat`, thinking OFF, produced a quality SOAP note from an SI-containing transcript, no refusal, spontaneously reminded clinician to document risk level. Keep this exact model + settings. |
-| Code | TWO coexisting apps. (1) Blain's simpler voice-journal MVP in app/ (uv/pyproject). (2) The full Debrief agent: debrief/ package + root app.py server + static/index.html UI + eval/ harness. |
+| Code | The full Debrief agent: debrief/ package + root app.py server + static/index.html UI + eval/ harness. (An earlier voice-journal MVP in app/ was removed in the open source phase.) |
 | Full agent verification (2026-07-18 early AM) | 54 unit tests green. End-to-end live pipeline (say-synthesized voice -> STT -> extraction -> Calendar + Mail + vault note -> Gemma vision screen verification 3/3 confirmed): passed 2x. Exact HTTP demo path (webm upload -> /api/debrief -> /api/execute): passed 2x. Eval suite: 5/5 transcripts x 8 checks + 10/10 dates PASS. Two real bugs found by eval and fixed (duplicate booking extraction, date serialization crash). |
 | Models | LM Studio serving gemma-4-12b-it-qat on :1234 (reasoning_effort none via API). parakeet-mlx cached. |
 | Vault | DebriefVault/ is its own registered Obsidian vault (separate from personal vaults). |
-| LAUNCH COMMAND | `HF_HUB_OFFLINE=1 .venv/bin/python app.py` then open http://127.0.0.1:8377. NOT uvicorn app:app (app/ package shadows app.py). Pre-warm with one throwaway debrief before demoing (first request loads parakeet, ~30s). Keep Calendar/Obsidian/Mail windows unobstructed during verification. |
+| LAUNCH COMMAND | `HF_HUB_OFFLINE=1 .venv/bin/python app.py` then open http://127.0.0.1:8377. Pre-warm with one throwaway debrief before demoing (first request loads parakeet, ~30s). Keep Calendar/Obsidian/Mail windows unobstructed during verification. |
 
 ## Architecture in one line
 
