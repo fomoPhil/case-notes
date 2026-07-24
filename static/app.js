@@ -278,12 +278,16 @@ function ensureShell() {
   search.oninput = () => runSearch(search.value);
   search.onkeydown = (e) => { if (e.key === "Escape") { search.value = ""; runSearch(""); } };
   // Feature gate: hide the assistant entry when it is turned off in settings.
-  const feats = (App.settings && App.settings.features) || {};
-  if (feats.assistant === false) {
+  if (!assistantEnabled()) {
     const a = shell.querySelector("#navAssistant");
     if (a) a.style.display = "none";
   }
   renderSidebarClients();
+}
+
+function assistantEnabled() {
+  const feats = (App.settings && App.settings.features) || {};
+  return feats.assistant !== false;
 }
 
 function renderSidebarClients() {
@@ -362,15 +366,17 @@ function renderClients() {
   });
   el.appendChild(grid);
 
-  const asstRow = h(`<div class="asst-entry">
-    <button class="btn btn-ghost btn-asst" id="asstEntry">
-      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3a4 4 0 0 0-4 4v4a4 4 0 0 0 8 0V7a4 4 0 0 0-4-4z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
-      Ask the assistant
-    </button>
-    <span class="asst-hint">Make a worksheet, draft an email, or look something up</span>
-  </div>`);
-  asstRow.querySelector("#asstEntry").onclick = () => { App.assistant = null; go("assistant"); };
-  el.appendChild(asstRow);
+  if (assistantEnabled()) {
+    const asstRow = h(`<div class="asst-entry">
+      <button class="btn btn-ghost btn-asst" id="asstEntry">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3a4 4 0 0 0-4 4v4a4 4 0 0 0 8 0V7a4 4 0 0 0-4-4z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+        Ask the assistant
+      </button>
+      <span class="asst-hint">Make a worksheet, draft an email, or look something up</span>
+    </div>`);
+    asstRow.querySelector("#asstEntry").onclick = () => { App.assistant = null; go("assistant"); };
+    el.appendChild(asstRow);
+  }
 }
 
 function renderRecord() {
@@ -1383,11 +1389,12 @@ function renderLibrary() {
   el.appendChild(h(`<div class="lib-head">
     <div class="grow">
       <h1>${which === "reference" ? "Reference library" : "Worksheet library"}</h1>
-      <div class="c-meta">Reusable client resources. Ask the assistant for a new one by voice, or add your own.</div>
+      <div class="c-meta">${assistantEnabled() ? "Reusable client resources. Ask the assistant for a new one by voice, or add your own." : "Reusable client resources. Add your own from a client's Documents tab."}</div>
     </div>
-    <button class="rbtn primary" id="libAsk">🎙 Ask for a worksheet</button>
+    ${assistantEnabled() ? '<button class="rbtn primary" id="libAsk">🎙 Ask for a worksheet</button>' : ""}
   </div>`));
-  el.querySelector("#libAsk").onclick = () => { App.assistant = null; go("assistant"); };
+  const libAsk = el.querySelector("#libAsk");
+  if (libAsk) libAsk.onclick = () => { App.assistant = null; go("assistant"); };
   if (App.error) el.appendChild(h(`<div class="banner banner-error">${esc(App.error)}</div>`));
   if (!lib) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Loading library...</div></div>`)); return; }
 
@@ -1693,9 +1700,11 @@ function renderSettings() {
     </label>`);
     const cb = row.querySelector("input");
     cb.onchange = async () => {
-      const next = Object.assign({}, feats, { [fr.key]: cb.checked });
       try {
-        await postSettings({ features: next });
+        // Partial per-key patch: the server deep-merges, so we never send a
+        // stale snapshot of the other toggles.
+        await postSettings({ features: { [fr.key]: cb.checked } });
+        feats[fr.key] = cb.checked;
         settingsSaved(cardD.querySelector("#savedD"));
         if (fr.key === "assistant") { rebuildShell(); }
       } catch (e) { cb.checked = !cb.checked; toast(e.message); }
