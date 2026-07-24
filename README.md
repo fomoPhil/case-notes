@@ -65,9 +65,11 @@ The vault is plain markdown files on disk. [Obsidian](https://obsidian.md) is a 
 ## Quickstart
 
 ```bash
-uv sync
+uv sync --extra pdf
 uv run debrief
 ```
+
+The `pdf` extra enables PDF export of notes and worksheets (WeasyPrint; run `brew install pango` if PDF rendering reports missing libraries). Skip the extra if you only want markdown notes.
 
 First run downloads the default speech-to-text model, Parakeet (a few hundred MB); after that everything works fully offline (set HF_HUB_OFFLINE=1 to force it). If you switch to the mlx-whisper engine in Settings, its model (about 1.6 GB) downloads once on first use.
 
