@@ -303,3 +303,119 @@ def test_load_custom_ignores_malformed_json(store):
     assert formats.load_custom("broken") is None
     # A malformed file never appears in the summaries list.
     assert "broken" not in {s["id"] for s in formats.list_specs()}
+
+
+# ---------------------------------------------------------------------------
+# Finding 2: path-traversal guard on custom format ids
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "../../../etc/passwd",
+        "../secret",
+        "sub/dir",
+        "..",
+        "a/../../b",
+        "with space",
+    ],
+)
+def test_traversal_id_raises_unknown_format(store, bad_id):
+    # A raw id that is not a bare slug must never resolve to a file on disk.
+    with pytest.raises(formats.UnknownFormat):
+        formats.load_custom(bad_id)
+    # get_spec surfaces the same failure, and is_known reports False.
+    with pytest.raises(formats.UnknownFormat):
+        formats.get_spec(bad_id)
+    assert formats.is_known(bad_id) is False
+
+
+# ---------------------------------------------------------------------------
+# Finding 5: list_specs never advertises an unselectable format
+# ---------------------------------------------------------------------------
+
+
+def test_list_specs_excludes_filename_id_mismatch(store):
+    import json
+
+    # A hand-dropped file whose stem is not the spec's slugified id. get_spec is
+    # by filename stem, so advertising the internal id would be a dead option.
+    spec = {"name": "My Format", "sections": [{"key": "one"}]}
+    (store.formats_dir() / "My Format.json").write_text(
+        json.dumps(spec), encoding="utf-8"
+    )
+    ids = [s["id"] for s in formats.list_specs()]
+    assert "my-format" not in ids
+    assert "My Format" not in ids
+
+    # A file whose stem is a valid slug but disagrees with the internal id is
+    # also skipped (stem "alpha" but content resolves to id "beta").
+    (store.formats_dir() / "alpha.json").write_text(
+        json.dumps({"name": "Beta", "sections": [{"key": "one"}]}), encoding="utf-8"
+    )
+    ids2 = [s["id"] for s in formats.list_specs()]
+    assert "alpha" not in ids2 and "beta" not in ids2
+
+
+# ---------------------------------------------------------------------------
+# Finding 1: the extract schema cache is keyed by RESOLVED spec id and never
+# caches custom specs or unknown-id fallbacks.
+# ---------------------------------------------------------------------------
+
+
+def _canned_extract_result() -> dict:
+    return {
+        "note": {},
+        "actions": [],
+        "unsupported_requests": [],
+        "next_session_suggestions": [],
+    }
+
+
+def test_extract_sees_custom_spec_edit_between_calls(store, monkeypatch):
+    from debrief import extract as extract_mod
+    from debrief import llm
+
+    seen: dict = {}
+
+    def fake_chat(messages, schema=None, **kw):
+        seen["schema"] = schema
+        return _canned_extract_result()
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+
+    formats.save_custom({"name": "Custom Flow", "sections": [{"key": "one"}]})
+    extract_mod.extract(
+        "t", {}, "CBT", dt.datetime(2026, 7, 18, 12, 0), format_id="custom-flow"
+    )
+    first = set(seen["schema"]["properties"]["note"]["properties"])
+    assert "one" in first and "two" not in first
+
+    # Edit the same custom spec file on disk, then re-run: a stale cached schema
+    # would still carry "one" and silently drop the new section's content.
+    formats.save_custom({"name": "Custom Flow", "sections": [{"key": "two"}]})
+    extract_mod.extract(
+        "t", {}, "CBT", dt.datetime(2026, 7, 18, 12, 0), format_id="custom-flow"
+    )
+    second = set(seen["schema"]["properties"]["note"]["properties"])
+    assert "two" in second and "one" not in second
+
+
+def test_extract_unknown_id_does_not_poison_cache(store, monkeypatch):
+    from debrief import extract as extract_mod
+    from debrief import llm
+
+    def fake_chat(messages, schema=None, **kw):
+        return _canned_extract_result()
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+
+    extract_mod.extract(
+        "t", {}, "CBT", dt.datetime(2026, 7, 18, 12, 0), format_id="does-not-exist"
+    )
+    # The unknown id falls back to DAP but must never become a cache key.
+    assert "does-not-exist" not in extract_mod._SCHEMA_CACHE
+    assert "does-not-exist" not in {k[0] for k in extract_mod._SYSTEM_CACHE}
+    # The resolved builtin (DAP) is what gets cached.
+    assert "DAP" in extract_mod._SCHEMA_CACHE

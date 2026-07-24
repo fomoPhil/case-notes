@@ -81,3 +81,63 @@ def test_session_meta_follows_selected_format(vault, monkeypatch):
     # The selected format and profession flow into the extract call.
     assert calls["format_id"] == "SOAP"
     assert calls["profession"] == "therapy"
+
+
+# ---------------------------------------------------------------------------
+# Finding 3: the on-screen verify check must name the ACTIVE format's headings,
+# not a hardcoded DAP trio, so a filed SOAP/GROW note is not falsely failed.
+# ---------------------------------------------------------------------------
+
+
+def test_verify_note_check_uses_active_format_headings(vault, monkeypatch):
+    from debrief import pipeline
+    import debrief.verify as verify_mod
+
+    captured: dict = {}
+
+    def fake_verify(checks):
+        captured["checks"] = checks
+        return [{**c, "confirmed": True, "what_i_see": "ok"} for c in checks]
+
+    # Stub the verify layer and the surface openers so nothing touches real apps.
+    monkeypatch.setattr(verify_mod, "verify_on_screen", fake_verify)
+    monkeypatch.setattr(pipeline.vault, "obsidian_open_uri", lambda p: "obsidian://x")
+    monkeypatch.setattr(pipeline.time, "sleep", lambda *a, **k: None)
+
+    soap_sections = [
+        {"key": "subjective", "heading": "Subjective"},
+        {"key": "objective", "heading": "Objective"},
+        {"key": "assessment", "heading": "Assessment"},
+        {"key": "plan", "heading": "Plan"},
+    ]
+    plan = {
+        "client_id": "C-0001",
+        "client": {"name": "Bob Smith", "first_name": "Bob"},
+        "corrected_transcript": "session transcript",
+        "note": {
+            "subjective": "s",
+            "objective": "o",
+            "assessment": "a",
+            "plan": "p",
+            "risk_present": False,
+            "interventions": [],
+            "themes": [],
+            "client_quotes": [],
+        },
+        "actions": [],
+        "session_meta": {
+            "session_date": "2026-07-18",
+            "format": "SOAP",
+            "sections": soap_sections,
+            "framework": "CBT",
+            "features": {},
+        },
+    }
+
+    pipeline.execute_plan(plan, verify=True)
+
+    obsidian = [c for c in captured["checks"] if c["surface"] == "obsidian"]
+    assert obsidian, "expected an Obsidian verification check"
+    question = obsidian[0]["question"]
+    assert "Subjective" in question and "Objective" in question
+    assert "Data, Assessment, and Plan" not in question

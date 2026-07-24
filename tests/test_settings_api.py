@@ -84,3 +84,50 @@ def test_post_valid_profession_ok(client):
     resp = tc.post("/api/settings", json={"settings": {"profession": "coaching"}})
     assert resp.status_code == 200
     assert resp.json()["settings"]["profession"] == "coaching"
+
+
+# ---------------------------------------------------------------------------
+# Finding 4: type confusion in settings patches must 400, not 500, and persist
+# nothing.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"note_format": 5},
+        {"note_format": ["DAP"]},
+        {"stt_engine": ["parakeet"]},
+        {"features": "yes"},
+        {"features": {"calendar": "no"}},
+    ],
+)
+def test_post_bad_typed_patch_400_and_persists_nothing(client, patch):
+    tc, _ = client
+    resp = tc.post("/api/settings", json={"settings": patch})
+    assert resp.status_code == 400
+    # Nothing was written: the stored settings still hold the defaults.
+    body = tc.get("/api/settings").json()["settings"]
+    assert body["note_format"] == "DAP"
+    assert body["stt_engine"] == "parakeet"
+    assert body["features"] == {
+        "calendar": True,
+        "email": True,
+        "verify": True,
+        "assistant": True,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Finding 2: a path-traversal note_format is rejected at the API boundary.
+# ---------------------------------------------------------------------------
+
+
+def test_post_traversal_note_format_400(client):
+    tc, _ = client
+    resp = tc.post(
+        "/api/settings",
+        json={"settings": {"note_format": "../../../etc/passwd"}},
+    )
+    assert resp.status_code == 400
+    assert tc.get("/api/settings").json()["settings"]["note_format"] == "DAP"

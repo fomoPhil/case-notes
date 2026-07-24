@@ -192,6 +192,34 @@ def test_audio_field_and_section_when_requested(vault):
     assert "## Dictation Audio" not in path2.read_text(encoding="utf-8")
 
 
+def test_write_session_note_prefers_meta_sections(vault):
+    # Finding 1 belt-and-braces: the note must render the section list the plan
+    # carried (meta["sections"]), not re-resolve the on-disk spec. Here meta
+    # names Alpha/Beta while the "DAP" spec on disk would give Data/Assessment/
+    # Plan; the filed note must match what was extracted and approved.
+    note = {
+        "alpha": "first body",
+        "beta": "second body",
+        "interventions": [],
+        "themes": [],
+        "client_quotes": [],
+    }
+    meta = {
+        "session_date": dt.date(2026, 7, 18),
+        "format": "DAP",
+        "sections": [
+            {"key": "alpha", "heading": "Alpha"},
+            {"key": "beta", "heading": "Beta"},
+        ],
+    }
+    path = vault.write_session_note("C-0001", note, "transcript", meta)
+    text = path.read_text(encoding="utf-8")
+    assert "## Alpha" in text and "first body" in text
+    assert "## Beta" in text and "second body" in text
+    # The on-disk DAP headings must NOT leak in over the plan's sections.
+    assert "## Data" not in text and "## Assessment" not in text
+
+
 def test_second_note_same_day_gets_suffix(vault):
     note = _sample_note(risk=False)
     meta = _sample_meta()

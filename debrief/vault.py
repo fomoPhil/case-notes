@@ -712,6 +712,13 @@ def write_session_note(
     spec = formats.get_spec_or_default(fmt)
     fmt = spec["id"]
 
+    # Prefer the section list the plan carried (session_meta["sections"]): it is
+    # the exact structure the note was extracted and approved against. Falling
+    # back to the spec's own sections would silently render every section empty
+    # if the custom spec file changed on disk between extraction and filing.
+    # Legacy plans without sections fall back to the resolved spec.
+    sections = meta.get("sections") or spec["sections"]
+
     # Reserve the note path up front so the archived dictation audio can share
     # the exact stem (including any -2 collision suffix). The caller moves the
     # converted m4a to Sessions/audio/<stem>.m4a after this returns.
@@ -744,9 +751,9 @@ def write_session_note(
     if audio_name:
         frontmatter["audio"] = f"audio/{audio_name}"
 
-    # Body sections, driven by the format spec (## Heading per section).
+    # Body sections, driven by the plan's section list (## Heading per section).
     parts: list[str] = [_dump_frontmatter(frontmatter)]
-    for section in spec["sections"]:
+    for section in sections:
         value = str(note.get(section["key"], "") or "").strip()
         parts.append(f"\n## {section['heading']}\n\n{value}\n")
 

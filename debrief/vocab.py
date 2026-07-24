@@ -384,7 +384,7 @@ def _dictionary_layer(dictionary_text: str | None) -> str:
     if not text:
         return ""
     return (
-        "\nUSER DICTIONARY (the therapist's own preferred spellings and terms; "
+        "\nUSER DICTIONARY (the professional's own preferred spellings and terms; "
         "bias ambiguous words toward these, but still change ONLY clear "
         "mis-transcriptions):\n" + text + "\n"
     )

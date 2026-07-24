@@ -325,11 +325,25 @@ def _validate_spec(spec: dict) -> dict:
 
 
 def _custom_path(format_id: str) -> Path:
-    return settings_store.formats_dir() / f"{format_id}.json"
+    """Map a format id to its spec file, refusing anything that is not a bare slug.
+
+    A raw id like "../../../etc/passwd" would otherwise resolve to a .json file
+    outside _Settings/formats. Any id that does not round-trip through slugify_id
+    (path separators, dots, leading/trailing junk) is rejected up front, so no
+    directory traversal can reach the filesystem.
+    """
+    fid = (format_id or "").strip()
+    if not fid or fid != slugify_id(fid):
+        raise UnknownFormat(f"unsafe or unknown note format id: {format_id!r}")
+    return settings_store.formats_dir() / f"{fid}.json"
 
 
 def load_custom(format_id: str) -> dict | None:
-    """Return a validated custom spec from _Settings/formats/<id>.json, or None."""
+    """Return a validated custom spec from _Settings/formats/<id>.json, or None.
+
+    Returns None for an unknown-but-safe id and for a malformed/invalid file; a
+    traversal-style id raises UnknownFormat via _custom_path.
+    """
     path = _custom_path(format_id)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -386,7 +400,15 @@ def is_known(format_id: str | None) -> bool:
 
 
 def list_specs() -> list[dict]:
-    """Return [{id, name, clinical}] summaries: builtins in order, then customs."""
+    """Return [{id, name, clinical}] summaries: builtins in order, then customs.
+
+    A custom file is advertised only when its filename stem matches the spec's
+    own id (spec["id"] == path.stem). Lookup elsewhere is by filename stem, so a
+    hand-dropped "My Format.json" whose spec id slugifies to "my-format" would be
+    listed as "my-format" yet get_spec("my-format") would miss the file, leaving
+    an advertised-but-unselectable format. Such mismatches are silently skipped.
+    Dedup is on spec["id"].
+    """
     out: list[dict] = []
     seen: set[str] = set()
     for fid, spec in _BUILTIN_SPECS.items():
@@ -397,14 +419,22 @@ def list_specs() -> list[dict]:
     except OSError:
         custom_files = []
     for path in custom_files:
-        fid = path.stem
-        if fid in seen:
+        stem = path.stem
+        try:
+            spec = load_custom(stem)
+        except UnknownFormat:
+            # A filename that is not a bare slug can never be looked up.
             continue
-        spec = load_custom(fid)
         if spec is None:
             continue
+        if spec["id"] != stem:
+            # Filename stem and internal id disagree: get_spec(stem) would not
+            # return this spec's id, so advertising it would be a dead option.
+            continue
+        if spec["id"] in seen:
+            continue
         out.append({"id": spec["id"], "name": spec["name"], "clinical": spec["clinical"]})
-        seen.add(fid)
+        seen.add(spec["id"])
     return out
 
 

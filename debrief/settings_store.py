@@ -187,13 +187,32 @@ def validate_patch(patch: dict) -> None:
         raise ValueError("settings patch must be an object")
 
     if "note_format" in patch:
+        # Type first: a non-string would blow up is_known/get_spec deep inside
+        # the registry with an AttributeError (a 500), not a clean 400.
+        if not isinstance(patch["note_format"], str):
+            raise ValueError("note_format must be a string")
         from . import formats
 
         if not formats.is_known(patch["note_format"]):
             raise ValueError(f"unknown note_format: {patch['note_format']!r}")
 
-    if "stt_engine" in patch and patch["stt_engine"] not in ALLOWED_STT_ENGINES:
-        raise ValueError(f"unknown stt_engine: {patch['stt_engine']!r}")
+    if "stt_engine" in patch:
+        # A non-string (e.g. a list) is unhashable against the allowed set and
+        # would raise TypeError (a 500) instead of a clean 400.
+        if not isinstance(patch["stt_engine"], str):
+            raise ValueError("stt_engine must be a string")
+        if patch["stt_engine"] not in ALLOWED_STT_ENGINES:
+            raise ValueError(f"unknown stt_engine: {patch['stt_engine']!r}")
+
+    if "features" in patch:
+        # features feeds boolean toggles across the pipeline and UI; a string or
+        # non-bool values silently break those consumers, so reject them here.
+        features = patch["features"]
+        if not isinstance(features, dict):
+            raise ValueError("features must be an object")
+        for name, value in features.items():
+            if not isinstance(value, bool):
+                raise ValueError(f"feature {name!r} must be true or false")
 
 
 # ---------------------------------------------------------------------------

@@ -25,25 +25,31 @@ from .config import DEFAULT_SESSION_MINUTES
 # hand-written literal (guarded by a golden test).
 EXTRACT_SCHEMA: dict = formats.build_extract_schema(formats.get_spec("DAP"))
 
-# Generated schema + system prompt caches, keyed by (format_id, profession) so a
-# repeated call for the same format does not rebuild them.
+# Generated schema + system prompt caches. Both are keyed by the RESOLVED spec id
+# (not the requested format_id) and ONLY builtin specs are ever cached. Custom
+# specs and unknown-id fallbacks are rebuilt every call, because a custom spec
+# file (its sections or prompt layers) can change on disk between requests; a
+# stale cached schema there would silently drop clinical content. The caller
+# resolves the spec once and hands the same object to both helpers so the schema
+# and system prompt can never disagree on the section list.
 _SCHEMA_CACHE: dict[str, dict] = {}
 _SYSTEM_CACHE: dict[tuple[str, str], str] = {}
 
 
-def _schema_for(format_id: str) -> dict:
-    if format_id not in _SCHEMA_CACHE:
-        _SCHEMA_CACHE[format_id] = formats.build_extract_schema(
-            formats.get_spec_or_default(format_id)
-        )
-    return _SCHEMA_CACHE[format_id]
+def _schema_for(spec: dict) -> dict:
+    sid = spec["id"]
+    if sid in formats._BUILTIN_SPECS:
+        if sid not in _SCHEMA_CACHE:
+            _SCHEMA_CACHE[sid] = formats.build_extract_schema(spec)
+        return _SCHEMA_CACHE[sid]
+    return formats.build_extract_schema(spec)
 
 
-def _system_for(format_id: str, profession: str) -> str:
+def _system_for(spec: dict, profession: str) -> str:
     # Custom prompt layers can change on disk, so only builtins are cached.
-    spec = formats.get_spec_or_default(format_id)
-    key = (spec["id"], profession)
-    if spec["id"] in formats._BUILTIN_SPECS:
+    sid = spec["id"]
+    key = (sid, profession)
+    if sid in formats._BUILTIN_SPECS:
         if key not in _SYSTEM_CACHE:
             _SYSTEM_CACHE[key] = formats.build_extract_system(spec, profession)
         return _SYSTEM_CACHE[key]
@@ -114,8 +120,11 @@ def extract(
     Returns a schema-shaped dict, with each schedule_followup action carrying an
     added "resolved_datetime" (ISO string or None).
     """
-    schema = _schema_for(format_id)
-    system = _system_for(format_id, profession)
+    # Resolve the spec ONCE so the schema and system prompt share one section
+    # list, then key the caches by the resolved id.
+    spec = formats.get_spec_or_default(format_id)
+    schema = _schema_for(spec)
+    system = _system_for(spec, profession)
     messages = [
         {"role": "system", "content": system},
         {

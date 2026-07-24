@@ -648,16 +648,25 @@ def execute_plan(plan: dict, verify: bool = True) -> dict:
                 }
             )
         if note_path:
-            checks.append(
-                {
-                    "surface": "obsidian",
-                    "question": (
-                        "This is the Obsidian note editor. Is a clinical session note "
-                        "open showing DAP headings such as Data, Assessment, and Plan? "
-                        "Answer strictly from what is on screen."
-                    ),
-                }
-            )
+            # Ask about the ACTIVE format's own headings, not a hardcoded DAP
+            # trio, so a correctly filed SOAP or GROW note is not failed for
+            # lacking Data/Assessment/Plan.
+            sections = session_meta.get("sections") or []
+            headings = [s.get("heading") for s in sections if s.get("heading")][:3]
+            if headings:
+                heading_phrase = ", ".join(headings)
+                note_question = (
+                    "This is the Obsidian note editor. Is a session note open "
+                    f"showing headings such as {heading_phrase}? Answer strictly "
+                    "from what is on screen."
+                )
+            else:
+                note_question = (
+                    "This is the Obsidian note editor. Is a clinical session note "
+                    "open showing DAP headings such as Data, Assessment, and Plan? "
+                    "Answer strictly from what is on screen."
+                )
+            checks.append({"surface": "obsidian", "question": note_question})
         if email_drafted:
             checks.append(
                 {

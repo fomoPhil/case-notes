@@ -122,3 +122,23 @@ def test_validate_patch_rejects_bad_values(store):
 
 def test_validate_patch_accepts_good_values(store):
     store.validate_patch({"note_format": "SOAP", "stt_engine": "mlx-whisper"})
+
+
+def test_validate_patch_rejects_wrong_types(store):
+    # A non-string note_format/stt_engine, or a malformed features block, must
+    # raise ValueError (a clean 400) rather than an AttributeError/TypeError 500.
+    for bad in (
+        {"note_format": 5},
+        {"note_format": ["DAP"]},
+        {"stt_engine": ["parakeet"]},
+        {"stt_engine": 1},
+        {"features": "yes"},
+        {"features": {"calendar": "no"}},
+        {"features": {"calendar": 1}},
+    ):
+        with pytest.raises(ValueError):
+            store.validate_patch(bad)
+
+
+def test_validate_patch_accepts_good_features(store):
+    store.validate_patch({"features": {"calendar": True, "email": False}})
