@@ -30,7 +30,7 @@ from pathlib import Path
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
-from . import actions, audit, extract as extract_mod, llm, stt, vault  # noqa: E402
+from . import actions, audit, extract as extract_mod, llm, settings_store, stt, vault  # noqa: E402
 from .config import DEFAULT_SESSION_MINUTES  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -262,6 +262,12 @@ def transcribe_and_extract(wav_path: str, client_id: str) -> dict:
     errors: list[dict] = []
     now = _dt.datetime.now()
 
+    # Read persistent settings once for this request (profession + dictionary
+    # feed the correction pass; not once per correction layer).
+    settings = settings_store.load()
+    profession = settings.get("profession", "therapy")
+    dictionary = settings_store.read_dictionary()
+
     # --- transcribe --------------------------------------------------------
     transcript = ""
     t0 = time.perf_counter()
@@ -290,7 +296,9 @@ def transcribe_and_extract(wav_path: str, client_id: str) -> dict:
     corrected = transcript
     t0 = time.perf_counter()
     try:
-        corrected = stt.correct_transcript(transcript, client_ctx, framework)
+        corrected = stt.correct_transcript(
+            transcript, client_ctx, framework, profession=profession, dictionary=dictionary
+        )
     except Exception as exc:
         errors.append({"stage": "correct", "error": str(exc)})
         corrected = transcript

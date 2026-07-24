@@ -13,21 +13,10 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from . import dates, llm
+from . import dates, llm, vocab
 from .config import DEFAULT_SESSION_MINUTES
 
 _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "extract_system.md"
-
-# Framework-authentic vocabulary, mirrored from prompts/extract_system.md so the
-# active framework can be injected explicitly into the user message.
-_FRAMEWORK_VOCAB = {
-    "CBT": "cognitive restructuring, automatic thoughts, cognitive distortions, thought records, behavioral activation, graded exposure, Socratic questioning",
-    "ACT": "cognitive defusion, willingness, values clarification, committed action, self-as-context, acceptance, mindfulness",
-    "DBT": "diary card, chain analysis, target behaviors, the four skills modules, validation",
-    "FAMILY SYSTEMS": "subsystems, boundaries, enmeshment, enactment, differentiation, triangulation, genogram",
-    "EMDR": "target memory, negative and positive cognitions (NC/PC), SUDs 0 to 10, VOC 1 to 7, bilateral stimulation, body scan",
-    "PSYCHODYNAMIC": "transference, countertransference, defenses, interpretation, insight, working through",
-}
 
 # JSON Schema for the single constrained call. Actions use a unified nullable
 # shape (all fields present, per-type fields populated) for reliable strict
@@ -137,11 +126,10 @@ def _format_context(client_ctx: dict) -> str:
 
 
 def _build_user_message(transcript: str, client_ctx: dict, framework: str) -> str:
-    fw_key = (framework or "").strip().upper()
-    vocab = _FRAMEWORK_VOCAB.get(fw_key, "")
+    fw_vocab = vocab.extract_framework_vocab(framework, "therapy")
     vocab_line = (
-        f"ACTIVE FRAMEWORK: {framework}. Use this vocabulary and no other framework's: {vocab}."
-        if vocab
+        f"ACTIVE FRAMEWORK: {framework}. Use this vocabulary and no other framework's: {fw_vocab}."
+        if fw_vocab
         else f"ACTIVE FRAMEWORK: {framework}."
     )
     return (

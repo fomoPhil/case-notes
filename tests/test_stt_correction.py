@@ -75,10 +75,14 @@ def test_correct_transcript_passes_assembled_system(monkeypatch):
         return "corrected text"
 
     monkeypatch.setattr(stt.llm, "chat", fake_chat)
+    # profession + dictionary passed explicitly so the test never reads the real
+    # settings store; the correction system is still assembled via vocab.
     out = stt.correct_transcript(
         "raw text",
         {"name": "Bob Smith", "framework": "CBT"},
         "EMDR",
+        profession="therapy",
+        dictionary="",
     )
     assert out == "corrected text"
     system_msg = captured["messages"][0]["content"]
@@ -86,6 +90,17 @@ def test_correct_transcript_passes_assembled_system(monkeypatch):
     assert "Bob Smith" in system_msg
     assert "This clinician practices EMDR" in system_msg
     assert user_msg == "raw text"
+
+
+def test_dictionary_layer_appended_when_present():
+    system = stt._build_correction_system(
+        None, "CBT", profession="therapy", dictionary="Zoloft is sertraline"
+    )
+    assert "USER DICTIONARY" in system
+    assert "Zoloft is sertraline" in system
+    # Empty dictionary adds no layer.
+    system_empty = stt._build_correction_system(None, "CBT", profession="therapy", dictionary="")
+    assert "USER DICTIONARY" not in system_empty
 
 
 def test_glossary_section_within_token_budget():
