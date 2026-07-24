@@ -8,6 +8,7 @@ the exact schemas in IMPLEMENTATION_PLAN.md Appendix A. No em dashes anywhere.
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import os
 import subprocess
 import tempfile
@@ -843,8 +844,30 @@ def update_profile(client_id: str, new_summary: str, updates: dict) -> None:
     _atomic_write(profile_path, _dump_frontmatter(fm) + "\n" + new_body)
 
 
+# Obsidian's own registry of vaults it knows how to open. Deep-linking an
+# unregistered vault makes Obsidian throw a "Vault not found" dialog, so we
+# check here before ever launching an obsidian:// URI.
+_OBSIDIAN_CONFIG = (
+    Path.home() / "Library" / "Application Support" / "obsidian" / "obsidian.json"
+)
+
+
+def obsidian_available() -> bool:
+    """True when Obsidian has THIS vault registered (safe to deep-link)."""
+    try:
+        data = json.loads(_OBSIDIAN_CONFIG.read_text(encoding="utf-8"))
+        target = str(VAULT_DIR.resolve())
+        return any(
+            str(Path(v.get("path", "")).resolve()) == target
+            for v in (data.get("vaults") or {}).values()
+        )
+    except Exception:
+        return False
+
+
 def obsidian_open_uri(path: Path) -> str:
-    """Build an obsidian:// URI for a vault file and open it. Returns the URI."""
+    """Build an obsidian:// URI for a vault file; open it only when Obsidian
+    has this vault registered. Returns the URI either way (for display)."""
     path = Path(path)
     try:
         rel = path.relative_to(VAULT_DIR)
@@ -856,8 +879,9 @@ def obsidian_open_uri(path: Path) -> str:
         f"obsidian://open?vault={quote(vault_name)}"
         f"&file={quote(file_param)}"
     )
-    try:
-        subprocess.run(["open", uri], check=False)
-    except Exception:
-        pass
+    if obsidian_available():
+        try:
+            subprocess.run(["open", uri], check=False)
+        except Exception:
+            pass
     return uri

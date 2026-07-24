@@ -669,7 +669,9 @@ def execute_plan(plan: dict, verify: bool = True) -> dict:
                     ),
                 }
             )
-        if note_path:
+        if note_path and vault.obsidian_available():
+            # Only verify the note surface when Obsidian can actually show it
+            # (unregistered vaults would leave nothing on screen to read).
             # Ask about the ACTIVE format's own headings, not a hardcoded DAP
             # trio, so a correctly filed SOAP or GROW note is not failed for
             # lacking Data/Assessment/Plan.

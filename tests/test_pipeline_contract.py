@@ -105,6 +105,7 @@ def test_verify_note_check_uses_active_format_headings(vault, monkeypatch):
     # Stub the verify layer and the surface openers so nothing touches real apps.
     monkeypatch.setattr(verify_mod, "verify_on_screen", fake_verify)
     monkeypatch.setattr(pipeline.vault, "obsidian_open_uri", lambda p: "obsidian://x")
+    monkeypatch.setattr(pipeline.vault, "obsidian_available", lambda: True)
     monkeypatch.setattr(pipeline.time, "sleep", lambda *a, **k: None)
 
     soap_sections = [
