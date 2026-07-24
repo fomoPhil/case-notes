@@ -29,6 +29,8 @@ const App = {
   status: null,            // GET /api/status payload
   setupPerms: null,        // { calendar, mail, screen } permission results
   settings: null,          // GET /api/settings -> settings object (features, etc.)
+  settingsPayload: null,   // full GET /api/settings payload (settings, dictionary, professions, formats)
+  wizard: null,            // in-progress onboarding choices, POSTed before setup/complete
 };
 
 // Mirror of settings_store DEFAULTS: used when /api/settings has not loaded yet
@@ -116,16 +118,43 @@ function addWorksheetEmail() {
   render();
 }
 
+// Profession -> default note format. Mirrors the plan's onboarding rule: the
+// first clinical format for clinical professions, GROW for coaching, a meeting
+// memo for legal meetings. Used when the profession changes in the wizard.
+const PROF_DEFAULT_FORMAT = { therapy: "DAP", slp: "DAP", coaching: "GROW", legal_meeting: "meeting-memo" };
+
+// Fallbacks used only when /api/settings could not be fetched, so the wizard and
+// settings screen still render selects instead of breaking. Names match vocab.py
+// and formats.py so the picker labels are correct even offline.
+const PROFESSIONS_FALLBACK = [
+  { id: "therapy", name: "Therapy", clinical: true },
+  { id: "slp", name: "Speech-Language Pathology", clinical: true },
+  { id: "coaching", name: "Coaching", clinical: false },
+  { id: "legal_meeting", name: "Legal Meeting", clinical: false },
+];
+const FORMATS_FALLBACK = [
+  { id: "DAP", name: "DAP note", clinical: true },
+  { id: "SOAP", name: "SOAP note", clinical: true },
+  { id: "GROW", name: "GROW model", clinical: false },
+  { id: "meeting-memo", name: "Meeting memo", clinical: false },
+];
+
+function settingsFallbackPayload() {
+  return { settings: SETTINGS_DEFAULTS, dictionary: "", professions: PROFESSIONS_FALLBACK, formats: FORMATS_FALLBACK };
+}
+
 async function refreshSettings() {
   try {
     const r = await fetch("/api/settings");
     if (r.ok) {
       const payload = await r.json();
+      App.settingsPayload = payload;
       App.settings = payload.settings || SETTINGS_DEFAULTS;
-    } else {
-      App.settings = SETTINGS_DEFAULTS;
+      return;
     }
-  } catch (e) { App.settings = SETTINGS_DEFAULTS; }
+  } catch (e) { /* fall through to defaults */ }
+  App.settingsPayload = settingsFallbackPayload();
+  App.settings = SETTINGS_DEFAULTS;
 }
 
 async function loadClients() {
@@ -185,6 +214,7 @@ function go(state) {
   App.error = null;
   if (state === "assistant") App.nav = "assistant";
   else if (state === "setupWizard") App.nav = "setup";
+  else if (state === "settings") App.nav = "settings";
   else if (!["clientRecord", "document", "library", "trash"].includes(state)) App.nav = "home";
   render();
 }
@@ -196,7 +226,7 @@ const DISPATCH = {
   assistantReview: renderAssistantReview, assistantResults: renderAssistantResults,
   clientRecord: renderClientRecord, document: renderDocument,
   library: renderLibrary, trash: renderTrash,
-  setupWizard: renderSetupWizard,
+  setupWizard: renderSetupWizard, settings: renderSettings,
 };
 
 // ---------------------------------------------------------------------------
@@ -230,7 +260,8 @@ function ensureShell() {
         <button class="navitem" id="navReference"><span class="nav-ic">📚</span> Reference</button>
         <button class="navitem" id="navTrash"><span class="nav-ic">🗑</span> Trash</button>
         <div class="side-tail">
-          <button class="navitem navitem-setup" id="navSetup"><span class="nav-ic">⚙</span> Setup</button>
+          <button class="navitem navitem-setup" id="navSettings"><span class="nav-ic">⚙</span> Settings</button>
+          <button class="navitem navitem-setup" id="navSetup"><span class="nav-ic">✦</span> Setup</button>
           <div class="side-foot">${LOCK_DOT} Data secure on this Mac</div>
         </div>
       </aside>
@@ -241,6 +272,7 @@ function ensureShell() {
   shell.querySelector("#navWorksheets").onclick = () => openLibrary("worksheets");
   shell.querySelector("#navReference").onclick = () => openLibrary("reference");
   shell.querySelector("#navTrash").onclick = () => openTrash();
+  shell.querySelector("#navSettings").onclick = () => openSettings();
   shell.querySelector("#navSetup").onclick = () => openSetup();
   const search = shell.querySelector("#globalSearch");
   search.oninput = () => runSearch(search.value);
@@ -274,6 +306,7 @@ function updateNav() {
     "lib:reference": "navReference",
     trash: "navTrash",
     setup: "navSetup",
+    settings: "navSettings",
   };
   document.querySelectorAll(".navitem").forEach(n => n.classList.remove("on"));
   const id = map[App.nav];
@@ -1494,6 +1527,530 @@ function openSearchHit(hit) {
 }
 
 // ===========================================================================
+// Settings screen: profession, format, template import, dictionary, engine,
+// features. Every change POSTs a small patch to /api/settings and refreshes.
+// ===========================================================================
+
+const STT_ENGINES = [
+  { id: "parakeet", label: "Parakeet", desc: "Fastest, excellent English" },
+  { id: "mlx-whisper", label: "MLX Whisper", desc: "Most accurate for other languages and accents" },
+];
+
+const FEATURE_ROWS = [
+  { key: "calendar", label: "Calendar booking", desc: "Book follow-up appointments in a dedicated Debrief calendar." },
+  { key: "email", label: "Email drafts", desc: "Prepare client emails for your review. Debrief never sends them." },
+  { key: "verify", label: "On-screen verification", desc: "Read the screen after running to confirm what happened." },
+  { key: "assistant", label: "Assistant", desc: "Ask for worksheets, email drafts, and quick lookups." },
+];
+
+const STT_DOWNLOAD_HINT = "First transcription after switching may take a minute while the model downloads.";
+
+// Turn an /api/settings error body into a readable line.
+function apiErr(data, status) {
+  const d = data && data.detail;
+  if (d) return (d.fix || d.error || (typeof d === "string" ? d : null)) || ("Error " + status);
+  if (data && data.error) return data.error;
+  return "Error " + status;
+}
+
+async function postSettings(patch, dictionary) {
+  const body = {};
+  if (patch) body.settings = patch;
+  if (dictionary !== undefined) body.dictionary = dictionary;
+  const r = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(apiErr(data, r.status));
+  App.settingsPayload = data;
+  App.settings = data.settings || SETTINGS_DEFAULTS;
+  return data;
+}
+
+function settingsSaved(node) {
+  if (!node) return;
+  node.textContent = "Saved";
+  node.classList.add("on");
+  clearTimeout(node._t);
+  node._t = setTimeout(() => { node.classList.remove("on"); node.textContent = ""; }, 1600);
+}
+
+async function openSettings() {
+  App.state = "settings";
+  App.nav = "settings";
+  App.error = null;
+  render();
+  await refreshSettings();
+  if (App.state === "settings") render();
+}
+
+// Re-render the whole shell (used when a settings change alters the sidebar,
+// e.g. turning the assistant off hides its entry).
+function rebuildShell() {
+  const shell = document.getElementById("shell");
+  if (shell) shell.innerHTML = "";
+  render();
+}
+
+function renderSettings() {
+  const payload = App.settingsPayload || settingsFallbackPayload();
+  const s = payload.settings || SETTINGS_DEFAULTS;
+  const professions = payload.professions || PROFESSIONS_FALLBACK;
+  const formats = payload.formats || FORMATS_FALLBACK;
+  const feats = Object.assign({ calendar: true, email: true, verify: true, assistant: true }, s.features || {});
+  const dictText = payload.dictionary || "";
+
+  el.appendChild(h(`<div class="setup-head enter"><h1>Settings</h1><p class="setup-lead">Tune Debrief for your work. Everything here is stored on this Mac.</p></div>`));
+
+  // ---- Card A: profession and note format ----
+  const cardA = h(`<div class="panel setup-card enter d1">
+    <div class="setup-step-head"><h2>Profession and note format</h2><span class="set-saved" id="savedA"></span></div>
+    <p class="setup-note">This shapes the vocabulary Debrief expects and the note structure it writes.</p>
+  </div>`);
+  const profField = h(`<div class="set-field"><label class="set-label">Profession</label></div>`);
+  const profSel = h(`<select class="set-select" id="setProf"></select>`);
+  professions.forEach(pf => {
+    const o = h(`<option value="${esc(pf.id)}">${esc(pf.name)}</option>`);
+    if (pf.id === s.profession) o.selected = true;
+    profSel.appendChild(o);
+  });
+  profSel.onchange = async () => {
+    try { await postSettings({ profession: profSel.value }); settingsSaved(cardA.querySelector("#savedA")); }
+    catch (e) { toast(e.message); }
+  };
+  profField.appendChild(profSel);
+  cardA.appendChild(profField);
+
+  const fmtField = h(`<div class="set-field"><label class="set-label">Active note format</label></div>`);
+  const fmtSel = h(`<select class="set-select" id="setFmt"></select>`);
+  formats.forEach(f => {
+    const o = h(`<option value="${esc(f.id)}">${esc(f.name)}</option>`);
+    if (f.id === s.note_format) o.selected = true;
+    fmtSel.appendChild(o);
+  });
+  fmtSel.onchange = async () => {
+    try { await postSettings({ note_format: fmtSel.value }); settingsSaved(cardA.querySelector("#savedA")); }
+    catch (e) { toast(e.message); }
+  };
+  fmtField.appendChild(fmtSel);
+  cardA.appendChild(fmtField);
+
+  const importBtn = h(`<button class="btn btn-ghost set-import-btn" id="setImport">Import a note template</button>`);
+  importBtn.onclick = () => launchImportFlow({
+    profession: s.profession,
+    fromWizard: false,
+    onSaved: () => { openSettings(); },
+  });
+  cardA.appendChild(importBtn);
+  el.appendChild(cardA);
+
+  // ---- Card B: speech to text ----
+  const cardB = h(`<div class="panel setup-card enter d1">
+    <div class="setup-step-head"><h2>Speech to text</h2><span class="set-saved" id="savedB"></span></div>
+    <p class="setup-note">Choose the transcription model that fits your voice and language.</p>
+  </div>`);
+  const engBox = h(`<div class="set-radios"></div>`);
+  STT_ENGINES.forEach(eng => {
+    const row = h(`<label class="set-radio">
+      <input type="radio" name="setStt" value="${esc(eng.id)}" ${eng.id === s.stt_engine ? "checked" : ""} />
+      <span class="set-radio-body"><span class="set-radio-title">${esc(eng.label)}</span><span class="set-radio-desc">${esc(eng.desc)}</span></span>
+    </label>`);
+    row.querySelector("input").onchange = async () => {
+      try { await postSettings({ stt_engine: eng.id }); settingsSaved(cardB.querySelector("#savedB")); }
+      catch (e) { toast(e.message); }
+    };
+    engBox.appendChild(row);
+  });
+  cardB.appendChild(engBox);
+  cardB.appendChild(h(`<p class="setup-sub">${esc(STT_DOWNLOAD_HINT)}</p>`));
+  el.appendChild(cardB);
+
+  // ---- Card C: personal dictionary ----
+  const cardC = h(`<div class="panel setup-card enter d2">
+    <div class="setup-step-head"><h2>Personal dictionary</h2><span class="set-saved" id="savedC"></span></div>
+    <p class="setup-note">One term or correction per line. These teach the transcriber your names and jargon.</p>
+  </div>`);
+  const area = h(`<textarea class="set-textarea" id="setDict" rows="6" spellcheck="false"></textarea>`);
+  area.value = dictText;
+  const dictSave = h(`<div class="set-field-actions"><button class="btn btn-primary btn-compact" id="setDictSave">Save dictionary</button></div>`);
+  dictSave.querySelector("#setDictSave").onclick = async () => {
+    try { await postSettings(null, area.value); settingsSaved(cardC.querySelector("#savedC")); }
+    catch (e) { toast(e.message); }
+  };
+  cardC.appendChild(area);
+  cardC.appendChild(dictSave);
+  el.appendChild(cardC);
+
+  // ---- Card D: features ----
+  const cardD = h(`<div class="panel setup-card enter d2">
+    <div class="setup-step-head"><h2>What Debrief can do</h2><span class="set-saved" id="savedD"></span></div>
+    <p class="setup-note">Turn off anything you do not use. Off features are hidden and never run.</p>
+  </div>`);
+  const togBox = h(`<div class="set-toggles"></div>`);
+  FEATURE_ROWS.forEach(fr => {
+    const on = feats[fr.key] !== false;
+    const row = h(`<label class="set-toggle">
+      <span class="set-toggle-body"><span class="set-toggle-title">${esc(fr.label)}</span><span class="set-toggle-desc">${esc(fr.desc)}</span></span>
+      <input type="checkbox" ${on ? "checked" : ""} />
+    </label>`);
+    const cb = row.querySelector("input");
+    cb.onchange = async () => {
+      const next = Object.assign({}, feats, { [fr.key]: cb.checked });
+      try {
+        await postSettings({ features: next });
+        settingsSaved(cardD.querySelector("#savedD"));
+        if (fr.key === "assistant") { rebuildShell(); }
+      } catch (e) { cb.checked = !cb.checked; toast(e.message); }
+    };
+    togBox.appendChild(row);
+  });
+  cardD.appendChild(togBox);
+  el.appendChild(cardD);
+}
+
+// ===========================================================================
+// Shared template-import subflow (used from Settings and the wizard).
+// A staged modal: source -> mode -> derived spec -> preview -> save. The Gemini
+// API key lives only in this closure and is dropped the moment a compile call
+// returns. Every dynamic string is escaped; the dry-run preview is built as DOM
+// with esc(), never innerHTML.
+// ===========================================================================
+
+function launchImportFlow({ profession, fromWizard, onSaved }) {
+  const flow = {
+    stage: "source",
+    profession: profession || (App.settings && App.settings.profession) || "therapy",
+    fromWizard: !!fromWizard,
+    docText: "", chars: 0, truncated: false,
+    mode: "local", consent: false, apiKey: "",
+    spec: null, promptLayer: "", offerLocalFallback: false,
+    preview: null, makeActive: !!fromWizard,
+    saved: null, busy: false, error: null,
+  };
+
+  const backdrop = h(`<div class="modal-backdrop import-backdrop"><div class="modal import-modal"><div class="import-body"></div></div></div>`);
+  const bodyEl = backdrop.querySelector(".import-body");
+  backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
+  function close() { flow.apiKey = ""; backdrop.remove(); }
+  function repaint() { bodyEl.innerHTML = ""; renderImportStage(flow, bodyEl, { repaint, close, onSaved }); }
+  document.body.appendChild(backdrop);
+  repaint();
+}
+
+function importHeader(flow, close, title) {
+  const head = h(`<div class="import-head"><h3>${esc(title)}</h3><button class="import-x" aria-label="Close">✕</button></div>`);
+  head.querySelector(".import-x").onclick = close;
+  return head;
+}
+
+function renderImportStage(flow, body, ctx) {
+  if (flow.stage === "source") return importStageSource(flow, body, ctx);
+  if (flow.stage === "mode") return importStageMode(flow, body, ctx);
+  if (flow.stage === "spec") return importStageSpec(flow, body, ctx);
+  if (flow.stage === "preview") return importStagePreview(flow, body, ctx);
+  if (flow.stage === "saved") return importStageSaved(flow, body, ctx);
+}
+
+function importStageSource(flow, body, ctx) {
+  body.appendChild(importHeader(flow, ctx.close, "Import a note template"));
+  body.appendChild(h(`<p class="import-lead">Upload a blank or example template, or paste its text. Debrief reads only the structure to build a matching note format.</p>`));
+  if (flow.error) body.appendChild(h(`<div class="import-error">${esc(flow.error)}</div>`));
+
+  const hidden = h(`<input type="file" style="display:none" accept=".md,.txt,.docx,.pdf" />`);
+  hidden.onchange = () => { if (hidden.files.length) doUpload(flow, hidden.files[0], ctx); };
+  const pick = h(`<button class="btn btn-ghost import-file-btn">${flow.busy ? "Reading..." : "Choose a file (.md, .txt, .docx)"}</button>`);
+  pick.disabled = flow.busy;
+  pick.onclick = () => hidden.click();
+  body.appendChild(pick);
+  body.appendChild(hidden);
+
+  body.appendChild(h(`<div class="import-or">or paste the template text</div>`));
+  const area = h(`<textarea class="set-textarea" rows="6" placeholder="Paste your template here"></textarea>`);
+  area.value = flow.docText || "";
+  body.appendChild(area);
+
+  const bar = h(`<div class="import-bar"></div>`);
+  const next = h(`<button class="btn btn-primary" ${flow.busy ? "disabled" : ""}>Continue</button>`);
+  next.onclick = () => {
+    const text = (area.value || "").trim();
+    if (!text) { flow.error = "Add a file or paste some template text first."; ctx.repaint(); return; }
+    flow.docText = text; flow.chars = text.length; flow.truncated = false; flow.error = null;
+    flow.stage = "mode"; ctx.repaint();
+  };
+  bar.appendChild(next);
+  body.appendChild(bar);
+}
+
+async function doUpload(flow, file, ctx) {
+  flow.busy = true; flow.error = null; ctx.repaint();
+  const fd = new FormData();
+  fd.append("file", file, file.name);
+  try {
+    const r = await fetch("/api/settings/import/upload", { method: "POST", body: fd });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(apiErr(data, r.status));
+    if (data.pdf_unsupported) {
+      flow.error = "PDF import is not supported yet. Export the template as .docx or .md, or paste its text below.";
+      flow.busy = false; ctx.repaint(); return;
+    }
+    flow.docText = data.doc_text || "";
+    flow.chars = data.chars || 0;
+    flow.truncated = !!data.truncated;
+    flow.busy = false;
+    flow.stage = "mode"; ctx.repaint();
+  } catch (e) {
+    flow.error = e.message; flow.busy = false; ctx.repaint();
+  }
+}
+
+const GEMINI_CONSENT_COPY = "This sends this one document, and nothing else, ever, to Google Gemini. Use a blank or example template, not real client information.";
+
+function importStageMode(flow, body, ctx) {
+  body.appendChild(importHeader(flow, ctx.close, "How should Debrief read it?"));
+  const meta = flow.chars ? `${flow.chars.toLocaleString()} characters read.` : "";
+  const trunc = flow.truncated ? " The template was long, so only the first part was used." : "";
+  if (meta) body.appendChild(h(`<p class="import-lead">${esc(meta + trunc)}</p>`));
+  if (flow.error) body.appendChild(h(`<div class="import-error">${esc(flow.error)}</div>`));
+
+  const radios = h(`<div class="set-radios"></div>`);
+  const local = h(`<label class="set-radio">
+    <input type="radio" name="impMode" value="local" ${flow.mode === "local" ? "checked" : ""} />
+    <span class="set-radio-body"><span class="set-radio-title">Local</span><span class="set-radio-desc">Runs entirely on this Mac.</span></span>
+  </label>`);
+  const cloud = h(`<label class="set-radio">
+    <input type="radio" name="impMode" value="cloud" ${flow.mode === "cloud" ? "checked" : ""} />
+    <span class="set-radio-body"><span class="set-radio-title">Cloud boost</span><span class="set-radio-desc">Uses Google Gemini for one call. Bring your own API key.</span></span>
+  </label>`);
+  local.querySelector("input").onchange = () => { flow.mode = "local"; flow.offerLocalFallback = false; ctx.repaint(); };
+  cloud.querySelector("input").onchange = () => { flow.mode = "cloud"; ctx.repaint(); };
+  radios.appendChild(local);
+  radios.appendChild(cloud);
+  body.appendChild(radios);
+
+  if (flow.mode === "cloud") {
+    const box = h(`<div class="import-consent"></div>`);
+    box.appendChild(h(`<p class="import-consent-copy">${esc(GEMINI_CONSENT_COPY)}</p>`));
+    const consentRow = h(`<label class="set-toggle import-consent-check">
+      <span class="set-toggle-body"><span class="set-toggle-title">I understand and consent</span></span>
+      <input type="checkbox" ${flow.consent ? "checked" : ""} />
+    </label>`);
+    consentRow.querySelector("input").onchange = (e) => { flow.consent = e.target.checked; };
+    box.appendChild(consentRow);
+    const keyField = h(`<div class="set-field"><label class="set-label">Gemini API key</label></div>`);
+    const key = h(`<input type="password" class="set-select" autocomplete="off" placeholder="Pasted here, kept in memory, cleared after the call" />`);
+    key.value = flow.apiKey || "";
+    key.oninput = () => { flow.apiKey = key.value; };
+    keyField.appendChild(key);
+    box.appendChild(keyField);
+    body.appendChild(box);
+  }
+
+  const bar = h(`<div class="import-bar"></div>`);
+  const back = h(`<button class="btn btn-ghost">Back</button>`);
+  back.onclick = () => { flow.stage = "source"; flow.error = null; ctx.repaint(); };
+  bar.appendChild(back);
+  bar.appendChild(h(`<div class="grow"></div>`));
+  if (flow.offerLocalFallback) {
+    const tryLocal = h(`<button class="btn btn-ghost">Try again locally</button>`);
+    tryLocal.onclick = () => { flow.mode = "local"; flow.offerLocalFallback = false; doCompile(flow, ctx); };
+    bar.appendChild(tryLocal);
+  }
+  const compile = h(`<button class="btn btn-primary" ${flow.busy ? "disabled" : ""}>${flow.busy ? "Compiling..." : "Compile"}</button>`);
+  compile.onclick = () => doCompile(flow, ctx);
+  bar.appendChild(compile);
+  body.appendChild(bar);
+}
+
+async function doCompile(flow, ctx) {
+  if (flow.mode === "cloud" && (!flow.consent || !(flow.apiKey || "").trim())) {
+    flow.error = "Check the consent box and paste an API key, or switch to Local.";
+    ctx.repaint(); return;
+  }
+  flow.busy = true; flow.error = null; flow.offerLocalFallback = false; ctx.repaint();
+  const payload = { doc_text: flow.docText, profession: flow.profession, mode: flow.mode };
+  if (flow.mode === "cloud") { if (flow.consent) payload.consent = true; payload.api_key = (flow.apiKey || "").trim(); }
+  try {
+    const r = await fetch("/api/settings/import/compile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    const data = await r.json().catch(() => ({}));
+    // Key is single-use: drop it the instant the call returns, whatever happened.
+    flow.apiKey = "";
+    if (r.status === 502 && data.fallback === "local") {
+      flow.error = (data.error || "The cloud service could not compile this.") + " You can try again locally.";
+      flow.offerLocalFallback = true; flow.busy = false; ctx.repaint(); return;
+    }
+    if (!r.ok) throw new Error(apiErr(data, r.status));
+    flow.spec = data.spec;
+    flow.promptLayer = data.prompt_layer || "";
+    if (!flow.spec.sections) flow.spec.sections = [];
+    flow.busy = false; flow.stage = "spec"; ctx.repaint();
+  } catch (e) {
+    flow.apiKey = ""; flow.error = e.message; flow.busy = false; ctx.repaint();
+  }
+}
+
+function importStageSpec(flow, body, ctx) {
+  body.appendChild(importHeader(flow, ctx.close, "Review the derived format"));
+  body.appendChild(h(`<p class="import-lead">Edit the name and sections. This is the structure every note in this format will follow.</p>`));
+  if (flow.error) body.appendChild(h(`<div class="import-error">${esc(flow.error)}</div>`));
+
+  const nameField = h(`<div class="set-field"><label class="set-label">Format name</label></div>`);
+  const nameInput = h(`<input type="text" class="set-select" />`);
+  nameInput.value = flow.spec.name || "";
+  nameInput.oninput = () => { flow.spec.name = nameInput.value; };
+  nameField.appendChild(nameInput);
+  body.appendChild(nameField);
+
+  const list = h(`<div class="import-sections"></div>`);
+  const renderRows = () => {
+    list.innerHTML = "";
+    flow.spec.sections.forEach((sec, i) => {
+      const row = h(`<div class="import-sec-row">
+        <div class="import-sec-fields">
+          <input type="text" class="set-select import-sec-heading" placeholder="Heading" />
+          <input type="text" class="set-select import-sec-desc" placeholder="What goes in this section" />
+        </div>
+        <button class="import-sec-del" aria-label="Remove section" ${flow.spec.sections.length <= 1 ? "disabled" : ""}>✕</button>
+      </div>`);
+      const heading = row.querySelector(".import-sec-heading");
+      const desc = row.querySelector(".import-sec-desc");
+      heading.value = sec.heading || "";
+      desc.value = sec.description || "";
+      heading.oninput = () => { sec.heading = heading.value; };
+      desc.oninput = () => { sec.description = desc.value; };
+      row.querySelector(".import-sec-del").onclick = () => {
+        if (flow.spec.sections.length <= 1) return;
+        flow.spec.sections.splice(i, 1); renderRows();
+      };
+      list.appendChild(row);
+    });
+  };
+  renderRows();
+  body.appendChild(list);
+
+  const addRow = h(`<button class="btn btn-ghost btn-compact import-add">＋ Add section</button>`);
+  addRow.onclick = () => {
+    if (flow.spec.sections.length >= 12) { flow.error = "A format can have at most 12 sections."; ctx.repaint(); return; }
+    flow.spec.sections.push({ heading: "", description: "" }); renderRows();
+  };
+  body.appendChild(addRow);
+
+  if (!flow.fromWizard) {
+    const activeRow = h(`<label class="set-toggle import-active-check">
+      <span class="set-toggle-body"><span class="set-toggle-title">Make this my active format</span></span>
+      <input type="checkbox" ${flow.makeActive ? "checked" : ""} />
+    </label>`);
+    activeRow.querySelector("input").onchange = (e) => { flow.makeActive = e.target.checked; };
+    body.appendChild(activeRow);
+  }
+
+  const bar = h(`<div class="import-bar"></div>`);
+  const back = h(`<button class="btn btn-ghost">Back</button>`);
+  back.onclick = () => { flow.stage = "mode"; flow.error = null; ctx.repaint(); };
+  bar.appendChild(back);
+  bar.appendChild(h(`<div class="grow"></div>`));
+  const preview = h(`<button class="btn btn-ghost" ${flow.busy ? "disabled" : ""}>${flow.busy && flow._act === "preview" ? "Rendering..." : "Preview"}</button>`);
+  preview.onclick = () => doPreview(flow, ctx);
+  bar.appendChild(preview);
+  const save = h(`<button class="btn btn-primary" ${flow.busy ? "disabled" : ""}>${flow.busy && flow._act === "save" ? "Saving..." : "Save format"}</button>`);
+  save.onclick = () => doSave(flow, ctx);
+  bar.appendChild(save);
+  body.appendChild(bar);
+}
+
+function specForSubmit(flow) {
+  return {
+    name: flow.spec.name || "",
+    clinical: !!flow.spec.clinical,
+    style_rules: flow.spec.style_rules || "",
+    risk_section: !!flow.spec.risk_section,
+    sections: (flow.spec.sections || []).map(s => ({ heading: s.heading || "", description: s.description || "" })),
+  };
+}
+
+async function doPreview(flow, ctx) {
+  flow.busy = true; flow._act = "preview"; flow.error = null; ctx.repaint();
+  try {
+    const r = await fetch("/api/settings/import/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ spec: specForSubmit(flow), profession: flow.profession }) });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(apiErr(data, r.status));
+    flow.preview = data; flow.busy = false; flow._act = null; flow.stage = "preview"; ctx.repaint();
+  } catch (e) {
+    flow.busy = false; flow._act = null; flow.error = e.message; ctx.repaint();
+  }
+}
+
+function importStagePreview(flow, body, ctx) {
+  body.appendChild(importHeader(flow, ctx.close, "Preview on a sample transcript"));
+  body.appendChild(h(`<p class="import-lead">A dry run on a bundled sample. Nothing is saved. This is how a filed note will read.</p>`));
+  const pv = flow.preview || {};
+  const note = pv.note || {};
+  const sections = pv.sections || [];
+  const paper = h(`<div class="panel doc import-preview-doc"></div>`);
+  paper.appendChild(h(`<div class="letterhead"><span class="who">Sample</span><span class="stamps"><span class="stamp">${esc(flow.spec.name || "Format")}</span></span></div>`));
+  paper.appendChild(h(`<div class="dblrule"></div>`));
+  const secBox = h(`<div class="note-sections"></div>`);
+  sections.forEach(s => {
+    const secEl = h(`<div class="note-section"><h4></h4><p></p></div>`);
+    secEl.querySelector("h4").textContent = s.heading || "";
+    secEl.querySelector("p").textContent = (note && note[s.key] != null) ? String(note[s.key]) : "";
+    secBox.appendChild(secEl);
+  });
+  paper.appendChild(secBox);
+  if (note.risk_present && note.risk) {
+    const riskBox = h(`<div class="risk"><h4>Risk</h4></div>`);
+    [["Ideation", "ideation"], ["Plan, intent, means", "plan_intent_means"], ["Protective factors", "protective_factors"], ["Interventions taken", "interventions_taken"]].forEach(([label, key]) => {
+      const v = note.risk[key];
+      if (v) { const row = h(`<div class="row"><b>${esc(label)}:</b> <span></span></div>`); row.querySelector("span").textContent = String(v); riskBox.appendChild(row); }
+    });
+    paper.appendChild(riskBox);
+  }
+  body.appendChild(paper);
+
+  const bar = h(`<div class="import-bar"></div>`);
+  const back = h(`<button class="btn btn-ghost">Back to editing</button>`);
+  back.onclick = () => { flow.stage = "spec"; ctx.repaint(); };
+  bar.appendChild(back);
+  bar.appendChild(h(`<div class="grow"></div>`));
+  const save = h(`<button class="btn btn-primary" ${flow.busy ? "disabled" : ""}>${flow.busy ? "Saving..." : "Save format"}</button>`);
+  save.onclick = () => doSave(flow, ctx);
+  bar.appendChild(save);
+  body.appendChild(bar);
+}
+
+async function doSave(flow, ctx) {
+  flow.busy = true; flow._act = "save"; flow.error = null; ctx.repaint();
+  const payload = { spec: specForSubmit(flow), set_active: flow.fromWizard ? true : !!flow.makeActive };
+  if (flow.promptLayer) payload.prompt_layer = flow.promptLayer;
+  try {
+    const r = await fetch("/api/settings/import/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(apiErr(data, r.status));
+    flow.saved = data; flow.busy = false; flow._act = null; flow.stage = "saved";
+    await refreshSettings();
+    ctx.repaint();
+    if (ctx.onSaved) ctx.onSaved(data);
+  } catch (e) {
+    flow.busy = false; flow._act = null; flow.error = e.message;
+    if (flow.stage === "preview") flow.stage = "spec";
+    ctx.repaint();
+  }
+}
+
+function importStageSaved(flow, body, ctx) {
+  body.appendChild(importHeader(flow, ctx.close, "Format saved"));
+  const saved = flow.saved || {};
+  body.appendChild(h(`<div class="import-saved">
+    <div class="import-saved-check">✓</div>
+    <div><div class="import-saved-name">${esc(saved.name || "Your format")}</div>
+    <div class="import-saved-meta">${esc((saved.sections || 0) + " sections")}${saved.active ? " · now your active format" : ""}</div></div>
+  </div>`));
+  const bar = h(`<div class="import-bar"></div>`);
+  bar.appendChild(h(`<div class="grow"></div>`));
+  const done = h(`<button class="btn btn-primary">Done</button>`);
+  done.onclick = ctx.close;
+  bar.appendChild(done);
+  body.appendChild(bar);
+}
+
+// ===========================================================================
 // Setup wizard: model check, vault intro, macOS permission triggers
 // ===========================================================================
 
@@ -1529,8 +2086,12 @@ function renderSetupWizard() {
     refreshStatus().then(() => { if (App.state === "setupWizard") render(); });
     return;
   }
+  ensureWizardState();
   el.appendChild(renderSetupStep1(s));
   el.appendChild(renderSetupStep2(s));
+  el.appendChild(renderWizardProfession());
+  el.appendChild(renderWizardFormat());
+  el.appendChild(renderWizardFeatures());
   el.appendChild(renderSetupStep3());
   const bar = h(`<div class="actions-bar enter d3 setup-finish">
     <div class="grow"></div>
@@ -1556,6 +2117,20 @@ function setupCheckRow(c) {
 
 const LMS_LOAD_CMD = "lms load gemma-4-12b-it-qat --context-length 64000";
 
+// Initialise the wizard's in-progress choices from current settings (or the
+// defaults). These are collected across cards and POSTed in finishSetup before
+// setup/complete, so the vault is configured the moment the app opens.
+function ensureWizardState() {
+  if (App.wizard) return;
+  const s = App.settings || SETTINGS_DEFAULTS;
+  App.wizard = {
+    profession: s.profession || "therapy",
+    note_format: s.note_format || "DAP",
+    features: Object.assign({ calendar: true, email: true, verify: true, assistant: true }, s.features || {}),
+    stt_engine: s.stt_engine || "parakeet",
+  };
+}
+
 function renderSetupStep1(s) {
   const ready = !!s.ready;
   const reachable = (s.servers || []).filter(x => x.reachable);
@@ -1580,9 +2155,104 @@ function renderSetupStep1(s) {
   </div>`);
   help.querySelector("#copyLms").onclick = (e) => copyText(LMS_LOAD_CMD, e.currentTarget);
   card.appendChild(help);
+
+  // STT engine choice folded into the local-AI card.
+  const w = App.wizard;
+  const engHead = h(`<div class="setup-code-label" style="margin-top:16px">Transcription model</div>`);
+  card.appendChild(engHead);
+  const engBox = h(`<div class="set-radios"></div>`);
+  STT_ENGINES.forEach(eng => {
+    const row = h(`<label class="set-radio">
+      <input type="radio" name="wizStt" value="${esc(eng.id)}" ${eng.id === w.stt_engine ? "checked" : ""} />
+      <span class="set-radio-body"><span class="set-radio-title">${esc(eng.label)}</span><span class="set-radio-desc">${esc(eng.desc)}</span></span>
+    </label>`);
+    row.querySelector("input").onchange = () => { w.stt_engine = eng.id; };
+    engBox.appendChild(row);
+  });
+  card.appendChild(engBox);
+  card.appendChild(h(`<p class="setup-sub">${esc(STT_DOWNLOAD_HINT)}</p>`));
+
   const actions = h(`<div class="setup-actions"><button class="btn btn-ghost" id="recheck1">Re-check</button></div>`);
   actions.querySelector("#recheck1").onclick = recheckStatus;
   card.appendChild(actions);
+  return card;
+}
+
+function wizardData() {
+  const payload = App.settingsPayload || settingsFallbackPayload();
+  return {
+    professions: payload.professions || PROFESSIONS_FALLBACK,
+    formats: payload.formats || FORMATS_FALLBACK,
+  };
+}
+
+function renderWizardProfession() {
+  const w = App.wizard;
+  const { professions } = wizardData();
+  const card = h(`<div class="panel setup-card enter d2">
+    <div class="setup-step-head"><span class="setup-num">3</span><h2>Your profession</h2></div>
+    <p class="setup-note">This sets the vocabulary Debrief expects and picks a sensible default note format.</p>
+  </div>`);
+  const sel = h(`<select class="set-select" id="wizProf"></select>`);
+  professions.forEach(pf => {
+    const o = h(`<option value="${esc(pf.id)}">${esc(pf.name)}</option>`);
+    if (pf.id === w.profession) o.selected = true;
+    sel.appendChild(o);
+  });
+  sel.onchange = () => {
+    w.profession = sel.value;
+    const def = PROF_DEFAULT_FORMAT[w.profession];
+    if (def) w.note_format = def;
+    render();
+  };
+  card.appendChild(sel);
+  const def = PROF_DEFAULT_FORMAT[w.profession];
+  if (def) card.appendChild(h(`<p class="setup-sub">Default note format for this profession: ${esc(def)}. You can change it below.</p>`));
+  return card;
+}
+
+function renderWizardFormat() {
+  const w = App.wizard;
+  const { formats } = wizardData();
+  const card = h(`<div class="panel setup-card enter d2">
+    <div class="setup-step-head"><span class="setup-num">4</span><h2>Your note format</h2></div>
+    <p class="setup-note">Pick the structure your notes should follow, or import a sample of your own.</p>
+  </div>`);
+  const sel = h(`<select class="set-select" id="wizFmt"></select>`);
+  formats.forEach(f => {
+    const o = h(`<option value="${esc(f.id)}">${esc(f.name)}</option>`);
+    if (f.id === w.note_format) o.selected = true;
+    sel.appendChild(o);
+  });
+  sel.onchange = () => { w.note_format = sel.value; };
+  card.appendChild(sel);
+  const importBtn = h(`<button class="btn btn-ghost set-import-btn" id="wizImport">or import a sample note</button>`);
+  importBtn.onclick = () => launchImportFlow({
+    profession: w.profession,
+    fromWizard: true,
+    onSaved: (saved) => { if (saved && saved.id) { w.note_format = saved.id; } render(); },
+  });
+  card.appendChild(importBtn);
+  return card;
+}
+
+function renderWizardFeatures() {
+  const w = App.wizard;
+  const card = h(`<div class="panel setup-card enter d2">
+    <div class="setup-step-head"><span class="setup-num">5</span><h2>What should Debrief do?</h2></div>
+    <p class="setup-note">All on by default. Turn off anything you do not need. You can change this anytime in Settings.</p>
+  </div>`);
+  const togBox = h(`<div class="set-toggles"></div>`);
+  FEATURE_ROWS.forEach(fr => {
+    const on = w.features[fr.key] !== false;
+    const row = h(`<label class="set-toggle">
+      <span class="set-toggle-body"><span class="set-toggle-title">${esc(fr.label)}</span><span class="set-toggle-desc">${esc(fr.desc)}</span></span>
+      <input type="checkbox" ${on ? "checked" : ""} />
+    </label>`);
+    row.querySelector("input").onchange = (e) => { w.features[fr.key] = e.target.checked; };
+    togBox.appendChild(row);
+  });
+  card.appendChild(togBox);
   return card;
 }
 
@@ -1611,7 +2281,7 @@ function renderSetupStep3() {
   App.setupPerms = App.setupPerms || { calendar: null, mail: null, screen: null };
   const card = h(`<div class="panel setup-card enter d3">
     <div class="setup-step-head">
-      <span class="setup-num">3</span>
+      <span class="setup-num">6</span>
       <h2>Mac permissions</h2>
       <button class="setup-skip" id="permSkip">Skip for now</button>
     </div>
@@ -1661,11 +2331,25 @@ async function triggerPermission(p) {
 }
 
 async function finishSetup() {
+  // Persist the profession, format, features, and engine chosen in the wizard
+  // BEFORE marking setup done, so the vault is configured from the first note.
+  const w = App.wizard;
+  if (w) {
+    try {
+      await postSettings({
+        profession: w.profession,
+        note_format: w.note_format,
+        features: w.features,
+        stt_engine: w.stt_engine,
+      });
+    } catch (e) { /* best effort; a bad value should not trap the user in setup */ }
+  }
   try {
     await fetch("/api/setup/complete", { method: "POST" });
   } catch (e) { /* best effort; the app opens regardless */ }
   App.status = null;
   App.setupPerms = null;
+  App.wizard = null;
   go("clients");
 }
 
