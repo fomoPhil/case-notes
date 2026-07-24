@@ -468,6 +468,8 @@ def trash(rel_path: str, now: _dt.datetime | None = None) -> str:
         raise FileNotFoundError(f"No such file: {rel_path}")
     if target.name in _PROTECTED_NAMES:
         raise VaultPathError(f"{target.name} cannot be moved to trash")
+    if "_Settings" in target.parts:
+        raise VaultPathError("settings files cannot be moved to trash")
     now = now or _dt.datetime.now()
     original_rel = _rel(target)
     token = _token_from_now(now)

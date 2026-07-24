@@ -64,3 +64,20 @@ DEFAULT_SESSION_MINUTES: int = _env_int("DEBRIEF_SESSION_MINUTES", 50)
 
 # Max tool-calling turns the in-app agent may take before a forced finalize.
 AGENT_MAX_TURNS: int = _env_int("DEBRIEF_AGENT_MAX_TURNS", 12)
+
+# Speech-to-text engine id. "parakeet" (default) or "mlx-whisper". The settings
+# store persists a per-user choice; this env var, when set, wins over it.
+STT_ENGINE: str = _env_str("DEBRIEF_STT_ENGINE", "parakeet")
+
+# Default note format id (DAP by default). The settings store persists a per-user
+# choice; this env var, when set, wins over it.
+NOTE_FORMAT: str = _env_str("DEBRIEF_NOTE_FORMAT", "DAP")
+
+# Active profession vocabulary pack (therapy by default). The settings store
+# persists a per-user choice; this env var, when set, wins over it.
+PROFESSION: str = _env_str("DEBRIEF_PROFESSION", "therapy")
+
+# Gemini model id for the optional, one-time, consented template-compile call.
+# Never used unless the user pastes a key and consents. Override with
+# DEBRIEF_GEMINI_MODEL.
+GEMINI_MODEL: str = _env_str("DEBRIEF_GEMINI_MODEL", "gemini-3.6-flash")

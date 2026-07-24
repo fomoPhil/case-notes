@@ -472,6 +472,12 @@ def ensure_vault() -> None:
         themes=["Emotion-Dysregulation"],
     )
 
+    # Persistent user settings backbone (settings.json, dictionary.md, formats/,
+    # profile/). Imported lazily so settings_store can import vault helpers.
+    from . import settings_store
+
+    settings_store.ensure_settings()
+
 
 # ---------------------------------------------------------------------------
 # Reads
@@ -587,6 +593,11 @@ def search_vault(query: str, limit: int = 12) -> list[dict]:
             continue
         for path in sorted(root.rglob("*.md")):
             if not path.is_file():
+                continue
+            # The _Settings store is never a search surface (it is not client
+            # record content). The roots above already exclude it; this is a
+            # defensive guard should a root ever widen.
+            if "_Settings" in path.parts:
                 continue
             try:
                 text = path.read_text(encoding="utf-8")

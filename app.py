@@ -41,9 +41,11 @@ from debrief import (
     pipeline,
     records,
     render,
+    settings_store,
     stt,
     vault,
     verify,
+    vocab,
 )
 from debrief.vault import VaultPathError
 
@@ -857,6 +859,73 @@ async def api_library() -> JSONResponse:
     """Worksheet templates and reference interventions."""
     lib = await run_in_threadpool(records.get_library)
     return JSONResponse(lib)
+
+
+# ---------------------------------------------------------------------------
+# Settings (persistent _Settings store)
+# ---------------------------------------------------------------------------
+
+
+def _settings_payload() -> dict:
+    """Assemble the settings screen payload: effective settings, the user
+    dictionary, the profession list, and (Phase C) the format list."""
+    return {
+        "settings": settings_store.load(),
+        "dictionary": settings_store.read_dictionary(),
+        "professions": vocab.list_professions(),
+        # Phase C replaces this with the format registry; empty placeholder now.
+        "formats": [],
+    }
+
+
+@app.get("/api/settings")
+async def api_settings_get() -> JSONResponse:
+    """Return current settings, the user dictionary, and the profession list."""
+    payload = await run_in_threadpool(_settings_payload)
+    return JSONResponse(payload)
+
+
+@app.post("/api/settings")
+async def api_settings_post(request: Request) -> JSONResponse:
+    """Validate and persist a settings patch and/or the user dictionary text.
+
+    Body: {"settings": {<partial patch>}, "dictionary": "<text>"}. Both keys are
+    optional. Invalid known values (profession, note_format, stt_engine) 400.
+    Returns the refreshed settings payload.
+    """
+    body = await request.json()
+    patch = body.get("settings")
+    dictionary = body.get("dictionary")
+
+    if patch is not None:
+        if not isinstance(patch, dict):
+            raise HTTPException(status_code=400, detail="settings must be an object.")
+        # Profession is validated against the vocab registry here; note_format
+        # and stt_engine are validated by the store.
+        if "profession" in patch:
+            valid_professions = {p["id"] for p in vocab.list_professions()}
+            if patch["profession"] not in valid_professions:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"unknown profession: {patch['profession']!r}",
+                )
+        try:
+            settings_store.validate_patch(patch)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    if dictionary is not None and not isinstance(dictionary, str):
+        raise HTTPException(status_code=400, detail="dictionary must be a string.")
+
+    def _persist() -> dict:
+        if patch:
+            settings_store.save(patch)
+        if dictionary is not None:
+            settings_store.write_dictionary(dictionary)
+        return _settings_payload()
+
+    payload = await run_in_threadpool(_persist)
+    return JSONResponse(payload)
 
 
 # ---------------------------------------------------------------------------
