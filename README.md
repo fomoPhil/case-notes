@@ -18,7 +18,7 @@ One spoken debrief after each therapy session. Debrief writes the progress note,
 
 After every session, a solo therapist loses 15 to 30 minutes to admin. Debrief turns one 60 to 90 second spoken debrief into all of it:
 
-1. **Files an audit-ready DAP progress note** into a plain-markdown client vault, grounded in the transcript with verbatim client quotes, framework-authentic vocabulary (CBT, ACT, DBT, family systems, EMDR, psychodynamic), and a mandatory structured risk section whenever suicidal ideation is mentioned.
+1. **Files an audit-ready progress note** into a plain-markdown client vault, grounded in the transcript with verbatim client quotes, framework-authentic vocabulary (CBT, ACT, DBT, family systems, EMDR, psychodynamic), and a mandatory structured risk section whenever suicidal ideation is mentioned. The note format is yours to pick (see "Make it yours" below).
 2. **Books the follow-up** in Apple Calendar (the resolved date and time are shown for approval first).
 3. **Drafts the client email** in Apple Mail with the worksheet attached. Always a draft, never auto-sent.
 4. **Verifies it on screen**: it screenshots Calendar, the note, and Mail, and Gemma 4 vision reads the live screen to confirm each action actually happened.
@@ -26,6 +26,17 @@ After every session, a solo therapist loses 15 to 30 minutes to admin. Debrief t
 It also includes a **Clinician Voice Journal**: between sessions, dictate an observation or session-prep thought and it becomes a dated draft in that client's folder. Journal entries never schedule, email, or send anything.
 
 All processing happens locally on your Mac; recordings and notes never leave the device. The demo data is fictional.
+
+## Make it yours
+
+A Settings screen (and a first-run wizard that walks you through the same choices) lets you shape Debrief to how you actually work. Everything here is stored in a plain-text `_Settings` folder inside your vault.
+
+- **Profession onboarding.** Pick your profession (therapy and others) so the vocabulary and note guidance match your field.
+- **Note formats.** Choose the structure of the filed note: DAP, SOAP, GROW, a meeting memo, or a custom format you import (see below). The risk section only appears in clinical formats.
+- **Two speech-to-text engines.** Parakeet (the default, fast and fully offline) or mlx-whisper. The first transcription on a new engine downloads its model once, then runs offline.
+- **Personal dictionary.** Add names, acronyms, and terms you use so they are transcribed correctly. Your dictionary is layered into the transcription correction pass.
+- **Editable review.** Before anything is filed, you review the note and can edit any section inline. Your edits are exactly what gets filed, word for word.
+- **Template import.** Upload a blank or example note template (`.md`, `.txt`, or `.docx`) and Debrief compiles it into a reusable format with your own sections. This runs locally by default. You can optionally turn on a one-time cloud boost that sends only that one template document, once, to Google Gemini using your own API key; nothing else is ever sent, the key is never stored, and if it fails Debrief falls back to compiling locally.
 
 ## How it works
 
@@ -58,7 +69,7 @@ uv sync
 uv run debrief
 ```
 
-First run downloads the speech-to-text model (a few hundred MB); after that everything works fully offline (set HF_HUB_OFFLINE=1 to force it).
+First run downloads the default speech-to-text model, Parakeet (a few hundred MB); after that everything works fully offline (set HF_HUB_OFFLINE=1 to force it). If you switch to the mlx-whisper engine in Settings, its model (about 1.6 GB) downloads once on first use.
 
 Open http://127.0.0.1:8377. The client vault scaffolds itself on first run with three fictional clients. Pick one, record a spoken debrief, review the note and action plan, and approve it.
 
@@ -70,7 +81,7 @@ For development you can also run the server directly with `HF_HUB_OFFLINE=1 .ven
 
 ## Roadmap
 
-An in-app voice assistant for open-ended requests, a client records UI, and a one-command install are in progress.
+An in-app voice assistant for open-ended requests, a client records UI, a settings screen with profession and format choices, and editable pre-file review have shipped. A one-command install and more profession packs are next.
 
 ## License
 

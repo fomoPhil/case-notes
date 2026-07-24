@@ -4,6 +4,12 @@ Read this first, then IMPLEMENTATION_PLAN.md. This file is the session-to-sessio
 
 Status update: the hackathon is over (2nd place). The project is now in its public open source phase per the current plan; the hackathon build is frozen at the v0.1-hackathon tag.
 
+## Launch readiness (2026-07-24)
+
+All build phases (A through H) of the launch-readiness plan are complete and pushed. Phase I (launch checklist) is verified: full non-live suite green (323 passed, including the golden DAP schema test and the vocab byte-parity tests), the live-gated pipeline/extract/actions run against a temp vault, and a fresh-clone `uv sync` + boot from scratch. Shipped since v0.1-hackathon: a persistent `_Settings` store, profession onboarding, selectable note formats (DAP, SOAP, GROW, meeting memo, and custom via template import), two STT engines (Parakeet default, mlx-whisper optional), a personal dictionary, editable pre-file review, feature toggles, and a template-import prompt compiler (local by default, with an optional one-time consented Gemini boost using the user's own key that is never stored or logged).
+
+Open items: the `test_pipeline_live_runs_twice` live test is coupled to the real DebriefVault's seeded C-0001 (it expects an email address on file), so it does not pass unmodified against a fresh scratch vault; the underlying pipeline is verified working. The PDF export path is an optional extra (`uv sync --extra pdf`) and is a non-blocking doctor warning when absent. More profession packs and a one-command install remain.
+
 ## What this project is (3 sentences)
 
 **Debrief** is a clinician-controlled documentation agent for solo therapists, built for the "Build with Gemma: JustBuild" hackathon (July 17-18, 2026, in-person at Pattern, Lehi UT), **Track 2: Voice-to-Action Agents**. The therapist can speak one post-session debrief or use a between-session Voice Journal; the agent creates a review-required draft, can book a follow-up and draft an email only for an approved debrief, then uses Gemma 4 vision to verify the visible result. The demo uses fictional data and local processing; it makes no healthcare-compliance claim.
