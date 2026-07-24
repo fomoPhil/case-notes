@@ -1,11 +1,11 @@
 #!/bin/bash
 #
-# Debrief launcher — the "brain" behind Debrief.app.
+# Debrief launcher, the "brain" behind Debrief.app.
 #
 # Boots everything Debrief needs (LM Studio server, the Gemma model, the local
 # app server) with friendly, plain-language checks, then opens the UI as a
 # chromeless app window. Any failed step shows a calm macOS dialog that a
-# non-technical user can act on — never a raw error.
+# non-technical user can act on, never a raw error.
 #
 # Safe to run repeatedly: if a piece is already up, it is left exactly as-is.
 # In particular, an already-running app server is NEVER restarted, so the
@@ -76,7 +76,7 @@ python_bin() {
 }
 
 # ---------------------------------------------------------------------------
-# Step A — LM Studio server
+# Step A, LM Studio server
 # ---------------------------------------------------------------------------
 
 ensure_lm_server() {
@@ -117,7 +117,7 @@ OSA
 }
 
 # ---------------------------------------------------------------------------
-# Step B — Model loaded at the right context length
+# Step B, Model loaded at the right context length
 # ---------------------------------------------------------------------------
 
 # Lists every LOADED instance whose id starts with MODEL_ID, one per line as
@@ -126,7 +126,7 @@ OSA
 #
 # IMPORTANT: we capture the curl body into a variable and feed it to
 # `python3 -c` on stdin. We must NOT pipe curl into `python -` (program on
-# stdin) — the pipe and the here-program both claim stdin and the JSON is lost,
+# stdin), the pipe and the here-program both claim stdin and the JSON is lost,
 # which is exactly what made an earlier version think the model was unloaded and
 # stack a duplicate. Parsing is real JSON, never grep.
 list_loaded_instances() {
@@ -234,7 +234,7 @@ OSA
 }
 
 # ---------------------------------------------------------------------------
-# Step B2 — Readiness gate: hand the health verdict to debrief-doctor
+# Step B2, Readiness gate: hand the health verdict to debrief-doctor
 # ---------------------------------------------------------------------------
 
 # The old ad-hoc curl reachability checks are gone. debrief-doctor is now the
@@ -268,15 +268,15 @@ $output"
 }
 
 # ---------------------------------------------------------------------------
-# Step C — App server (started once; never restarted if already up)
+# Step C, App server (started once; never restarted if already up)
 # ---------------------------------------------------------------------------
 
 ensure_app_server() {
   log "Checking the Debrief app server..."
   if curl -s --max-time 2 "$APP_HEALTH_URL" >/dev/null 2>&1; then
-    # Already running — leave it exactly as-is so we keep whatever permissions
+    # Already running, leave it exactly as-is so we keep whatever permissions
     # its parent process was granted (Terminal on demo day).
-    log "App server already running — leaving it untouched."
+    log "App server already running, leaving it untouched."
     return 0
   fi
 
@@ -304,7 +304,7 @@ ensure_app_server() {
 }
 
 # ---------------------------------------------------------------------------
-# Step D — Open the UI as a chromeless app window
+# Step D, Open the UI as a chromeless app window
 # ---------------------------------------------------------------------------
 
 open_ui() {
@@ -315,7 +315,7 @@ open_ui() {
       && { log "Opened in Chrome app window."; return 0; }
   fi
   # Fallback: default browser (still lands on the client picker).
-  log "Chrome app window unavailable — falling back to default browser."
+  log "Chrome app window unavailable, falling back to default browser."
   open "$APP_URL" >/dev/null 2>&1 \
     || fail "open-ui" "Debrief is ready, but the window could not open by itself. Open your web browser and go to $APP_URL"
 }
