@@ -7,3 +7,6 @@ demo_vault/
 .DS_Store
 recordings/
 DebriefVault/
+
+# Private business planning (never publish)
+docs/business/
