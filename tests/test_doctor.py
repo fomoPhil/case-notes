@@ -98,6 +98,48 @@ def test_pdf_is_soft_warning(monkeypatch, tmp_path):
     assert "uv sync --extra pdf" in pdf["fix"]
 
 
+def test_stt_check_reflects_selected_engine(monkeypatch, tmp_path):
+    # Point the vault at a temp dir and select whisper via the settings store.
+    monkeypatch.setattr(doctor.config, "VAULT_DIR", tmp_path / "vault")
+    monkeypatch.setattr(doctor.models, "detect_servers", lambda: _servers())
+    monkeypatch.setattr(
+        doctor.models,
+        "pick_gemma",
+        lambda: {"base_url": "http://localhost:1234/v1", "model": "gemma-4-12b-it-qat"},
+    )
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(doctor.settings_store, "load", lambda: {"stt_engine": "mlx-whisper"})
+    monkeypatch.setattr(doctor, "_importable", lambda mod: True)
+    # Not cached -> the check stays ok but adds the first-download hint.
+    monkeypatch.setattr(doctor.stt, "is_engine_model_cached", lambda eng: False)
+
+    by = _by_name(doctor.run_checks())
+    stt_check = by["Speech-to-text (mlx-whisper)"]
+    assert stt_check["ok"] is True
+    assert stt_check["hard"] is False
+    assert "mlx-whisper" in stt_check["detail"]
+    assert "1.6 GB" in stt_check["detail"]
+
+
+def test_stt_check_parakeet_default_no_download_hint(monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor.config, "VAULT_DIR", tmp_path / "vault")
+    monkeypatch.setattr(doctor.models, "detect_servers", lambda: _servers())
+    monkeypatch.setattr(
+        doctor.models,
+        "pick_gemma",
+        lambda: {"base_url": "http://localhost:1234/v1", "model": "gemma-4-12b-it-qat"},
+    )
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(doctor.settings_store, "load", lambda: {"stt_engine": "parakeet"})
+    monkeypatch.setattr(doctor, "_importable", lambda mod: True)
+    monkeypatch.setattr(doctor.stt, "is_engine_model_cached", lambda eng: True)
+
+    by = _by_name(doctor.run_checks())
+    stt_check = by["Speech-to-text (parakeet-mlx)"]
+    assert stt_check["ok"] is True
+    assert "1.6 GB" not in stt_check["detail"]
+
+
 def test_ollama_gemma_reported_when_lmstudio_lacks_it(monkeypatch, tmp_path):
     monkeypatch.setattr(doctor.config, "VAULT_DIR", tmp_path / "vault")
     monkeypatch.setattr(

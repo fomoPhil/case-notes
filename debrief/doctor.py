@@ -17,7 +17,7 @@ import platform
 import shutil
 import sys
 
-from . import config, models
+from . import config, models, settings_store, stt
 
 
 def _importable(module: str) -> bool:
@@ -124,13 +124,31 @@ def run_checks() -> list[dict]:
         "hard": True,
     })
 
-    # --- Speech-to-text (soft) -----------------------------------------------
-    stt_ok = _importable("parakeet_mlx")
+    # --- Speech-to-text (soft), reflects the SELECTED engine -----------------
+    _STT_MODULE = {"parakeet": "parakeet_mlx", "mlx-whisper": "mlx_whisper"}
+    _STT_LABEL = {"parakeet": "parakeet-mlx", "mlx-whisper": "mlx-whisper"}
+    selected = settings_store.load().get("stt_engine", "parakeet")
+    module = _STT_MODULE.get(selected, "parakeet_mlx")
+    label = _STT_LABEL.get(selected, selected)
+    stt_ok = _importable(module)
+    if stt_ok:
+        detail = f"{module} importable (selected engine: {label})"
+        try:
+            cached = stt.is_engine_model_cached(selected)
+        except Exception:  # noqa: BLE001
+            cached = True
+        if not cached:
+            size = "about 1.6 GB for whisper" if selected == "mlx-whisper" else "the model"
+            detail += f"; first transcription downloads {size}, allow a minute"
+        stt_fix = ""
+    else:
+        detail = f"{module} not importable (selected engine: {label})"
+        stt_fix = "uv sync (the STT engines install on Apple Silicon)."
     checks.append({
-        "name": "Speech-to-text (parakeet-mlx)",
+        "name": f"Speech-to-text ({label})",
         "ok": stt_ok,
-        "detail": "parakeet_mlx importable" if stt_ok else "parakeet_mlx not importable",
-        "fix": "" if stt_ok else "uv sync (parakeet-mlx installs on Apple Silicon).",
+        "detail": detail,
+        "fix": stt_fix,
         "hard": False,
     })
 
