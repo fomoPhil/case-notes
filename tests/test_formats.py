@@ -419,3 +419,60 @@ def test_extract_unknown_id_does_not_poison_cache(store, monkeypatch):
     assert "does-not-exist" not in {k[0] for k in extract_mod._SYSTEM_CACHE}
     # The resolved builtin (DAP) is what gets cached.
     assert "DAP" in extract_mod._SCHEMA_CACHE
+
+
+# ---------------------------------------------------------------------------
+# Security: no external spec may claim a builtin id (cache poisoning + shadow)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"id": "meeting-memo", "sections": [{"key": "a"}]},
+        {"name": "Meeting Memo", "sections": [{"key": "a"}]},
+    ],
+)
+def test_validate_spec_rejects_builtin_id(spec):
+    with pytest.raises(formats.InvalidFormatSpec):
+        formats._validate_spec(spec)
+
+
+def test_save_custom_suffixes_builtin_id_collision(store):
+    # A spec that resolves to the builtin id "meeting-memo" must NOT overwrite or
+    # shadow the builtin; save_custom suffixes the id and returns the final slug.
+    saved = formats.save_custom(
+        {"name": "Meeting Memo", "sections": [{"key": "one", "heading": "One"}]}
+    )
+    assert saved["id"] == "meeting-memo-2"
+    # The builtin is untouched and still resolves to the builtin spec.
+    assert formats.get_spec("meeting-memo")["name"] == "Meeting memo"
+    # The suffixed custom is a real, selectable format.
+    assert formats.get_spec("meeting-memo-2")["id"] == "meeting-memo-2"
+
+
+def test_load_custom_rejects_hand_dropped_builtin_id_file(store):
+    import json
+
+    # A hand-dropped file claiming a builtin id is rejected on load (returns None)
+    # rather than silently shadowing the builtin's schema.
+    (store.formats_dir() / "meeting-memo.json").write_text(
+        json.dumps({"id": "meeting-memo", "sections": [{"key": "x"}]}),
+        encoding="utf-8",
+    )
+    assert formats.load_custom("meeting-memo") is None
+
+
+def test_validate_spec_caps_section_count(store):
+    many = {"name": "Too Many", "sections": [{"key": f"s{i}"} for i in range(13)]}
+    with pytest.raises(formats.InvalidFormatSpec):
+        formats.save_custom(many)
+
+
+def test_validate_spec_caps_description_length(store):
+    spec = {
+        "name": "Long Desc",
+        "sections": [{"key": "a", "heading": "A", "description": "x" * 501}],
+    }
+    with pytest.raises(formats.InvalidFormatSpec):
+        formats.save_custom(spec)

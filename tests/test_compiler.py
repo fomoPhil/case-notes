@@ -293,3 +293,90 @@ def test_dry_run_returns_note_and_writes_nothing(store, monkeypatch):
     # Nothing was written to _Settings: no format file, no prompt layer.
     assert list(store.formats_dir().glob("*.json")) == []
     assert list(store.profile_dir().glob("*.prompt.md")) == []
+
+
+# ---------------------------------------------------------------------------
+# Security (Finding 1): a caller-supplied transient spec never touches the
+# process-wide extract caches, even when its id claims a builtin.
+# ---------------------------------------------------------------------------
+
+
+def _poison_candidate() -> dict:
+    # A transient candidate that CLAIMS the "meeting-memo" builtin id but carries
+    # its own sole section, so the schema it produces is distinguishable from the
+    # builtin's (which has attendees/discussion/decisions/action_items).
+    return {
+        "id": "meeting-memo",
+        "name": "Meeting memo",
+        "clinical": False,
+        "sections": [{"key": "candidate_only", "heading": "X", "description": ""}],
+        "style_rules": "",
+        "prompt_guidance": "",
+        "risk_section": False,
+    }
+
+
+def test_supplied_spec_never_writes_extract_caches(store, monkeypatch):
+    from debrief import extract as extract_mod, llm
+
+    seen: dict = {}
+
+    def fake_chat(messages, schema=None, **kw):
+        seen["schema"] = schema
+        return {
+            "note": {},
+            "actions": [],
+            "unsupported_requests": [],
+            "next_session_suggestions": [],
+        }
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+
+    before_schema = dict(extract_mod._SCHEMA_CACHE)
+    before_system = dict(extract_mod._SYSTEM_CACHE)
+
+    extract_mod.extract(
+        "t", {}, "MATTER", dt.datetime(2026, 7, 18, 12, 0), spec=_poison_candidate()
+    )
+
+    # The caches are byte-for-byte unchanged: no "meeting-memo" entry was written.
+    assert dict(extract_mod._SCHEMA_CACHE) == before_schema
+    assert dict(extract_mod._SYSTEM_CACHE) == before_system
+    # The schema the model saw carries the candidate section, not the builtin's.
+    props = set(seen["schema"]["properties"]["note"]["properties"])
+    assert "candidate_only" in props
+    assert "attendees" not in props
+
+
+def test_warm_cache_preview_uses_candidate_sections(store, monkeypatch):
+    from debrief import extract as extract_mod, llm
+
+    seen: dict = {}
+
+    def fake_chat(messages, schema=None, **kw):
+        seen["schema"] = schema
+        return {
+            "note": {},
+            "actions": [],
+            "unsupported_requests": [],
+            "next_session_suggestions": [],
+        }
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+
+    # Warm the builtin meeting-memo cache with a normal (non-supplied) call.
+    extract_mod.extract(
+        "t", {}, "MATTER", dt.datetime(2026, 7, 18, 12, 0), format_id="meeting-memo"
+    )
+    assert "meeting-memo" in extract_mod._SCHEMA_CACHE
+    warm = set(seen["schema"]["properties"]["note"]["properties"])
+    assert "attendees" in warm  # builtin sections cached
+
+    # A preview-style supplied spec with the SAME id but different sections must
+    # render the candidate's sections, not the warm builtin schema.
+    extract_mod.extract(
+        "t", {}, "MATTER", dt.datetime(2026, 7, 18, 12, 0), spec=_poison_candidate()
+    )
+    props = set(seen["schema"]["properties"]["note"]["properties"])
+    assert "candidate_only" in props
+    assert "attendees" not in props

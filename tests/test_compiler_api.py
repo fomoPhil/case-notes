@@ -137,6 +137,58 @@ def test_compile_local_returns_spec(client, monkeypatch):
     assert resp.json()["spec"]["id"] == "local-fmt"
 
 
+@pytest.mark.parametrize("consent", ["false", "true", 1, "1", 0])
+def test_compile_cloud_consent_must_be_strict_true(client, monkeypatch, consent):
+    # Anything that is not a strict boolean True is rejected, even truthy values.
+    tc, _ = client
+    monkeypatch.setattr(
+        app_module.compiler,
+        "compile_gemini",
+        lambda doc_text, api_key: {"spec": {"id": "x"}, "prompt_layer": ""},
+    )
+    resp = tc.post(
+        "/api/settings/import/compile",
+        json={"doc_text": "x", "mode": "cloud", "api_key": "k", "consent": consent},
+    )
+    assert resp.status_code == 400
+
+
+def test_compile_cloud_consent_true_passes(client, monkeypatch):
+    tc, _ = client
+    monkeypatch.setattr(
+        app_module.compiler,
+        "compile_gemini",
+        lambda doc_text, api_key: {"spec": {"id": "cloud-fmt"}, "prompt_layer": "l"},
+    )
+    resp = tc.post(
+        "/api/settings/import/compile",
+        json={"doc_text": "x", "mode": "cloud", "api_key": "k", "consent": True},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["spec"]["id"] == "cloud-fmt"
+
+
+def test_compile_caps_doc_text_before_reaching_model(client, monkeypatch):
+    # An oversized pasted document is truncated to MAX_DOC_CHARS before it ever
+    # reaches compile_local, and the response flags it truncated.
+    tc, _ = client
+    seen: dict = {}
+
+    def fake_local(doc_text, profession):
+        seen["len"] = len(doc_text)
+        return {"id": "local-fmt", "name": "Local", "sections": [{"key": "a"}]}
+
+    monkeypatch.setattr(app_module.compiler, "compile_local", fake_local)
+    oversized = "x" * (compiler.MAX_DOC_CHARS + 500)
+    resp = tc.post(
+        "/api/settings/import/compile",
+        json={"doc_text": oversized, "mode": "local", "profession": "therapy"},
+    )
+    assert resp.status_code == 200
+    assert seen["len"] == compiler.MAX_DOC_CHARS
+    assert resp.json()["truncated"] is True
+
+
 # ---------------------------------------------------------------------------
 # preview
 # ---------------------------------------------------------------------------
@@ -170,6 +222,28 @@ def test_preview_rejects_invalid_spec(client):
         json={"spec": {"name": "Bad", "sections": []}, "profession": "therapy"},
     )
     assert resp.status_code == 400
+
+
+def test_preview_rejects_builtin_id_spec(client, monkeypatch):
+    # A candidate spec that resolves to a builtin id must be rejected before it can
+    # reach the extractor (where it would poison the schema/system caches).
+    tc, _ = client
+    called = {"dry_run": False}
+
+    def fake_dry_run(spec, profession):
+        called["dry_run"] = True
+        return {"note": {}, "sections": []}
+
+    monkeypatch.setattr(app_module.compiler, "dry_run", fake_dry_run)
+    resp = tc.post(
+        "/api/settings/import/preview",
+        json={
+            "spec": {"name": "Meeting Memo", "sections": [{"key": "a", "heading": "A"}]},
+            "profession": "legal_meeting",
+        },
+    )
+    assert resp.status_code == 400
+    assert called["dry_run"] is False  # never reached the extractor
 
 
 # ---------------------------------------------------------------------------
@@ -215,3 +289,27 @@ def test_save_without_prompt_layer_writes_no_profile_file(client):
     assert resp.status_code == 200
     assert resp.json()["prompt_layer"] is False
     assert list((vault_dir / "_Settings" / "profile").glob("*.prompt.md")) == []
+
+
+def test_save_suffixes_builtin_id_and_returns_final_id(client):
+    # Saving a spec named "Meeting Memo" must not silently shadow the builtin;
+    # it is persisted under a suffixed id and the endpoint returns that final id.
+    tc, vault_dir = client
+    spec = {"name": "Meeting Memo", "sections": [{"key": "topic", "heading": "Topic"}]}
+    resp = tc.post("/api/settings/import/save", json={"spec": spec})
+    assert resp.status_code == 200
+    assert resp.json()["id"] == "meeting-memo-2"
+    fmt_file = vault_dir / "_Settings" / "formats" / "meeting-memo-2.json"
+    assert fmt_file.is_file()
+    # The builtin file was NOT created/overwritten.
+    assert not (vault_dir / "_Settings" / "formats" / "meeting-memo.json").exists()
+
+
+def test_save_rejects_oversized_prompt_layer(client):
+    tc, _ = client
+    spec = {"name": "With Layer", "sections": [{"key": "a", "heading": "A"}]}
+    resp = tc.post(
+        "/api/settings/import/save",
+        json={"spec": spec, "prompt_layer": "x" * 50_001},
+    )
+    assert resp.status_code == 400

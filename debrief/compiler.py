@@ -293,11 +293,16 @@ def _finalize_spec(raw: dict, profession: str = "therapy") -> dict:
             {
                 "key": key,
                 "heading": str(entry.get("heading") or key.replace("_", " ").title()).strip(),
-                "description": str(entry.get("description") or "").strip(),
+                # Truncate to the validator's per-description cap so a chatty model
+                # response stays save-safe instead of raising on validation.
+                "description": str(entry.get("description") or "").strip()[:500],
             }
         )
     if not cleaned:
         raise CompilerError("could not derive any usable sections from the document")
+    # Keep at most the validator's section cap so an over-eager model response
+    # cannot push the derived spec past validation.
+    cleaned = cleaned[:12]
 
     base_id = formats.slugify_id(name) or "imported-format"
     fid = base_id

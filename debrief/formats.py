@@ -289,10 +289,20 @@ def _validate_spec(spec: dict) -> dict:
     fid = slugify_id(str(spec.get("id") or spec.get("name") or ""))
     if not fid:
         raise InvalidFormatSpec("format spec needs an id or name")
+    # No external spec may claim a builtin id. get_spec prefers builtins, so a
+    # saved file with a builtin id would be silently dead, and a transient
+    # preview spec with a builtin id would poison the extract caches. save_custom
+    # suffixes a colliding id BEFORE it reaches here; anything still colliding at
+    # this point (preview, hand-dropped file, direct save with an explicit id) is
+    # rejected.
+    if fid in _BUILTIN_SPECS:
+        raise InvalidFormatSpec("id is reserved by a built-in format")
 
     raw_sections = spec.get("sections") or []
     if not isinstance(raw_sections, list) or not raw_sections:
         raise InvalidFormatSpec("format spec needs at least one section")
+    if len(raw_sections) > 12:
+        raise InvalidFormatSpec("a format may have at most 12 sections")
 
     sections: list[dict] = []
     seen: set[str] = set()
@@ -308,11 +318,16 @@ def _validate_spec(spec: dict) -> dict:
             raise InvalidFormatSpec(f"duplicate section key {key!r}")
         seen.add(key)
         heading = str(entry.get("heading") or key.replace("_", " ").title()).strip()
+        description = str(entry.get("description") or "").strip()
+        if len(description) > 500:
+            raise InvalidFormatSpec(
+                f"section {key!r} description is too long (500 char max)"
+            )
         sections.append(
             {
                 "key": key,
                 "heading": heading,
-                "description": str(entry.get("description") or "").strip(),
+                "description": description,
             }
         )
 
@@ -364,7 +379,25 @@ def load_custom(format_id: str) -> dict | None:
 
 
 def save_custom(spec: dict) -> dict:
-    """Validate a spec and persist it as _Settings/formats/<id>.json. Returns it."""
+    """Validate a spec and persist it as _Settings/formats/<id>.json. Returns it.
+
+    When the resolved id collides with a BUILTIN id (get_spec prefers builtins, so
+    such a file would be silently shadowed and unselectable) the id is suffixed
+    (meeting-memo, meeting-memo-2, ...) until it is free, and the final id is
+    returned so callers know the saved slug. A collision with an existing CUSTOM
+    id is left alone: re-saving a custom format under its own id is a legitimate
+    overwrite.
+    """
+    if isinstance(spec, dict):
+        spec = dict(spec)
+        base_id = slugify_id(str(spec.get("id") or spec.get("name") or ""))
+        if base_id and base_id in _BUILTIN_SPECS:
+            fid = base_id
+            n = 2
+            while fid in _BUILTIN_SPECS or is_known(fid):
+                fid = f"{base_id}-{n}"
+                n += 1
+            spec["id"] = fid
     validated = _validate_spec(spec)
     settings_store.formats_dir().mkdir(parents=True, exist_ok=True)
     settings_store._atomic_write(  # reuse the vault atomic writer via the store

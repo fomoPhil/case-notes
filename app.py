@@ -954,23 +954,38 @@ async def api_settings_post(request: Request) -> JSONResponse:
 _IMPORT_MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 
 
+_UPLOAD_TOO_LARGE = "That file is too large. Use a blank or example template (under 2 MB)."
+
+
 @app.post("/api/settings/import/upload")
-async def api_import_upload(file: UploadFile = None) -> JSONResponse:
+async def api_import_upload(request: Request, file: UploadFile = None) -> JSONResponse:
     """Read an uploaded template into plain text. Nothing is persisted.
 
     Returns {doc_text, chars, truncated, pdf_unsupported}. The temp bytes are held
-    only for the duration of the read; nothing touches the vault.
+    only for the duration of the read; nothing touches the vault. The body is
+    rejected early on a declared oversize content-length and read in bounded
+    chunks so an oversized upload never fully lands in memory.
     """
     if file is None:
         raise HTTPException(status_code=400, detail="No file uploaded.")
-    data = await file.read()
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > _IMPORT_MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=400, detail=_UPLOAD_TOO_LARGE)
+        except ValueError:
+            pass
+    data = bytearray()
+    while True:
+        chunk = await file.read(64 * 1024)
+        if not chunk:
+            break
+        data += chunk
+        if len(data) > _IMPORT_MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=400, detail=_UPLOAD_TOO_LARGE)
+    data = bytes(data)
     if not data:
         raise HTTPException(status_code=400, detail="Empty file upload.")
-    if len(data) > _IMPORT_MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=400,
-            detail="That file is too large. Use a blank or example template (under 2 MB).",
-        )
     try:
         result = await run_in_threadpool(
             compiler.extract_document_text, data, file.filename or ""
@@ -1007,12 +1022,16 @@ async def api_import_compile(request: Request) -> JSONResponse:
     doc_text = str(body.get("doc_text") or "").strip()
     if not doc_text:
         raise HTTPException(status_code=400, detail="Nothing to compile (empty document).")
+    # Hard cap the document here so nothing oversized ever reaches compile_local
+    # or Gemini, no matter how the text arrived (paste bypasses the upload cap).
+    doc_text, doc_truncated = compiler._cap(doc_text)
     profession = str(body.get("profession") or "therapy")
     mode = str(body.get("mode") or "local").strip().lower()
 
     if mode == "cloud":
         # HARD server-side gate: consent AND a key are both required, always.
-        consent = bool(body.get("consent"))
+        # consent must be a strict boolean true, not a truthy "false"/"0"/1.
+        consent = body.get("consent") is True
         api_key = str(body.get("api_key") or "").strip()
         if not consent or not api_key:
             raise HTTPException(
@@ -1031,7 +1050,13 @@ async def api_import_compile(request: Request) -> JSONResponse:
         finally:
             # Drop the key reference as soon as the call returns, either way.
             api_key = ""
-        return JSONResponse({"spec": out["spec"], "prompt_layer": out["prompt_layer"]})
+        return JSONResponse(
+            {
+                "spec": out["spec"],
+                "prompt_layer": out["prompt_layer"],
+                "truncated": doc_truncated,
+            }
+        )
 
     # Default: local compile.
     _require_model_ready()
@@ -1039,7 +1064,7 @@ async def api_import_compile(request: Request) -> JSONResponse:
         spec = await run_in_threadpool(compiler.compile_local, doc_text, profession)
     except compiler.CompilerError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    return JSONResponse({"spec": spec})
+    return JSONResponse({"spec": spec, "truncated": doc_truncated})
 
 
 @app.post("/api/settings/import/preview")
@@ -1089,6 +1114,10 @@ async def api_import_save(request: Request) -> JSONResponse:
     prompt_layer = body.get("prompt_layer")
     if prompt_layer is not None and not isinstance(prompt_layer, str):
         raise HTTPException(status_code=400, detail="prompt_layer must be a string.")
+    if isinstance(prompt_layer, str) and len(prompt_layer) > 50_000:
+        raise HTTPException(
+            status_code=400, detail="prompt_layer is too long (50000 char max)."
+        )
     set_active = bool(body.get("set_active"))
 
     def _persist() -> dict:

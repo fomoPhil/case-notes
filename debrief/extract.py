@@ -136,10 +136,22 @@ def extract(
     """
     # Resolve the spec ONCE so the schema and system prompt share one section
     # list, then key the caches by the resolved id. A caller-supplied spec wins.
+    supplied = spec is not None
     if spec is None:
         spec = formats.get_spec_or_default(format_id)
-    schema = _schema_for(spec)
-    system = _system_for(spec, profession, features)
+    if supplied:
+        # A caller-supplied transient spec (a preview candidate that has not been
+        # saved) is NEVER cached and NEVER served from cache. Its id can collide
+        # with a builtin id (for example a candidate that claims "meeting-memo"),
+        # and a cache keyed on that id would both poison the real builtin's
+        # schema/system entries and, on a warm cache, hand the builtin schema
+        # back to the preview instead of the candidate's own sections. Build both
+        # directly every call.
+        schema = formats.build_extract_schema(spec)
+        system = formats.build_extract_system(spec, profession, features)
+    else:
+        schema = _schema_for(spec)
+        system = _system_for(spec, profession, features)
     messages = [
         {"role": "system", "content": system},
         {
