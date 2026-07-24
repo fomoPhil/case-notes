@@ -22,16 +22,13 @@ import tempfile
 import time
 from pathlib import Path
 
-# Load the STT model from the local cache without a network round-trip. The
-# parakeet weights are pre-cached and the demo runs with Wi-Fi off, so an online
-# HuggingFace metadata check only adds latency (and can hang). Set before any
-# huggingface_hub import so the offline flag is honored. An explicit override
-# from the environment still wins.
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+# STT offline handling now lives in stt.py, which decides per engine whether to
+# force HuggingFace offline (model already cached) or allow a one-time download
+# (a not-yet-cached engine like whisper), then seals offline afterward. Setting
+# the flags unconditionally here would block that deliberate first download.
 
-from . import actions, audit, extract as extract_mod, llm, settings_store, stt, vault  # noqa: E402
-from .config import DEFAULT_SESSION_MINUTES  # noqa: E402
+from . import actions, audit, extract as extract_mod, llm, settings_store, stt, vault
+from .config import DEFAULT_SESSION_MINUTES
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -267,13 +264,17 @@ def transcribe_and_extract(wav_path: str, client_id: str) -> dict:
     settings = settings_store.load()
     profession = settings.get("profession", "therapy")
     note_format = settings.get("note_format", "DAP")
+    stt_engine = settings.get("stt_engine", "parakeet")
+    features = settings.get("features", {}) or {}
+    calendar_on = features.get("calendar", True)
+    email_on = features.get("email", True)
     dictionary = settings_store.read_dictionary()
 
     # --- transcribe --------------------------------------------------------
     transcript = ""
     t0 = time.perf_counter()
     try:
-        transcript = stt.transcribe(wav_path)
+        transcript = stt.transcribe(wav_path, engine_id=stt_engine)
     except Exception as exc:
         errors.append({"stage": "transcribe", "error": str(exc)})
     timings["transcribe"] = round(time.perf_counter() - t0, 2)
@@ -315,7 +316,7 @@ def transcribe_and_extract(wav_path: str, client_id: str) -> dict:
     try:
         extraction = extract_mod.extract(
             corrected, extract_ctx, framework, now,
-            format_id=note_format, profession=profession,
+            format_id=note_format, profession=profession, features=features,
         )
     except Exception as exc:
         errors.append({"stage": "extract", "error": str(exc)})
@@ -334,6 +335,12 @@ def transcribe_and_extract(wav_path: str, client_id: str) -> dict:
     plan_actions: list[dict] = []
     for a in raw_actions:
         atype = a.get("type")
+        # Feature toggles: never surface an action type the user turned off, even
+        # if the model emitted one against the (stable) schema enum.
+        if atype == "schedule_followup" and not calendar_on:
+            continue
+        if atype == "draft_client_email" and not email_on:
+            continue
         if atype == "schedule_followup":
             resolved = a.get("resolved_datetime")
             dt = _parse_iso(resolved)
@@ -454,6 +461,13 @@ def execute_plan(plan: dict, verify: bool = True) -> dict:
     timings: dict[str, float] = {}
     errors: list[dict] = list(plan.get("errors", []) or [])
 
+    # Feature toggles are read at execute time (settings can change between the
+    # plan and the approval), so a disabled action type is skipped defensively
+    # even if it rode along in the plan.
+    exec_features = settings_store.load().get("features", {}) or {}
+    exec_calendar_on = exec_features.get("calendar", True)
+    exec_email_on = exec_features.get("email", True)
+
     result_actions: list[dict] = []
     deduped_actions: list[dict] = list(plan.get("deduped_actions", []) or [])
     actions_taken: list[str] = []
@@ -472,6 +486,14 @@ def execute_plan(plan: dict, verify: bool = True) -> dict:
             continue
 
         atype = a.get("type")
+        if (atype == "schedule_followup" and not exec_calendar_on) or (
+            atype == "draft_client_email" and not exec_email_on
+        ):
+            entry["status"] = "skipped"
+            entry["detail"] = "disabled in settings"
+            result_actions.append(entry)
+            continue
+
         if atype == "schedule_followup":
             dt = _parse_iso(a.get("resolved_datetime"))
             if dt is None:

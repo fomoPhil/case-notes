@@ -28,6 +28,16 @@ const App = {
   // Setup wizard
   status: null,            // GET /api/status payload
   setupPerms: null,        // { calendar, mail, screen } permission results
+  settings: null,          // GET /api/settings -> settings object (features, etc.)
+};
+
+// Mirror of settings_store DEFAULTS: used when /api/settings has not loaded yet
+// so feature gates default to all-on and never hide UI by accident.
+const SETTINGS_DEFAULTS = {
+  profession: "therapy",
+  note_format: "DAP",
+  features: { calendar: true, email: true, verify: true, assistant: true },
+  stt_engine: "parakeet",
 };
 
 let el = null;             // reassigned each render to the active container
@@ -106,12 +116,28 @@ function addWorksheetEmail() {
   render();
 }
 
+async function refreshSettings() {
+  try {
+    const r = await fetch("/api/settings");
+    if (r.ok) {
+      const payload = await r.json();
+      App.settings = payload.settings || SETTINGS_DEFAULTS;
+    } else {
+      App.settings = SETTINGS_DEFAULTS;
+    }
+  } catch (e) { App.settings = SETTINGS_DEFAULTS; }
+}
+
 async function loadClients() {
+  // Load clients and settings in parallel; settings gate feature UI (e.g. the
+  // assistant sidebar item) so it must be ready before the first render.
+  const settingsReady = refreshSettings();
   try {
     const r = await fetch("/api/clients");
     if (!r.ok) throw new Error("Could not load clients (" + r.status + ")");
     App.clients = await r.json();
   } catch (e) { App.error = e.message; }
+  await settingsReady;
   // First run: if the setup marker is absent and we were opened at the root
   // (not a deep link), show the setup wizard. Deep links are never hijacked.
   if (!location.hash) {
@@ -219,6 +245,12 @@ function ensureShell() {
   const search = shell.querySelector("#globalSearch");
   search.oninput = () => runSearch(search.value);
   search.onkeydown = (e) => { if (e.key === "Escape") { search.value = ""; runSearch(""); } };
+  // Feature gate: hide the assistant entry when it is turned off in settings.
+  const feats = (App.settings && App.settings.features) || {};
+  if (feats.assistant === false) {
+    const a = shell.querySelector("#navAssistant");
+    if (a) a.style.display = "none";
+  }
   renderSidebarClients();
 }
 

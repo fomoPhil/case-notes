@@ -26,7 +26,7 @@ def _stub_pipeline(monkeypatch):
     """Stub the transcribe, correct, and extract stages so no model is called."""
     from debrief import pipeline, stt, extract as extract_mod
 
-    monkeypatch.setattr(stt, "transcribe", lambda wav: "raw transcript")
+    monkeypatch.setattr(stt, "transcribe", lambda wav, engine_id=None: "raw transcript")
     monkeypatch.setattr(
         stt, "correct_transcript", lambda *a, **k: "corrected transcript"
     )
@@ -38,9 +38,12 @@ def _stub_pipeline(monkeypatch):
     }
     calls: dict = {}
 
-    def fake_extract(transcript, ctx, framework, now, format_id="DAP", profession="therapy"):
+    def fake_extract(
+        transcript, ctx, framework, now, format_id="DAP", profession="therapy", features=None
+    ):
         calls["format_id"] = format_id
         calls["profession"] = profession
+        calls["features"] = features
         return dict(canned)
 
     monkeypatch.setattr(extract_mod, "extract", fake_extract)

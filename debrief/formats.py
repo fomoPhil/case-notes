@@ -120,6 +120,14 @@ _ACTIONS_SCHEMA: dict = {
 _RISK_MARKER_START = "<!-- RISK:START -->"
 _RISK_MARKER_END = "<!-- RISK:END -->"
 
+# The per-action guidance blocks are delimited the same way so build_extract_system
+# can strip a whole action type's guidance when the feature is toggled off. The
+# schema enum is left unchanged; this only shapes the prompt.
+_CAL_MARKER_START = "<!-- ACTION-CALENDAR:START -->"
+_CAL_MARKER_END = "<!-- ACTION-CALENDAR:END -->"
+_EMAIL_MARKER_START = "<!-- ACTION-EMAIL:START -->"
+_EMAIL_MARKER_END = "<!-- ACTION-EMAIL:END -->"
+
 # Injection tokens in the base prompt template.
 _TOKEN_FORMAT_GUIDANCE = "{{FORMAT_GUIDANCE}}"
 _TOKEN_VOCAB_TABLE = "{{VOCAB_TABLE}}"
@@ -519,6 +527,31 @@ def _apply_risk_region(template: str, include_risk: bool) -> str:
     return template[:start].rstrip("\n") + "\n\n" + tail.lstrip("\n")
 
 
+def _apply_marked_region(
+    template: str, start_marker: str, end_marker: str, include: bool
+) -> str:
+    """Keep or drop every region delimited by start_marker / end_marker.
+
+    include True removes just the marker lines and keeps the content; include
+    False removes the whole region (collapsing the surrounding blank lines).
+    Handles more than one region sharing the same marker pair.
+    """
+    while True:
+        start = template.find(start_marker)
+        if start == -1:
+            break
+        end = template.find(end_marker, start)
+        if end == -1:
+            break
+        end_full = end + len(end_marker)
+        if include:
+            inner = template[start + len(start_marker) : end].strip("\n")
+            template = template[:start].rstrip("\n") + "\n\n" + inner + "\n\n" + template[end_full:].lstrip("\n")
+        else:
+            template = template[:start].rstrip("\n") + "\n\n" + template[end_full:].lstrip("\n")
+    return template
+
+
 def _custom_prompt_layer(format_id: str) -> str:
     """Return an appended compiled prompt layer from _Settings/profile/<id>.prompt.md."""
     try:
@@ -529,7 +562,9 @@ def _custom_prompt_layer(format_id: str) -> str:
     return text
 
 
-def build_extract_system(spec: dict, profession: str = "therapy") -> str:
+def build_extract_system(
+    spec: dict, profession: str = "therapy", features: dict | None = None
+) -> str:
     """Assemble the extraction system prompt for a format and profession.
 
     Base template (format-agnostic rules, actions, output discipline)
@@ -537,9 +572,24 @@ def build_extract_system(spec: dict, profession: str = "therapy") -> str:
       + vocab.extract_vocab_table(profession) (framework vocabulary)
       + risk guidance kept only when spec.risk_section
       + a custom compiled prompt layer when _Settings/profile/<id>.prompt.md exists.
+
+    features (default None = all on) toggles the per-action guidance blocks: when
+    features["calendar"] is False the schedule_followup guidance is stripped, and
+    when features["email"] is False the draft_client_email guidance is stripped.
+    The schema enum is never changed here.
     """
+    feats = features or {}
+    calendar_on = feats.get("calendar", True)
+    email_on = feats.get("email", True)
+
     template = _load_base_template()
     template = _apply_risk_region(template, bool(spec.get("risk_section")))
+    template = _apply_marked_region(
+        template, _CAL_MARKER_START, _CAL_MARKER_END, calendar_on
+    )
+    template = _apply_marked_region(
+        template, _EMAIL_MARKER_START, _EMAIL_MARKER_END, email_on
+    )
     template = template.replace(_TOKEN_FORMAT_GUIDANCE, spec.get("prompt_guidance", "").strip())
     template = template.replace(_TOKEN_VOCAB_TABLE, vocab.extract_vocab_table(profession).strip())
 

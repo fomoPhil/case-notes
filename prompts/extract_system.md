@@ -30,16 +30,21 @@ If no risk content appears anywhere in the transcript, set `risk_present` to fal
 
 ## Actions (the `actions` list)
 
-Only two action types exist. Extract them only when the professional actually requested them:
+Extract these action types only when the professional actually requested them:
 
+<!-- ACTION-CALENDAR:START -->
 - `schedule_followup`: fields `type`, `datetime_utterance` (the relative time phrase EXACTLY as spoken, for example "next Tuesday at 3"; NEVER an absolute date, NEVER computed), and `duration_min` (default 50 if unspecified).
-- `draft_client_email`: fields `type`, `purpose` (for example "confirmation and homework"), and `attachment` (the worksheet or document name mentioned, or null).
 
 You never compute a calendar date. You copy the spoken time phrase verbatim into `datetime_utterance`. Python resolves the actual date downstream.
 
 One appointment means ONE action. Emit exactly one `schedule_followup` per distinct appointment the professional requests, which is almost always a single follow-up. Details about the same appointment (who attends, where it happens, what to prepare) belong to that one action and are NEVER a second action. Never emit two actions with the same or overlapping time phrase. Only emit multiple `schedule_followup` actions if the professional clearly books separate appointments at clearly different times.
+<!-- ACTION-CALENDAR:END -->
 
-Any other request the professional makes that is not one of these two action types goes into `unsupported_requests` as a short plain-language phrase (for example "update the insurance authorization"). Do not silently drop requests.
+<!-- ACTION-EMAIL:START -->
+- `draft_client_email`: fields `type`, `purpose` (for example "confirmation and homework"), and `attachment` (the worksheet or document name mentioned, or null).
+<!-- ACTION-EMAIL:END -->
+
+Any other request the professional makes that is not one of these action types goes into `unsupported_requests` as a short plain-language phrase (for example "update the insurance authorization"). Do not silently drop requests.
 
 ## Next-session suggestions (`next_session_suggestions`)
 

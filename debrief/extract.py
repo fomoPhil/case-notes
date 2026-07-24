@@ -45,15 +45,18 @@ def _schema_for(spec: dict) -> dict:
     return formats.build_extract_schema(spec)
 
 
-def _system_for(spec: dict, profession: str) -> str:
-    # Custom prompt layers can change on disk, so only builtins are cached.
+def _system_for(spec: dict, profession: str, features: dict | None = None) -> str:
+    # Custom prompt layers can change on disk, so only builtins are cached. The
+    # cache is also bypassed whenever feature toggles are supplied, because a
+    # disabled action type strips guidance from the prompt and must not be
+    # served from an all-on cached copy.
     sid = spec["id"]
-    key = (sid, profession)
-    if sid in formats._BUILTIN_SPECS:
+    if features is None and sid in formats._BUILTIN_SPECS:
+        key = (sid, profession)
         if key not in _SYSTEM_CACHE:
             _SYSTEM_CACHE[key] = formats.build_extract_system(spec, profession)
         return _SYSTEM_CACHE[key]
-    return formats.build_extract_system(spec, profession)
+    return formats.build_extract_system(spec, profession, features)
 
 
 def _format_context(client_ctx: dict) -> str:
@@ -112,19 +115,22 @@ def extract(
     now: datetime,
     format_id: str = "DAP",
     profession: str = "therapy",
+    features: dict | None = None,
 ) -> dict:
     """Run the single constrained extraction call and resolve action dates.
 
     The schema and system prompt are generated per call from the active format
     (format_id) and profession, so switching formats needs no code change here.
-    Returns a schema-shaped dict, with each schedule_followup action carrying an
-    added "resolved_datetime" (ISO string or None).
+    features (default None = all on) drops guidance for any disabled action type
+    from the system prompt while leaving the schema enum stable. Returns a
+    schema-shaped dict, with each schedule_followup action carrying an added
+    "resolved_datetime" (ISO string or None).
     """
     # Resolve the spec ONCE so the schema and system prompt share one section
     # list, then key the caches by the resolved id.
     spec = formats.get_spec_or_default(format_id)
     schema = _schema_for(spec)
-    system = _system_for(spec, profession)
+    system = _system_for(spec, profession, features)
     messages = [
         {"role": "system", "content": system},
         {

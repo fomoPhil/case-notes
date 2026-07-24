@@ -147,6 +147,16 @@ def _require_model_ready() -> None:
             )
 
 
+def _require_feature(name: str) -> None:
+    """Guard for feature-gated endpoints. Raises 403 when the named feature is
+    turned off in settings, so a disabled assistant returns actionable JSON."""
+    if not settings_store.load().get("features", {}).get(name, True):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "The assistant is turned off in Settings."},
+        )
+
+
 # ---------------------------------------------------------------------------
 # API
 # ---------------------------------------------------------------------------
@@ -273,7 +283,12 @@ async def api_execute(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=f"Invalid plan JSON: {exc}")
     if not isinstance(plan, dict) or not plan.get("client_id"):
         raise HTTPException(status_code=400, detail="Plan is missing client_id.")
-    verify = bool(plan.get("verify", True))
+    # An explicit verify on the plan wins; otherwise the default flows from the
+    # verify feature toggle in settings.
+    if "verify" in plan:
+        verify = bool(plan["verify"])
+    else:
+        verify = bool(settings_store.load().get("features", {}).get("verify", True))
     # Resolve the stored original upload (never trust a client-sent path).
     plan.pop("audio_path", None)
     stored = _pop_original_audio(plan.get("audio_token"))
@@ -393,6 +408,7 @@ def _transcribe_upload_sync(data: bytes) -> str:
 @app.post("/api/assistant/plan")
 async def api_assistant_plan(request: Request) -> JSONResponse:
     """Transcribe (if audio) -> classify -> route to the debrief flow or agent."""
+    _require_feature("assistant")
     _require_model_ready()
 
     transcript = ""
@@ -451,6 +467,7 @@ async def api_assistant_plan(request: Request) -> JSONResponse:
 @app.post("/api/assistant/execute")
 async def api_assistant_execute(request: Request) -> JSONResponse:
     """File approved worksheet proposals and stage approved email drafts."""
+    _require_feature("assistant")
     _require_model_ready()
     try:
         body = await request.json()
