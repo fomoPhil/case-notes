@@ -1,109 +1,53 @@
-"""Intent + DAP note extraction: the model's "brain" role.
+"""Intent + note extraction: the model's "brain" role.
 
 One constrained LLM call turns a corrected transcript plus client context into
-an EXTRACT_SCHEMA-shaped dict (DAP note, requested actions, next-session
-options). A deterministic post-pass then resolves each schedule_followup's
-spoken time phrase into an absolute ISO datetime. The model NEVER computes
-dates.
+a schema-shaped dict (the session note in the active format, requested actions,
+next-session options). A deterministic post-pass then resolves each
+schedule_followup's spoken time phrase into an absolute ISO datetime. The model
+NEVER computes dates.
+
+The note format is data, not code: formats.build_extract_schema turns the
+active FormatSpec into the constrained schema and formats.build_extract_system
+assembles the matching system prompt. The module-level EXTRACT_SCHEMA symbol is
+kept (generated from the DAP builtin) so older importers keep working.
 """
 
 from __future__ import annotations
 
 import json
 from datetime import datetime
-from pathlib import Path
 
-from . import dates, llm, vocab
+from . import dates, formats, llm, vocab
 from .config import DEFAULT_SESSION_MINUTES
 
-_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "extract_system.md"
+# Kept for backward compatibility: the DAP schema, now generated from the
+# registry. build_extract_schema(get_spec("DAP")) is byte-identical to the old
+# hand-written literal (guarded by a golden test).
+EXTRACT_SCHEMA: dict = formats.build_extract_schema(formats.get_spec("DAP"))
 
-# JSON Schema for the single constrained call. Actions use a unified nullable
-# shape (all fields present, per-type fields populated) for reliable strict
-# structured output; the post-pass and downstream code key off action["type"].
-EXTRACT_SCHEMA: dict = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "note": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "data": {"type": "string"},
-                "assessment": {"type": "string"},
-                "plan": {"type": "string"},
-                "risk_present": {"type": "boolean"},
-                "risk": {
-                    "type": ["object", "null"],
-                    "additionalProperties": False,
-                    "properties": {
-                        "assessed": {"type": "boolean"},
-                        "ideation": {"type": "string"},
-                        "plan_intent_means": {"type": "string"},
-                        "protective_factors": {"type": "string"},
-                        "interventions_taken": {"type": "string"},
-                    },
-                    "required": [
-                        "assessed",
-                        "ideation",
-                        "plan_intent_means",
-                        "protective_factors",
-                        "interventions_taken",
-                    ],
-                },
-                "interventions": {"type": "array", "items": {"type": "string"}},
-                "themes": {"type": "array", "items": {"type": "string"}},
-                "client_quotes": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": [
-                "data",
-                "assessment",
-                "plan",
-                "risk_present",
-                "risk",
-                "interventions",
-                "themes",
-                "client_quotes",
-            ],
-        },
-        "actions": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "type": {
-                        "type": "string",
-                        "enum": ["schedule_followup", "draft_client_email"],
-                    },
-                    "datetime_utterance": {"type": ["string", "null"]},
-                    "duration_min": {"type": ["integer", "null"]},
-                    "purpose": {"type": ["string", "null"]},
-                    "attachment": {"type": ["string", "null"]},
-                },
-                "required": [
-                    "type",
-                    "datetime_utterance",
-                    "duration_min",
-                    "purpose",
-                    "attachment",
-                ],
-            },
-        },
-        "unsupported_requests": {"type": "array", "items": {"type": "string"}},
-        "next_session_suggestions": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": [
-        "note",
-        "actions",
-        "unsupported_requests",
-        "next_session_suggestions",
-    ],
-}
+# Generated schema + system prompt caches, keyed by (format_id, profession) so a
+# repeated call for the same format does not rebuild them.
+_SCHEMA_CACHE: dict[str, dict] = {}
+_SYSTEM_CACHE: dict[tuple[str, str], str] = {}
 
 
-def _load_system_prompt() -> str:
-    return _PROMPT_PATH.read_text(encoding="utf-8")
+def _schema_for(format_id: str) -> dict:
+    if format_id not in _SCHEMA_CACHE:
+        _SCHEMA_CACHE[format_id] = formats.build_extract_schema(
+            formats.get_spec_or_default(format_id)
+        )
+    return _SCHEMA_CACHE[format_id]
+
+
+def _system_for(format_id: str, profession: str) -> str:
+    # Custom prompt layers can change on disk, so only builtins are cached.
+    spec = formats.get_spec_or_default(format_id)
+    key = (spec["id"], profession)
+    if spec["id"] in formats._BUILTIN_SPECS:
+        if key not in _SYSTEM_CACHE:
+            _SYSTEM_CACHE[key] = formats.build_extract_system(spec, profession)
+        return _SYSTEM_CACHE[key]
+    return formats.build_extract_system(spec, profession)
 
 
 def _format_context(client_ctx: dict) -> str:
@@ -125,8 +69,10 @@ def _format_context(client_ctx: dict) -> str:
     return "\n".join(lines) if lines else "(no prior context on file)"
 
 
-def _build_user_message(transcript: str, client_ctx: dict, framework: str) -> str:
-    fw_vocab = vocab.extract_framework_vocab(framework, "therapy")
+def _build_user_message(
+    transcript: str, client_ctx: dict, framework: str, profession: str = "therapy"
+) -> str:
+    fw_vocab = vocab.extract_framework_vocab(framework, profession)
     vocab_line = (
         f"ACTIVE FRAMEWORK: {framework}. Use this vocabulary and no other framework's: {fw_vocab}."
         if fw_vocab
@@ -158,17 +104,26 @@ def extract(
     client_ctx: dict,
     framework: str,
     now: datetime,
+    format_id: str = "DAP",
+    profession: str = "therapy",
 ) -> dict:
     """Run the single constrained extraction call and resolve action dates.
 
-    Returns an EXTRACT_SCHEMA-shaped dict, with each schedule_followup action
-    carrying an added "resolved_datetime" (ISO string or None).
+    The schema and system prompt are generated per call from the active format
+    (format_id) and profession, so switching formats needs no code change here.
+    Returns a schema-shaped dict, with each schedule_followup action carrying an
+    added "resolved_datetime" (ISO string or None).
     """
+    schema = _schema_for(format_id)
+    system = _system_for(format_id, profession)
     messages = [
-        {"role": "system", "content": _load_system_prompt()},
-        {"role": "user", "content": _build_user_message(transcript, client_ctx, framework)},
+        {"role": "system", "content": system},
+        {
+            "role": "user",
+            "content": _build_user_message(transcript, client_ctx, framework, profession),
+        },
     ]
-    result = llm.chat(messages, schema=EXTRACT_SCHEMA, max_tokens=2000, temperature=0.2)
+    result = llm.chat(messages, schema=schema, max_tokens=2000, temperature=0.2)
     if not isinstance(result, dict):
         raise RuntimeError(f"extract expected a dict, got {type(result)}")
     _resolve_action_dates(result, now)

@@ -266,6 +266,7 @@ def transcribe_and_extract(wav_path: str, client_id: str) -> dict:
     # feed the correction pass; not once per correction layer).
     settings = settings_store.load()
     profession = settings.get("profession", "therapy")
+    note_format = settings.get("note_format", "DAP")
     dictionary = settings_store.read_dictionary()
 
     # --- transcribe --------------------------------------------------------
@@ -312,7 +313,10 @@ def transcribe_and_extract(wav_path: str, client_id: str) -> dict:
     extraction: dict = {}
     t0 = time.perf_counter()
     try:
-        extraction = extract_mod.extract(corrected, extract_ctx, framework, now)
+        extraction = extract_mod.extract(
+            corrected, extract_ctx, framework, now,
+            format_id=note_format, profession=profession,
+        )
     except Exception as exc:
         errors.append({"stage": "extract", "error": str(exc)})
         extraction = {
@@ -375,14 +379,21 @@ def transcribe_and_extract(wav_path: str, client_id: str) -> dict:
     plan_actions, deduped_actions = _dedup_followups(plan_actions)
 
     # Session metadata for the note write (session_number = existing files + 1).
+    # The active format spec also travels in the plan so the review UI can render
+    # section-by-section, and the feature toggles ride along for the same UI.
     session_number = _next_session_number(client_id)
+    from . import formats
+
+    spec = formats.get_spec_or_default(note_format)
     session_meta = {
         "session_date": now.date().isoformat(),
         "session_number": session_number,
-        "format": "DAP",
+        "format": spec["id"],
         "modality": "in-person",
         "duration_min": DEFAULT_SESSION_MINUTES,
         "framework": framework,
+        "sections": spec["sections"],
+        "features": settings.get("features", {}),
     }
 
     return {

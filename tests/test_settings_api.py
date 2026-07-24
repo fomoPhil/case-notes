@@ -26,7 +26,13 @@ def test_get_settings_shape(client):
     assert set(body) == {"settings", "dictionary", "professions", "formats"}
     assert body["settings"]["profession"] == "therapy"
     assert body["dictionary"] == ""
-    assert body["formats"] == []
+    # Phase C: formats now returns the registry summaries (builtins first).
+    fmt_ids = [f["id"] for f in body["formats"]]
+    assert fmt_ids[:4] == ["DAP", "SOAP", "GROW", "meeting-memo"]
+    dap = next(f for f in body["formats"] if f["id"] == "DAP")
+    assert dap["clinical"] is True and "name" in dap
+    grow = next(f for f in body["formats"] if f["id"] == "GROW")
+    assert grow["clinical"] is False
     ids = {p["id"] for p in body["professions"]}
     assert {"therapy", "slp", "coaching", "legal_meeting"} <= ids
     therapy = next(p for p in body["professions"] if p["id"] == "therapy")

@@ -53,9 +53,8 @@ DEFAULTS: dict = {
 # now so a saved choice survives across that phase.
 ALLOWED_STT_ENGINES = {"parakeet", "mlx-whisper"}
 
-# Valid note format ids. Phase C promotes this to the format registry; the launch
-# set is accepted now so a saved choice validates.
-ALLOWED_NOTE_FORMATS = {"DAP", "SOAP", "GROW", "meeting-memo"}
+# Note format ids are validated against the format registry (debrief.formats),
+# not a static allowlist here, so custom formats validate too. See validate_patch.
 
 # Top-level settings keys that an environment variable overrides when it is set.
 # GEMINI_MODEL is deliberately absent: it is a model id, not a stored setting.
@@ -177,16 +176,21 @@ def write_dictionary(text: str) -> None:
 def validate_patch(patch: dict) -> None:
     """Raise ValueError when a settings patch carries an invalid known value.
 
-    Validates note_format and stt_engine here (no external dependencies).
-    Profession is validated at the API layer against the vocab registry so this
-    store stays decoupled from the profession packs. Unknown keys pass through so
-    future settings do not need a code change here.
+    note_format is validated against the format registry (builtins plus any
+    custom specs on file), stt_engine against the allowed engine ids. Profession
+    is validated at the API layer against the vocab registry so this store stays
+    decoupled from the profession packs. Unknown keys pass through so future
+    settings do not need a code change here. The formats import is lazy to avoid a
+    formats <-> settings_store import cycle.
     """
     if not isinstance(patch, dict):
         raise ValueError("settings patch must be an object")
 
-    if "note_format" in patch and patch["note_format"] not in ALLOWED_NOTE_FORMATS:
-        raise ValueError(f"unknown note_format: {patch['note_format']!r}")
+    if "note_format" in patch:
+        from . import formats
+
+        if not formats.is_known(patch["note_format"]):
+            raise ValueError(f"unknown note_format: {patch['note_format']!r}")
 
     if "stt_engine" in patch and patch["stt_engine"] not in ALLOWED_STT_ENGINES:
         raise ValueError(f"unknown stt_engine: {patch['stt_engine']!r}")

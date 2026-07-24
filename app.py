@@ -37,6 +37,7 @@ from debrief import (
     classify,
     config,
     doctor,
+    formats,
     models,
     pipeline,
     records,
@@ -873,8 +874,7 @@ def _settings_payload() -> dict:
         "settings": settings_store.load(),
         "dictionary": settings_store.read_dictionary(),
         "professions": vocab.list_professions(),
-        # Phase C replaces this with the format registry; empty placeholder now.
-        "formats": [],
+        "formats": formats.list_specs(),
     }
 
 

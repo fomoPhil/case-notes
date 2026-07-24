@@ -705,6 +705,13 @@ def write_session_note(
     session_date = meta.get("session_date") or _dt.date.today()
     fmt = meta.get("format", "DAP")
 
+    # Resolve the note format spec (lazy import avoids a formats <-> vault cycle).
+    # An unknown or legacy format falls back to DAP so an old note still files.
+    from . import formats
+
+    spec = formats.get_spec_or_default(fmt)
+    fmt = spec["id"]
+
     # Reserve the note path up front so the archived dictation audio can share
     # the exact stem (including any -2 collision suffix). The caller moves the
     # converted m4a to Sessions/audio/<stem>.m4a after this returns.
@@ -737,13 +744,15 @@ def write_session_note(
     if audio_name:
         frontmatter["audio"] = f"audio/{audio_name}"
 
-    # Body sections.
+    # Body sections, driven by the format spec (## Heading per section).
     parts: list[str] = [_dump_frontmatter(frontmatter)]
-    parts.append(f"\n## Data\n\n{note.get('data', '').strip()}\n")
-    parts.append(f"\n## Assessment\n\n{note.get('assessment', '').strip()}\n")
-    parts.append(f"\n## Plan\n\n{note.get('plan', '').strip()}\n")
+    for section in spec["sections"]:
+        value = str(note.get(section["key"], "") or "").strip()
+        parts.append(f"\n## {section['heading']}\n\n{value}\n")
 
-    if risk_present:
+    # The ## Risk block only renders for clinical formats, and only when the
+    # session actually surfaced risk content.
+    if spec.get("risk_section") and risk_present:
         risk = note.get("risk") or {}
         parts.append("\n## Risk\n\n")
         risk_lines = [

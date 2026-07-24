@@ -277,6 +277,31 @@ def extract_framework_vocab(framework: str | None, profession: str | None = None
     return pack["extract_vocab_table"].get(key, "")
 
 
+def extract_vocab_table(profession: str | None = None) -> str:
+    """Render the profession's whole framework vocabulary table as prompt text.
+
+    This block is injected into the extraction system prompt so the model uses
+    vocabulary authentic to the ACTIVE framework named in the user message. It
+    replaces the hardcoded table that used to live in prompts/extract_system.md.
+    """
+    pack = get_pack(profession)
+    table = pack["extract_vocab_table"]
+    if not table:
+        return ""
+    lines = [
+        "## Framework vocabulary table (use the ACTIVE framework named in the user message)",
+        "",
+    ]
+    for framework, terms in table.items():
+        lines.append(f"- **{framework}**: {terms}.")
+    lines.append("")
+    lines.append(
+        "Use the vocabulary that matches the ACTIVE framework given in the user "
+        "message. Do not mix frameworks."
+    )
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Correction prompt assembly
 # ---------------------------------------------------------------------------
