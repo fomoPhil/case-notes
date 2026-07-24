@@ -360,6 +360,10 @@
   .local-note svg { width: 11px; height: 11px; color: var(--accent-ink); flex: none; }
 
   .panel.doc {
+    /* Explicit block: the review paper shares the .doc class name with the
+       document-grid card (which is display:flex), so without this the note
+       sections would lay out in a row. */
+    display: block;
     background: linear-gradient(180deg, #fffefb, #fdfcf8);
     box-shadow: var(--card-ring), 0 1px 2px rgba(43,46,42,0.05), 0 14px 40px rgba(43,46,42,0.08);
     padding: 26px 28px 22px;
@@ -975,3 +979,35 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 
 .setup-finish { margin-top: 6px; }
 .setup-foot { font-size: 13px; color: var(--ink-faint); text-align: center; margin-top: 12px; }
+
+/* ==========================================================================
+   Editable review: sections become click-to-edit without losing the paper feel
+   ========================================================================== */
+.note-sections { display: flex; flex-direction: column; }
+.note-section.editable h4 { display: flex; align-items: center; gap: 6px; }
+.note-section.editable .edit-pencil {
+  font-size: 11px; color: var(--ink-faint); opacity: 0;
+  transition: opacity 140ms ease; text-transform: none; letter-spacing: 0;
+}
+.note-section.editable:hover .edit-pencil,
+.note-section.editable:focus-within .edit-pencil { opacity: 1; }
+.note-body {
+  font-family: var(--font-serif); font-size: 16.5px; line-height: 1.62;
+  color: var(--ink); text-wrap: pretty; outline: none;
+  border-radius: 8px; padding: 3px 8px; margin: 0 -8px;
+  transition: background 140ms ease, box-shadow 140ms ease;
+  min-height: 1.62em; cursor: text;
+}
+.note-body:empty::before { content: "Click to add"; color: var(--ink-faint); }
+.note-body:hover { background: rgba(95,122,97,0.04); }
+.note-body:focus { background: var(--panel); box-shadow: 0 0 0 2px rgba(95,122,97,0.35); }
+.risk .risk-edit {
+  outline: none; border-radius: 6px; padding: 1px 5px; margin: 0 -3px;
+  cursor: text; display: inline-block; min-width: 40px;
+  transition: background 140ms ease, box-shadow 140ms ease;
+}
+.risk .risk-edit:empty::before { content: "add"; color: var(--ink-faint); }
+.risk .risk-edit:hover { background: rgba(43,46,42,0.04); }
+.risk .risk-edit:focus { background: var(--panel); box-shadow: 0 0 0 2px var(--amber-line); }
+.edit-microcopy { font-size: 12.5px; color: var(--ink-faint); text-align: center; margin: 16px 0 4px; text-wrap: pretty; }
+

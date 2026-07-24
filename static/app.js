@@ -403,6 +403,34 @@ function renderProcessing() {
   ];
 }
 
+// A click-to-edit note section. The body is a contenteditable div seeded via
+// textContent (never innerHTML) and read back via innerText, so nothing the
+// model produced is ever treated as markup. Edits write straight into the plan
+// object the approve step POSTs verbatim: what you see is what gets filed.
+function buildEditableSection(heading, key, note) {
+  const wrap = h(`<div class="note-section editable">
+    <h4>${esc(heading)}<span class="edit-pencil" aria-hidden="true" title="Click to edit">✎</span></h4>
+    <div class="note-body" contenteditable="true" spellcheck="true" role="textbox" aria-label="${esc(heading)}"></div>
+  </div>`);
+  const body = wrap.querySelector(".note-body");
+  body.textContent = (note && note[key] != null) ? String(note[key]) : "";
+  const commit = () => { note[key] = body.innerText; };
+  body.addEventListener("input", commit);
+  body.addEventListener("blur", commit);
+  return wrap;
+}
+
+// An editable risk field: writes back into note.risk[key] via innerText only.
+function buildRiskRow(label, key, riskObj) {
+  const row = h(`<div class="row"><b>${esc(label)}:</b> <span class="risk-edit" contenteditable="true" spellcheck="true" role="textbox" aria-label="${esc(label)}"></span></div>`);
+  const span = row.querySelector(".risk-edit");
+  span.textContent = (riskObj && riskObj[key] != null) ? String(riskObj[key]) : "";
+  const commit = () => { riskObj[key] = span.innerText; };
+  span.addEventListener("input", commit);
+  span.addEventListener("blur", commit);
+  return row;
+}
+
 function renderReview() {
   const p = App.plan, note = p.note || {};
   el.appendChild(h(`<div class="step-title">Review before anything runs</div>`));
@@ -419,22 +447,29 @@ function renderReview() {
     <span class="who">${esc((p.client && p.client.name) || "Client")}</span>
     ${dateStr ? `<span class="date">${esc(dateStr)}</span>` : ""}
     <span class="stamps">
-      <span class="stamp">${esc(p.client.framework || "")} DAP</span>
+      <span class="stamp">${esc(p.client.framework || "")} ${esc((p.session_meta && p.session_meta.format) || "DAP")}</span>
       ${note.risk_present ? '<span class="stamp risk">risk documented</span>' : ""}
     </span>
   </div>`));
   notePanel.appendChild(h(`<div class="dblrule"></div>`));
-  const sec = (label, text) => text ? `<div class="note-section"><h4>${label}</h4><p>${esc(text)}</p></div>` : "";
-  notePanel.appendChild(h(`<div>${sec("Data", note.data)}${sec("Assessment", note.assessment)}${sec("Plan", note.plan)}</div>`));
+
+  // Sections come from the active format (session_meta.sections); legacy plans
+  // without them fall back to the DAP trio. Every section is click-to-edit.
+  const sections = (p.session_meta && Array.isArray(p.session_meta.sections) && p.session_meta.sections.length)
+    ? p.session_meta.sections
+    : [{ key: "data", heading: "Data" }, { key: "assessment", heading: "Assessment" }, { key: "plan", heading: "Plan" }];
+  const secBox = h(`<div class="note-sections"></div>`);
+  sections.forEach(s => secBox.appendChild(buildEditableSection(s.heading, s.key, note)));
+  notePanel.appendChild(secBox);
+
   if (risk) {
-    const row = (l, v) => v ? `<div class="row"><b>${l}:</b> ${esc(v)}</div>` : "";
-    notePanel.appendChild(h(`<div class="risk">
-      <h4>Risk</h4>
-      ${row("Ideation", risk.ideation)}
-      ${row("Plan, intent, means", risk.plan_intent_means)}
-      ${row("Protective factors", risk.protective_factors)}
-      ${row("Interventions taken", risk.interventions_taken)}
-    </div>`));
+    if (!note.risk) note.risk = risk;
+    const riskBox = h(`<div class="risk"><h4>Risk</h4></div>`);
+    riskBox.appendChild(buildRiskRow("Ideation", "ideation", note.risk));
+    riskBox.appendChild(buildRiskRow("Plan, intent, means", "plan_intent_means", note.risk));
+    riskBox.appendChild(buildRiskRow("Protective factors", "protective_factors", note.risk));
+    riskBox.appendChild(buildRiskRow("Interventions taken", "interventions_taken", note.risk));
+    notePanel.appendChild(riskBox);
   }
   const chips = [];
   (note.interventions || []).forEach(x => chips.push(`<span class="chip">${esc(x)}</span>`));
@@ -446,8 +481,13 @@ function renderReview() {
   el.appendChild(h(`<div class="step-title">Actions to run</div>`));
   const actPanel = h(`<div class="panel enter d2"></div>`);
 
-  // Deterministic gap nudges above the checklist.
-  const nudges = computeNudges(p);
+  // Deterministic gap nudges above the checklist. Nudges that add a disabled
+  // action type (calendar booking / email drafts) are hidden: those actions are
+  // turned off in settings and cannot run, so offering to add one would mislead.
+  const feats = (p.session_meta && p.session_meta.features) || (App.settings && App.settings.features) || {};
+  let nudges = computeNudges(p);
+  if (feats.calendar === false) nudges = nudges.filter(n => n.id !== "no-followup");
+  if (feats.email === false) nudges = nudges.filter(n => n.id !== "no-email");
   if (nudges.length) {
     const box = h(`<div class="nudges"></div>`);
     nudges.forEach(n => {
@@ -507,6 +547,8 @@ function renderReview() {
   if ((p.errors || []).length) {
     el.appendChild(h(`<div class="banner banner-error">Some steps had trouble: ${esc(p.errors.map(e => e.stage + " (" + e.error + ")").join("; "))}</div>`));
   }
+
+  el.appendChild(h(`<div class="edit-microcopy">Click any section to edit. Your edits are what gets filed.</div>`));
 
   const bar = h(`<div class="actions-bar enter d3">
     <button class="btn btn-ghost" id="redo">Discard</button>
