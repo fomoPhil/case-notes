@@ -1,0 +1,5 @@
+Right, quick debrief on the client meeting for the Harlow matter. Present were the client, their finance director, and myself. We ran the conflict check earlier this week and it came back clear, so we are good to proceed. The main discussion was the scope of the engagement, and the client confirmed they want us to handle the full acquisition, not just the due diligence phase they had originally floated.
+
+On decisions, we agreed the engagement letter goes out on the current standard terms with the fee cap they asked for, and we agreed to prioritize the due diligence data room review ahead of the term sheet negotiation. The client was clear they want to move quickly before their board meeting.
+
+For action items, I need to send the engagement letter for signature, the finance director is going to circulate access to the data room, and we set a deadline of end of next week for the first diligence summary. Please book a follow up call for Wednesday at 11 to review progress, and draft an email to the client confirming the scope and the next steps we agreed. That is everything on Harlow.

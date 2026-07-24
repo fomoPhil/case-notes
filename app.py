@@ -35,6 +35,7 @@ from debrief import (
     agent,
     audit,
     classify,
+    compiler,
     config,
     doctor,
     formats,
@@ -943,6 +944,182 @@ async def api_settings_post(request: Request) -> JSONResponse:
 
     payload = await run_in_threadpool(_persist)
     return JSONResponse(payload)
+
+
+# ---------------------------------------------------------------------------
+# Template import + prompt compiler (upload -> compile -> preview -> save)
+# ---------------------------------------------------------------------------
+
+# Cap on an uploaded template. A blank template is tiny; this guards the reader.
+_IMPORT_MAX_UPLOAD_BYTES = 2 * 1024 * 1024
+
+
+@app.post("/api/settings/import/upload")
+async def api_import_upload(file: UploadFile = None) -> JSONResponse:
+    """Read an uploaded template into plain text. Nothing is persisted.
+
+    Returns {doc_text, chars, truncated, pdf_unsupported}. The temp bytes are held
+    only for the duration of the read; nothing touches the vault.
+    """
+    if file is None:
+        raise HTTPException(status_code=400, detail="No file uploaded.")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file upload.")
+    if len(data) > _IMPORT_MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail="That file is too large. Use a blank or example template (under 2 MB).",
+        )
+    try:
+        result = await run_in_threadpool(
+            compiler.extract_document_text, data, file.filename or ""
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except compiler.CompilerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse(
+        {
+            "doc_text": result["text"],
+            "chars": result["chars"],
+            "truncated": result["truncated"],
+            "pdf_unsupported": result["pdf_unsupported"],
+        }
+    )
+
+
+@app.post("/api/settings/import/compile")
+async def api_import_compile(request: Request) -> JSONResponse:
+    """Derive a candidate format spec from document text.
+
+    Body: {doc_text, profession, mode: "local"|"cloud", api_key?, consent?}.
+    local uses the offline model (requires it to be ready). cloud is hard-gated:
+    it 400s unless consent is true AND a non-empty key is present, and a Gemini
+    failure returns 502 {"error", "fallback": "local"} so the UI can offer local.
+    The api_key is never persisted or logged.
+    """
+    try:
+        body = await request.json()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}")
+
+    doc_text = str(body.get("doc_text") or "").strip()
+    if not doc_text:
+        raise HTTPException(status_code=400, detail="Nothing to compile (empty document).")
+    profession = str(body.get("profession") or "therapy")
+    mode = str(body.get("mode") or "local").strip().lower()
+
+    if mode == "cloud":
+        # HARD server-side gate: consent AND a key are both required, always.
+        consent = bool(body.get("consent"))
+        api_key = str(body.get("api_key") or "").strip()
+        if not consent or not api_key:
+            raise HTTPException(
+                status_code=400,
+                detail="Cloud compile requires explicit consent and an API key.",
+            )
+        try:
+            out = await run_in_threadpool(compiler.compile_gemini, doc_text, api_key)
+        except compiler.CompilerError as exc:
+            # The key is already scrubbed inside CompilerError; return a fallback
+            # hint so the UI can offer to compile locally instead.
+            return JSONResponse(
+                status_code=502,
+                content={"error": str(exc), "fallback": "local"},
+            )
+        finally:
+            # Drop the key reference as soon as the call returns, either way.
+            api_key = ""
+        return JSONResponse({"spec": out["spec"], "prompt_layer": out["prompt_layer"]})
+
+    # Default: local compile.
+    _require_model_ready()
+    try:
+        spec = await run_in_threadpool(compiler.compile_local, doc_text, profession)
+    except compiler.CompilerError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return JSONResponse({"spec": spec})
+
+
+@app.post("/api/settings/import/preview")
+async def api_import_preview(request: Request) -> JSONResponse:
+    """Render a candidate spec against a bundled sample transcript (dry run).
+
+    Body: {spec, profession}. Validates the spec, then runs one extraction with
+    the transient spec and returns {note, sections}. No vault write.
+    """
+    _require_model_ready()
+    try:
+        body = await request.json()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}")
+    spec = body.get("spec")
+    if not isinstance(spec, dict):
+        raise HTTPException(status_code=400, detail="spec must be an object.")
+    profession = str(body.get("profession") or "therapy")
+    try:
+        validated = formats._validate_spec(spec)
+    except formats.InvalidFormatSpec as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        result = await run_in_threadpool(compiler.dry_run, validated, profession)
+    except compiler.CompilerError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Preview failed: {exc}")
+    return JSONResponse(result)
+
+
+@app.post("/api/settings/import/save")
+async def api_import_save(request: Request) -> JSONResponse:
+    """Persist a reviewed spec (and its optional prompt layer).
+
+    Body: {spec, prompt_layer?, set_active?}. Saves the custom format, writes the
+    prompt layer to _Settings/profile/<id>.prompt.md when present, and sets the
+    active note format when set_active is true. Returns the saved spec summary.
+    """
+    try:
+        body = await request.json()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}")
+    spec = body.get("spec")
+    if not isinstance(spec, dict):
+        raise HTTPException(status_code=400, detail="spec must be an object.")
+    prompt_layer = body.get("prompt_layer")
+    if prompt_layer is not None and not isinstance(prompt_layer, str):
+        raise HTTPException(status_code=400, detail="prompt_layer must be a string.")
+    set_active = bool(body.get("set_active"))
+
+    def _persist() -> dict:
+        saved = formats.save_custom(spec)
+        fid = saved["id"]
+        layer = (prompt_layer or "").strip()
+        if layer:
+            # id is already a bare slug out of save_custom; guard again so a hand
+            # crafted id can never escape the profile directory.
+            if fid != formats.slugify_id(fid):
+                raise formats.InvalidFormatSpec(f"unsafe format id: {fid!r}")
+            settings_store.profile_dir().mkdir(parents=True, exist_ok=True)
+            settings_store._atomic_write(
+                settings_store.profile_dir() / f"{fid}.prompt.md", layer + "\n"
+            )
+        if set_active:
+            settings_store.save({"note_format": fid})
+        return {
+            "id": fid,
+            "name": saved["name"],
+            "clinical": saved["clinical"],
+            "sections": len(saved["sections"]),
+            "prompt_layer": bool(layer),
+            "active": set_active,
+        }
+
+    try:
+        summary = await run_in_threadpool(_persist)
+    except formats.InvalidFormatSpec as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse(summary)
 
 
 # ---------------------------------------------------------------------------

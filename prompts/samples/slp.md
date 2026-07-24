@@ -1,0 +1,5 @@
+Right, session with Aiden today, articulation, about forty minutes. We stayed on the /r/ target because that is still the one holding back his intelligibility. We warmed up with some minimal pairs, ray versus way, red versus wed, and his stimulability was noticeably better than last week. At the word level he was hitting the prevocalic /r/ around seventy percent, up from about half, so real movement toward the accuracy goal in his plan. He got frustrated at one point and said this sound is so tricky, and we slowed the pace and it settled.
+
+We moved into short carrier phrases toward the end and the carryover was patchy, which is expected this early. No swallowing or feeding concerns raised today, purely speech sound work. Mum was in the room for the last ten minutes and I modeled the home practice so she can run the minimal pair cards a few times this week.
+
+For admin, please book the next session for a week Monday at 4. And draft an email to the family with the practice word list attached so they can keep the /r/ drills going between now and then. That is all for Aiden.

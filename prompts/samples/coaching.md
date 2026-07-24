@@ -1,0 +1,5 @@
+Okay, coaching session with Priya today, about the hour, GROW as usual. She came in wanting to work on stepping up for the team lead role that is opening up. So we spent a good while on the goal, and she framed it really clearly, she said I want to put my hand up for this without talking myself out of it first. For the reality piece we looked at where she is now, she has the experience but keeps deferring to louder colleagues in meetings.
+
+Then we opened up options, and she generated a bunch on her own, speaking first in one meeting a week, asking her manager for a stretch project, finding a peer to rehearse with. I did not prescribe any of them, they were all hers. For the way forward she committed to two things, she will raise her interest with her manager by Friday, and she will speak first in Tuesday's planning meeting. Nice clear accountability.
+
+For follow up, no need to book anything today, we already have our next slot locked in. But please draft her a short encouraging email with the values worksheet attached so she can do a bit more reflection before we meet. Thanks a lot.

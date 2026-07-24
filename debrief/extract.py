@@ -116,6 +116,7 @@ def extract(
     format_id: str = "DAP",
     profession: str = "therapy",
     features: dict | None = None,
+    spec: dict | None = None,
 ) -> dict:
     """Run the single constrained extraction call and resolve action dates.
 
@@ -125,10 +126,18 @@ def extract(
     from the system prompt while leaving the schema enum stable. Returns a
     schema-shaped dict, with each schedule_followup action carrying an added
     "resolved_datetime" (ISO string or None).
+
+    spec, when given, is a FormatSpec object used directly and overrides the
+    format_id lookup entirely. This is how the template-import dry run exercises
+    a candidate format that has NOT been saved to disk yet: the compiler hands the
+    transient spec straight in so nothing is persisted. A spec passed this way is
+    never cached (its id may not resolve to a builtin), matching the custom-spec
+    rule below.
     """
     # Resolve the spec ONCE so the schema and system prompt share one section
-    # list, then key the caches by the resolved id.
-    spec = formats.get_spec_or_default(format_id)
+    # list, then key the caches by the resolved id. A caller-supplied spec wins.
+    if spec is None:
+        spec = formats.get_spec_or_default(format_id)
     schema = _schema_for(spec)
     system = _system_for(spec, profession, features)
     messages = [
