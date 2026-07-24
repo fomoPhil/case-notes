@@ -150,9 +150,18 @@ def make_wav(workdir: Path) -> str:
 
 
 def restore_vault() -> None:
-    """Restore tracked vault files (profile summary etc.) to HEAD. Safe: only vault/."""
+    """Restore tracked vault files (profile summary etc.) to HEAD. Safe: only vault/.
+
+    Only meaningful when the vault is the in-repo DebriefVault. When the test is
+    pointed at an out-of-repo vault (e.g. DEBRIEF_VAULT_DIR set to a scratch dir),
+    there is nothing tracked to restore, so this is a no-op.
+    """
+    try:
+        rel = VAULT_DIR.relative_to(REPO_ROOT)
+    except ValueError:
+        return
     subprocess.run(
-        ["git", "checkout", "--", f"{VAULT_DIR.relative_to(REPO_ROOT)}/"],
+        ["git", "checkout", "--", f"{rel}/"],
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
