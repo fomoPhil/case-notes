@@ -676,6 +676,8 @@
   .d4 { animation-delay: 270ms; }
   .d5 { animation-delay: 340ms; }
   .d6 { animation-delay: 410ms; }
+  .d7 { animation-delay: 480ms; }
+  .d8 { animation-delay: 550ms; }
 
   .backlink {
     background: none; border: none; color: var(--ink-soft); font: inherit; font-size: 13px;

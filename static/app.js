@@ -28,6 +28,7 @@ const App = {
   // Setup wizard
   status: null,            // GET /api/status payload
   setupPerms: null,        // { calendar, mail, screen } permission results
+  checkWasFailing: null,   // presentation only: which setup checks failed before the last Re-check
   settings: null,          // GET /api/settings -> settings object (features, etc.)
   settingsPayload: null,   // full GET /api/settings payload (settings, dictionary, professions, formats)
   wizard: null,            // in-progress onboarding choices, POSTed before setup/complete
@@ -325,10 +326,45 @@ function updateNav() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Entrance animation gating (presentation only).
+// A screen enters as a few semantic chunks that fade and rise ~70ms apart. That
+// should happen when you arrive at a screen, never when the same screen repaints
+// underneath you (adding a follow-up, re-checking setup, saving a setting), so
+// the classes are only emitted when the screen key changes.
+// ---------------------------------------------------------------------------
+let enterKeyLast = null;
+let enterOn = false;
+// Arriving at a screen opens a short window in which the classes are still
+// emitted. Screens that paint once and then repaint the moment their data
+// lands (settings, the wizard) both fetch in well under 30ms, so the second
+// paint restarts an animation that has barely begun and the entrance survives.
+let enterUntil = 0;
+const ENTER_WINDOW_MS = 250;
+
+function enterKey() {
+  // Screens that paint a spinner first and their content second count the two
+  // as different keys, so the content still gets its entrance.
+  if (App.state === "setupWizard") return "setupWizard:" + (App.status ? "ready" : "loading");
+  if (App.state === "settings") return "settings:" + (App.settingsPayload ? "ready" : "loading");
+  return App.state;
+}
+
+// Classes for one staggered chunk, or "" when this render must not animate.
+function ent(step) {
+  if (!enterOn) return "";
+  const n = Math.min(Math.max(Math.round(step) || 1, 1), 8);
+  return "enter d" + n;
+}
+
 function render() {
   ensureShell();
   renderSidebarClients();
   updateNav();
+  const key = enterKey();
+  const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+  if (key !== enterKeyLast) { enterKeyLast = key; enterUntil = now + ENTER_WINDOW_MS; }
+  enterOn = now < enterUntil;
   const pane = document.getElementById("main-pane");
   pane.innerHTML = "";
   if (FLOW_STATES.has(App.state)) {
@@ -344,14 +380,14 @@ function render() {
 }
 
 function renderClients() {
-  el.appendChild(h(`<div class="step-title">Choose a client to debrief</div>`));
+  el.appendChild(h(`<div class="step-title ${ent(1)}">Choose a client to debrief</div>`));
   const grid = h(`<div class="clients"></div>`);
   if (!App.clients.length) grid.appendChild(h(`<div class="hint">No clients found in the vault.</div>`));
   App.clients.forEach((c, i) => {
     const risk = (c.risk_flags && c.risk_flags.length) ? `<span class="tag-risk">risk history on file</span>` : "";
     const concerns = (c.presenting_concerns || []).join(", ");
     const initials = (c.name || "?").trim().split(/\s+/).map(w => w[0]).slice(0, 2).join("").toUpperCase();
-    const card = h(`<button class="client-card enter d${Math.min(i+1,3)}">
+    const card = h(`<button class="client-card ${ent(i + 1)}">
       <span class="mono">${esc(initials)}</span>
       <span>
         <div class="name">${esc(c.name)}</div>
@@ -367,7 +403,7 @@ function renderClients() {
   el.appendChild(grid);
 
   if (assistantEnabled()) {
-    const asstRow = h(`<div class="asst-entry">
+    const asstRow = h(`<div class="asst-entry ${ent(5)}">
       <button class="btn btn-ghost btn-asst" id="asstEntry">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3a4 4 0 0 0-4 4v4a4 4 0 0 0 8 0V7a4 4 0 0 0-4-4z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
         Ask the assistant
@@ -383,7 +419,7 @@ function renderRecord() {
   App.recMode = "debrief";
   const c = App.client;
   const bars = Array.from({ length: 24 }, () => "<i></i>").join("");
-  const stage = h(`<div class="panel record-stage enter">
+  const stage = h(`<div class="panel record-stage ${ent(1)}">
     <button class="backlink">&larr; back to clients</button>
     <div class="record-client">Debrief for <b>${esc(c.name)}</b> &middot; ${esc(c.framework || "")}</div>
     <div class="rec-wrap" id="recWrap">
@@ -418,7 +454,7 @@ const LOCK_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 
 function renderProcessing() {
   const steps = ["Transcribe the recording", "Tidy clinical terms", "Draft the DAP note", "Plan admin actions"];
-  const panel = h(`<div class="panel proc-steps enter">
+  const panel = h(`<div class="panel proc-steps ${ent(1)}">
     ${steps.map((t, i) => `<div class="pstep ${i === 0 ? "active" : "todo"}"><span class="ic">${CHECK_SVG}</span><span class="t">${t}</span></div>`).join("")}
     <div class="local-note">${LOCK_SVG}Everything runs on this Mac. Nothing leaves it.</div>
   </div>`);
@@ -472,10 +508,10 @@ function buildRiskRow(label, key, riskObj) {
 
 function renderReview() {
   const p = App.plan, note = p.note || {};
-  el.appendChild(h(`<div class="step-title">Review before anything runs</div>`));
+  el.appendChild(h(`<div class="step-title ${ent(1)}">Review before anything runs</div>`));
 
   const risk = note.risk_present && note.risk ? note.risk : null;
-  const notePanel = h(`<div class="panel doc enter d1"></div>`);
+  const notePanel = h(`<div class="panel doc ${ent(1)}"></div>`);
   const sd = (p.session_meta && p.session_meta.session_date) || "";
   let dateStr = "";
   if (sd) {
@@ -517,8 +553,8 @@ function renderReview() {
   notePanel.appendChild(h(`<details class="transcript"><summary>corrected transcript</summary><p>${esc(p.corrected_transcript || p.transcript || "")}</p></details>`));
   el.appendChild(notePanel);
 
-  el.appendChild(h(`<div class="step-title">Actions to run</div>`));
-  const actPanel = h(`<div class="panel enter d2"></div>`);
+  el.appendChild(h(`<div class="step-title ${ent(2)}">Actions to run</div>`));
+  const actPanel = h(`<div class="panel ${ent(2)}"></div>`);
 
   // Deterministic gap nudges above the checklist. Nudges that add a disabled
   // action type (calendar booking / email drafts) are hidden: those actions are
@@ -587,9 +623,9 @@ function renderReview() {
     el.appendChild(h(`<div class="banner banner-error">Some steps had trouble: ${esc(p.errors.map(e => e.stage + " (" + e.error + ")").join("; "))}</div>`));
   }
 
-  el.appendChild(h(`<div class="edit-microcopy">Click any section to edit. Your edits are what gets filed.</div>`));
+  el.appendChild(h(`<div class="edit-microcopy ${ent(3)}">Click any section to edit. Your edits are what gets filed.</div>`));
 
-  const bar = h(`<div class="actions-bar enter d3">
+  const bar = h(`<div class="actions-bar ${ent(3)}">
     <button class="btn btn-ghost" id="redo">Discard</button>
     <div class="grow"></div>
     <button class="btn btn-primary" id="approve">Approve and run</button>
@@ -600,7 +636,7 @@ function renderReview() {
 }
 
 function renderExecuting() {
-  el.appendChild(h(`<div class="panel processing enter">
+  el.appendChild(h(`<div class="panel processing ${ent(1)}">
     <div class="spinner"></div>
     <div class="label">Filing the note, booking, drafting, and reading the screen to verify...</div>
   </div>`));
@@ -609,7 +645,7 @@ function renderExecuting() {
 function renderResults() {
   const r = App.result;
   el.appendChild(h(`<div class="step-title">Done</div>`));
-  const panel = h(`<div class="panel enter d1"></div>`);
+  const panel = h(`<div class="panel ${ent(1)}"></div>`);
   panel.appendChild(h(`<div class="note-head"><h3>What ran</h3></div>`));
   (r.actions || []).forEach(a => {
     const title = a.type === "schedule_followup" ? "Follow-up appointment"
@@ -628,8 +664,8 @@ function renderResults() {
   el.appendChild(panel);
 
   if ((r.verification || []).length) {
-    el.appendChild(h(`<div class="step-title">Verified on screen</div>`));
-    const vpanel = h(`<div class="enter d2"></div>`);
+    el.appendChild(h(`<div class="step-title ${ent(2)}">Verified on screen</div>`));
+    const vpanel = h(`<div class="${ent(2)}"></div>`);
     r.verification.forEach(v => {
       const ok = v.confirmed;
       vpanel.appendChild(h(`<div class="verify-card ${ok ? "" : "unconfirmed"}">
@@ -649,7 +685,7 @@ function renderResults() {
     el.appendChild(h(`<div class="timings">${t}</div>`));
   }
 
-  const bar = h(`<div class="actions-bar enter d3">
+  const bar = h(`<div class="actions-bar ${ent(3)}">
     <div class="grow"></div>
     <button class="btn btn-primary" id="another">New debrief</button>
   </div>`);
@@ -663,7 +699,7 @@ function renderResults() {
 
 function renderAssistant() {
   el.appendChild(h(`<div class="step-title">Ask the assistant</div>`));
-  const panel = h(`<div class="panel enter d1 asst-card">
+  const panel = h(`<div class="panel ${ent(1)} asst-card">
     <div class="asst-lead">Ask for a worksheet, an email draft, or something to look up. Nothing is saved until you approve it.</div>
     <textarea class="asst-textarea" id="asstText" rows="3" placeholder="For example: make a one page box breathing worksheet for before meetings"></textarea>
     <div class="asst-actions">
@@ -680,7 +716,7 @@ function renderAssistant() {
   };
   el.appendChild(panel);
 
-  const bar = h(`<div class="actions-bar enter d2">
+  const bar = h(`<div class="actions-bar ${ent(2)}">
     <button class="btn btn-ghost" id="asstBack">&larr; back to clients</button>
   </div>`);
   bar.querySelector("#asstBack").onclick = () => go("clients");
@@ -738,7 +774,7 @@ async function submitAssistant({ text, blob }) {
 }
 
 function renderAssistantThinking() {
-  el.appendChild(h(`<div class="panel processing enter">
+  el.appendChild(h(`<div class="panel processing ${ent(1)}">
     <div class="spinner"></div>
     <div class="label">Reading the vault and drafting your request...</div>
   </div>`));
@@ -749,15 +785,15 @@ function renderAssistantReview() {
   el.appendChild(h(`<div class="step-title">The assistant prepared this</div>`));
 
   if (a.finalText) {
-    el.appendChild(h(`<div class="panel enter d1 asst-final"><p>${esc(a.finalText)}</p></div>`));
+    el.appendChild(h(`<div class="panel ${ent(1)} asst-final"><p>${esc(a.finalText)}</p></div>`));
   }
 
   const proposals = a.proposals || [];
   if (!proposals.length) {
-    el.appendChild(h(`<div class="panel enter d2"><div class="hint" style="margin:8px auto">No documents or drafts to file. Nothing will be saved.</div></div>`));
+    el.appendChild(h(`<div class="panel ${ent(2)}"><div class="hint" style="margin:8px auto">No documents or drafts to file. Nothing will be saved.</div></div>`));
   } else {
     el.appendChild(h(`<div class="step-title">Approve what to keep</div>`));
-    const list = h(`<div class="panel enter d2"></div>`);
+    const list = h(`<div class="panel ${ent(2)}"></div>`);
     proposals.forEach((p, i) => {
       let title = "", body = "";
       if (p.type === "worksheet") {
@@ -782,7 +818,7 @@ function renderAssistantReview() {
   }
 
   const anyIncludable = proposals.length > 0;
-  const bar = h(`<div class="actions-bar enter d3">
+  const bar = h(`<div class="actions-bar ${ent(3)}">
     <button class="btn btn-ghost" id="asstDiscard">Discard</button>
     <div class="grow"></div>
     ${anyIncludable ? `<button class="btn btn-primary" id="asstApprove">Approve and file</button>` : `<button class="btn btn-primary" id="asstDone">Done</button>`}
@@ -817,14 +853,14 @@ function renderAssistantResults() {
   const a = App.assistant || {};
   if (a.sessionDebrief) {
     el.appendChild(h(`<div class="step-title">This sounded like a session debrief</div>`));
-    el.appendChild(h(`<div class="panel enter d1 asst-final"><p>Use New debrief so it is filed properly as a clinical note. The assistant is for making resources, drafting emails, and looking things up.</p></div>`));
-    const bar = h(`<div class="actions-bar enter d2"><div class="grow"></div><button class="btn btn-primary" id="asstToClients">Back to clients</button></div>`);
+    el.appendChild(h(`<div class="panel ${ent(1)} asst-final"><p>Use New debrief so it is filed properly as a clinical note. The assistant is for making resources, drafting emails, and looking things up.</p></div>`));
+    const bar = h(`<div class="actions-bar ${ent(2)}"><div class="grow"></div><button class="btn btn-primary" id="asstToClients">Back to clients</button></div>`);
     bar.querySelector("#asstToClients").onclick = () => { App.assistant = null; go("clients"); };
     el.appendChild(bar);
     return;
   }
   el.appendChild(h(`<div class="step-title">Done</div>`));
-  const panel = h(`<div class="panel enter d1"></div>`);
+  const panel = h(`<div class="panel ${ent(1)}"></div>`);
   (a.results || []).forEach(r => {
     const title = r.type === "worksheet" ? "Worksheet filed" : r.type === "email" ? "Email draft" : esc(r.type);
     const detail = r.status === "ok" ? (r.path || r.detail || "done") : (r.error || r.status);
@@ -835,7 +871,7 @@ function renderAssistantResults() {
   });
   if (!(a.results || []).length) panel.appendChild(h(`<div class="hint" style="margin:8px auto">Nothing was filed.</div>`));
   el.appendChild(panel);
-  const bar = h(`<div class="actions-bar enter d2">
+  const bar = h(`<div class="actions-bar ${ent(2)}">
     <div class="grow"></div>
     <button class="btn btn-primary" id="asstAgain">Ask again</button>
   </div>`);
@@ -1572,12 +1608,20 @@ async function postSettings(patch, dictionary) {
   return data;
 }
 
+// The quiet save confirmation. It fades in with a small rise, settles for about
+// a second and a half, then fades out; the word is only cleared once that fade
+// has finished, so it never blinks out mid-transition.
 function settingsSaved(node) {
   if (!node) return;
   node.textContent = "Saved";
-  node.classList.add("on");
   clearTimeout(node._t);
-  node._t = setTimeout(() => { node.classList.remove("on"); node.textContent = ""; }, 1600);
+  clearTimeout(node._tClear);
+  // Next frame, so the class change animates from the reset state.
+  requestAnimationFrame(() => node.classList.add("on"));
+  node._t = setTimeout(() => {
+    node.classList.remove("on");
+    node._tClear = setTimeout(() => { if (!node.classList.contains("on")) node.textContent = ""; }, 260);
+  }, 1500);
 }
 
 async function openSettings() {
@@ -1605,10 +1649,10 @@ function renderSettings() {
   const feats = Object.assign({ calendar: true, email: true, verify: true, assistant: true }, s.features || {});
   const dictText = payload.dictionary || "";
 
-  el.appendChild(h(`<div class="setup-head enter"><h1>Settings</h1><p class="setup-lead">Tune Debrief for your work. Everything here is stored on this Mac.</p></div>`));
+  el.appendChild(h(`<div class="setup-head ${ent(1)}"><h1>Settings</h1><p class="setup-lead">Tune Debrief for your work. Everything here is stored on this Mac.</p></div>`));
 
   // ---- Card A: profession and note format ----
-  const cardA = h(`<div class="panel setup-card enter d1">
+  const cardA = h(`<div class="panel setup-card ${ent(2)}">
     <div class="setup-step-head"><h2>Profession and note format</h2><span class="set-saved" id="savedA"></span></div>
     <p class="setup-note">This shapes the vocabulary Debrief expects and the note structure it writes.</p>
   </div>`);
@@ -1650,7 +1694,7 @@ function renderSettings() {
   el.appendChild(cardA);
 
   // ---- Card B: speech to text ----
-  const cardB = h(`<div class="panel setup-card enter d1">
+  const cardB = h(`<div class="panel setup-card ${ent(3)}">
     <div class="setup-step-head"><h2>Speech to text</h2><span class="set-saved" id="savedB"></span></div>
     <p class="setup-note">Choose the transcription model that fits your voice and language.</p>
   </div>`);
@@ -1671,7 +1715,7 @@ function renderSettings() {
   el.appendChild(cardB);
 
   // ---- Card C: personal dictionary ----
-  const cardC = h(`<div class="panel setup-card enter d2">
+  const cardC = h(`<div class="panel setup-card ${ent(4)}">
     <div class="setup-step-head"><h2>Personal dictionary</h2><span class="set-saved" id="savedC"></span></div>
     <p class="setup-note">One term or correction per line. These teach the transcriber your names and jargon.</p>
   </div>`);
@@ -1687,7 +1731,7 @@ function renderSettings() {
   el.appendChild(cardC);
 
   // ---- Card D: features ----
-  const cardD = h(`<div class="panel setup-card enter d2">
+  const cardD = h(`<div class="panel setup-card ${ent(5)}">
     <div class="setup-step-head"><h2>What Debrief can do</h2><span class="set-saved" id="savedD"></span></div>
     <p class="setup-note">Turn off anything you do not use. Off features are hidden and never run.</p>
   </div>`);
@@ -1739,7 +1783,15 @@ function launchImportFlow({ profession, fromWizard, onSaved }) {
   const bodyEl = backdrop.querySelector(".import-body");
   backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
   function close() { flow.apiKey = ""; backdrop.remove(); }
-  function repaint() { bodyEl.innerHTML = ""; renderImportStage(flow, bodyEl, { repaint, close, onSaved }); }
+  function repaint() {
+    bodyEl.innerHTML = "";
+    renderImportStage(flow, bodyEl, { repaint, close, onSaved });
+    // Re-trigger the stage transition: the container survives the repaint, so
+    // the animation has to be removed and reflowed to play again.
+    bodyEl.classList.remove("stage-in");
+    void bodyEl.offsetWidth;
+    bodyEl.classList.add("stage-in");
+  }
   document.body.appendChild(backdrop);
   repaint();
 }
@@ -2073,7 +2125,12 @@ async function openSetup() {
 }
 
 async function recheckStatus() {
+  // Snapshot which checks were failing so the rows that just turned green can
+  // cross-fade into their new state instead of hard-swapping (presentation only).
+  const was = {};
+  ((App.status && App.status.checks) || []).forEach(c => { was[c.name] = !!c.ok; });
   await refreshStatus();
+  App.checkWasFailing = was;
   if (App.state === "setupWizard") render();
 }
 
@@ -2086,7 +2143,7 @@ function copyText(text, btn) {
 
 function renderSetupWizard() {
   const s = App.status;
-  el.appendChild(h(`<div class="setup-head enter">
+  el.appendChild(h(`<div class="setup-head ${ent(1)}">
     <h1>Welcome to Debrief</h1>
     <p class="setup-lead">A couple of quick checks so everything runs smoothly on this Mac. Nothing here leaves your computer.</p>
   </div>`));
@@ -2097,12 +2154,15 @@ function renderSetupWizard() {
   }
   ensureWizardState();
   el.appendChild(renderSetupStep1(s));
+  // The cross-fade is for the render right after a Re-check only; clear the
+  // snapshot so later repaints of the same screen sit still.
+  App.checkWasFailing = null;
   el.appendChild(renderSetupStep2(s));
   el.appendChild(renderWizardProfession());
   el.appendChild(renderWizardFormat());
   el.appendChild(renderWizardFeatures());
   el.appendChild(renderSetupStep3());
-  const bar = h(`<div class="actions-bar enter d3 setup-finish">
+  const bar = h(`<div class="actions-bar ${ent(8)} setup-finish">
     <div class="grow"></div>
     <button class="btn btn-primary" id="setupFinish">Finish setup</button>
   </div>`);
@@ -2114,7 +2174,9 @@ function renderSetupWizard() {
 function setupCheckRow(c) {
   const cls = c.ok ? "ok" : (c.hard ? "fail" : "warn");
   const mark = c.ok ? "✓" : (c.hard ? "✕" : "!");
-  return h(`<div class="setup-check ${cls}">
+  // A row that flipped to ok on the last Re-check cross-fades into its new state.
+  const changed = (App.checkWasFailing && App.checkWasFailing[c.name] === false && c.ok) ? " changed" : "";
+  return h(`<div class="setup-check ${cls}${changed}">
     <span class="sc-mark">${mark}</span>
     <div class="sc-body">
       <div class="sc-name">${esc(c.name)}</div>
@@ -2143,7 +2205,7 @@ function ensureWizardState() {
 function renderSetupStep1(s) {
   const ready = !!s.ready;
   const reachable = (s.servers || []).filter(x => x.reachable);
-  const card = h(`<div class="panel setup-card enter d1">
+  const card = h(`<div class="panel setup-card ${ent(2)}">
     <div class="setup-step-head">
       <span class="setup-num">1</span>
       <h2>Your local AI</h2>
@@ -2198,7 +2260,7 @@ function wizardData() {
 function renderWizardProfession() {
   const w = App.wizard;
   const { professions } = wizardData();
-  const card = h(`<div class="panel setup-card enter d2">
+  const card = h(`<div class="panel setup-card ${ent(4)}">
     <div class="setup-step-head"><span class="setup-num">3</span><h2>Your profession</h2></div>
     <p class="setup-note">This sets the vocabulary Debrief expects and picks a sensible default note format.</p>
   </div>`);
@@ -2223,7 +2285,7 @@ function renderWizardProfession() {
 function renderWizardFormat() {
   const w = App.wizard;
   const { formats } = wizardData();
-  const card = h(`<div class="panel setup-card enter d2">
+  const card = h(`<div class="panel setup-card ${ent(5)}">
     <div class="setup-step-head"><span class="setup-num">4</span><h2>Your note format</h2></div>
     <p class="setup-note">Pick the structure your notes should follow, or import a sample of your own.</p>
   </div>`);
@@ -2247,7 +2309,7 @@ function renderWizardFormat() {
 
 function renderWizardFeatures() {
   const w = App.wizard;
-  const card = h(`<div class="panel setup-card enter d2">
+  const card = h(`<div class="panel setup-card ${ent(6)}">
     <div class="setup-step-head"><span class="setup-num">5</span><h2>What should Debrief do?</h2></div>
     <p class="setup-note">All on by default. Turn off anything you do not need. You can change this anytime in Settings.</p>
   </div>`);
@@ -2267,7 +2329,7 @@ function renderWizardFeatures() {
 
 function renderSetupStep2(s) {
   const path = (s.vault && s.vault.path) || "";
-  const card = h(`<div class="panel setup-card enter d2">
+  const card = h(`<div class="panel setup-card ${ent(3)}">
     <div class="setup-step-head"><span class="setup-num">2</span><h2>Your vault</h2></div>
     <p class="setup-note">Every client record, note, and worksheet is plain Markdown stored on this Mac. You own the files.</p>
     <div class="setup-code"><code>${esc(path)}</code><button class="copybtn" id="copyVault">Copy</button></div>
@@ -2288,7 +2350,7 @@ const PERM_ASKED = "We just asked macOS to show the permission prompt. Click All
 
 function renderSetupStep3() {
   App.setupPerms = App.setupPerms || { calendar: null, mail: null, screen: null };
-  const card = h(`<div class="panel setup-card enter d3">
+  const card = h(`<div class="panel setup-card ${ent(7)}">
     <div class="setup-step-head">
       <span class="setup-num">6</span>
       <h2>Mac permissions</h2>
