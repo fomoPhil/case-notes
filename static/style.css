@@ -21,21 +21,27 @@
     --panel: #ffffff;         /* cards / surfaces */
     --panel-2: #fbfaf7;       /* secondary surface */
     --ink: #2b2e2a;           /* primary text */
-    --ink-soft: #6b6659;      /* secondary text */
-    --ink-faint: #96917f;     /* tertiary / meta */
+    /* Secondary AND tertiary text. The tertiary tier is carried by size,
+       weight, and letter-spacing, never by a lighter ink: every colour that
+       reads as words has to clear 4.5:1 on the surface it sits on. */
+    --ink-soft: #6b6659;      /* secondary + tertiary text (4.6:1 on cream) */
+    /* NOT a text colour. Hairlines, decorative glyphs, and disabled fills only.
+       It never cleared AA and was never meant to; any `color:` using it is a
+       bug. */
+    --ink-faint: #96917f;     /* decoration only */
     --line: #e7e2d6;          /* card + surface borders */
     --divider: #e4e1d8;       /* subtle dividers */
-    --accent: #5f7a61;        /* deep sage, primary action */
+    --accent: #5f7a61;        /* deep sage, primary action (fills, not text) */
     --accent-hover: #4e6650;  /* hover / pressed */
     --accent-soft: #ecf1ea;   /* soft sage tint */
-    --accent-ink: #47614a;    /* readable sage on tint */
-    --sage-label: #6e8570;    /* DAP + section heading tint */
+    --accent-ink: #47614a;    /* sage as TEXT, on cream or white (5.8:1+) */
+    --sage-label: #5a7059;    /* DAP + section heading tint (4.9:1 on cream) */
     --soft-sage: #a8bca1;     /* selected card border */
     --terracotta: #c97b5d;    /* recording-active accent */
-    --amber: #8a6d2f;         /* risk + nudge text */
+    --amber: #866a2c;         /* risk + nudge text (4.6:1 on amber-soft) */
     --amber-soft: #fbf3e1;    /* risk + nudge background */
     --amber-line: #e4b363;    /* risk + nudge border */
-    --red: #b3524a;           /* error text */
+    --red: #a5453d;           /* error text (5.3:1 on red-soft) */
     --red-soft: #fbeeec;      /* error background */
     --green: #5f7a61;         /* success status dot */
     --focus: rgba(95,122,97,0.4); /* focus ring, deep sage @ 40% */
@@ -258,7 +264,7 @@
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--ink-faint);
+    color: var(--ink-soft);
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
     padding-bottom: 3px;
@@ -272,16 +278,18 @@
     font-weight: 700;
     letter-spacing: 0.11em;
     text-transform: uppercase;
-    color: var(--ink-faint);
+    color: var(--ink-soft);
     margin: 0 0 10px;
   }
-  .home-empty { grid-column: 1 / -1; font-size: 13.5px; color: var(--ink-faint); text-wrap: pretty; }
+  .home-empty { grid-column: 1 / -1; font-size: 13.5px; color: var(--ink-soft); text-wrap: pretty; }
 
-  /* Monograms match the sidebar's, so a client keeps one colour everywhere. */
+  /* Monograms match the sidebar's, so a client keeps one colour everywhere.
+     Initials are ink on the two pale circles and white only on the deep sage:
+     white on soft sage was 2.02:1, the worst contrast anywhere in the app. */
   .hmono {
     border-radius: 50%;
     background: var(--soft-sage);
-    color: #fff;
+    color: var(--ink);
     font-family: var(--font-sans);
     font-weight: 700;
     display: flex;
@@ -289,7 +297,7 @@
     justify-content: center;
     flex: none;
   }
-  .hmono.alt { background: var(--accent); }
+  .hmono.alt { background: var(--accent); color: #fff; }
   .hmono.alt2 { background: #b99a7b; }
 
   /* ---- today's calendar rows ---- */
@@ -338,13 +346,13 @@
     white-space: nowrap;
   }
   .hr-when { flex: none; text-align: right; }
-  .hr-t { display: block; font-size: 14px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
-  .hr-l { display: block; font-size: 11.5px; color: var(--ink-faint); margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .hr-t { display: block; font-size: 14px; font-weight: 600; color: var(--accent-ink); font-variant-numeric: tabular-nums; }
+  .hr-l { display: block; font-size: 11.5px; color: var(--ink-soft); margin-top: 2px; font-variant-numeric: tabular-nums; }
   .hr-go {
     flex: none;
     font-size: 13px;
     font-weight: 700;
-    color: var(--accent);
+    color: var(--accent-ink);
     white-space: nowrap;
     opacity: 0;
     transition-property: opacity;
@@ -386,7 +394,7 @@
   }
   .home-sample-note {
     font-size: 12.5px;
-    color: var(--ink-faint);
+    color: var(--ink-soft);
     margin: -4px 0 10px;
     text-wrap: pretty;
   }
@@ -395,17 +403,20 @@
   .home-mini { display: grid; grid-template-columns: repeat(auto-fill, minmax(228px, 1fr)); gap: 8px; }
   /* Same dashed invitation as "+ Add document", so adding a client reads as
      the same kind of gesture wherever you meet it. */
-  .home-mc-add {
+  /* Both classes: .home-mc is declared below this and would otherwise win the
+     tie on source order and paint the invitation as a solid card. */
+  .home-mc.home-mc-add {
     justify-content: center;
     background: transparent;
     box-shadow: none;
     border: 1px dashed var(--line);
-    color: var(--ink-faint);
+    color: var(--ink-soft);
     font-size: 14px;
     font-weight: 600;
     min-height: 56px;
   }
-  .home-mc-add:hover {
+  .home-mc.home-mc-add:hover {
+    transform: none;
     box-shadow: none;
     border-color: var(--soft-sage);
     background: var(--accent-soft);
@@ -440,7 +451,7 @@
   .hmc-meta {
     display: block;
     font-size: 12.5px;
-    color: var(--ink-faint);
+    color: var(--ink-soft);
     margin-top: 1px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -478,8 +489,8 @@
     stroke-linejoin: round;
   }
   .home-ask-body { min-width: 0; }
-  .home-ask-lab { display: block; font-size: 14px; font-weight: 600; color: var(--accent); }
-  .home-ask-hint { display: block; font-size: 12.5px; color: var(--ink-faint); margin-top: 1px; text-wrap: pretty; }
+  .home-ask-lab { display: block; font-size: 14px; font-weight: 600; color: var(--accent-ink); }
+  .home-ask-hint { display: block; font-size: 12.5px; color: var(--ink-soft); margin-top: 1px; text-wrap: pretty; }
 
   /* ---- activity rail ---- */
   .home-rail {
@@ -501,11 +512,11 @@
     font-weight: 700;
     letter-spacing: 0.11em;
     text-transform: uppercase;
-    color: var(--ink-faint);
+    color: var(--ink-soft);
     margin: 0 0 11px;
   }
   .rail-count { font-size: 13.5px; color: var(--ink); text-wrap: pretty; }
-  .rail-empty { font-size: 13px; color: var(--ink-faint); line-height: 1.5; text-wrap: pretty; }
+  .rail-empty { font-size: 13px; color: var(--ink-soft); line-height: 1.5; text-wrap: pretty; }
   .rail-feed { display: flex; flex-direction: column; gap: 11px; }
   .rail-item { display: flex; align-items: flex-start; gap: 10px; }
   .rail-tick {
@@ -524,7 +535,7 @@
   .rail-body { min-width: 0; }
   .rail-txt { display: block; font-size: 13.2px; line-height: 1.45; color: var(--ink-soft); text-wrap: pretty; }
   .rail-txt b { color: var(--ink); font-weight: 600; }
-  .rail-when { display: block; font-size: 11.5px; color: var(--ink-faint); margin-top: 1px; font-variant-numeric: tabular-nums; }
+  .rail-when { display: block; font-size: 11.5px; color: var(--ink-soft); margin-top: 1px; font-variant-numeric: tabular-nums; }
 
   /* The rail stacks under the caseload rather than squeezing it, and lies down
      as a row of cards so it does not become a column of wide empty boxes. */
@@ -561,7 +572,7 @@
   .retry-card p { margin: 6px 0 0; font-size: 13.5px; line-height: 1.55; color: var(--ink-soft); text-wrap: pretty; }
   /* What actually went wrong, in the server's own words, above the remedy. */
   .retry-card .retry-why { color: var(--ink); font-weight: 560; }
-  .retry-card .retry-fix { color: var(--ink-faint); font-size: 13px; }
+  .retry-card .retry-fix { color: var(--ink-soft); font-size: 13px; }
   .retry-card details.tech { margin-top: 4px; }
   .retry-actions { display: flex; gap: 8px; align-items: center; margin-top: 13px; flex-wrap: wrap; }
 
@@ -653,7 +664,7 @@
     font-size: 11.5px;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: var(--ink-faint);
+    color: var(--ink-soft);
     margin-bottom: 8px;
   }
   .dictate-guide ul { list-style: none; margin: 0; padding: 0; }
@@ -661,7 +672,7 @@
   .dictate-guide .dg-foot {
     font-size: 12.5px;
     line-height: 1.5;
-    color: var(--ink-faint);
+    color: var(--ink-soft);
     margin: 11px 0 0;
     padding-top: 10px;
     border-top: 1px solid var(--divider);
@@ -694,8 +705,8 @@
     font-variant-numeric: tabular-nums;
     color: var(--ink);
   }
-  .timer.idle { color: var(--ink-faint); }
-  .hint { font-size: 13px; color: var(--ink-faint); text-align: center; max-width: 340px; text-wrap: pretty; }
+  .timer.idle { color: var(--ink-soft); }
+  .hint { font-size: 13px; color: var(--ink-soft); text-align: center; max-width: 340px; text-wrap: pretty; }
 
   .processing { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 56px 24px; }
   .spinner {
@@ -728,10 +739,10 @@
   .pstep .t { font-size: 14px; transition-property: color; transition-duration: 250ms; transition-timing-function: var(--ease); }
   .pstep.done .t { color: var(--ink-soft); }
   .pstep.active .t { font-weight: 600; color: var(--ink); }
-  .pstep.todo .t { color: var(--ink-faint); }
+  .pstep.todo .t { color: var(--ink-soft); }
   /* Block, not flex: the reassurance now runs to a full sentence, and the lock
      has to ride the first line of centred text rather than float beside it. */
-  .local-note { font-size: 12px; line-height: 1.55; color: var(--ink-faint); margin: 14px auto 0; text-align: center; text-wrap: pretty; max-width: 44ch; }
+  .local-note { font-size: 12px; line-height: 1.55; color: var(--ink-soft); margin: 14px auto 0; text-align: center; text-wrap: pretty; max-width: 44ch; }
   .local-note svg { width: 11px; height: 11px; color: var(--accent-ink); vertical-align: -1px; margin-right: 5px; }
 
   .panel.doc {
@@ -747,7 +758,7 @@
   .note-head h3 { margin: 0; font-family: var(--font-serif); font-size: 20px; font-weight: 600; letter-spacing: -0.005em; text-wrap: balance; }
   .letterhead { display: flex; align-items: baseline; gap: 12px; row-gap: 8px; flex-wrap: wrap; }
   .letterhead .who { font-family: var(--font-serif); font-size: 21px; font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; }
-  .letterhead .date { font-size: 12.5px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+  .letterhead .date { font-size: 12.5px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
   .letterhead .stamps { margin-left: auto; display: inline-flex; align-items: center; align-self: center; gap: 6px; }
   .stamp {
     font-size: 10.5px;
@@ -822,7 +833,7 @@
   details.transcript p { font-size: 13.5px; color: var(--ink-soft); text-wrap: pretty; padding-bottom: 14px; margin: 0; }
   /* Says what the clinician is looking at before they read it: their own words,
      with the spelling fixed and nothing else touched. */
-  .transcript-note { font-size: 12.5px; color: var(--ink-faint); margin: 0 0 8px; text-wrap: pretty; }
+  .transcript-note { font-size: 12.5px; color: var(--ink-soft); margin: 0 0 8px; text-wrap: pretty; }
 
   .actions-list { display: flex; flex-direction: column; gap: 12px; }
   .action {
@@ -851,7 +862,7 @@
   .action .body { flex: 1; }
   .action .a-title { font-weight: 560; font-size: 14.5px; text-wrap: balance; }
   .action .a-when { font-size: 13px; color: var(--accent-ink); margin-top: 3px; font-variant-numeric: tabular-nums; }
-  .action .a-sub { font-size: 12.5px; color: var(--ink-faint); margin-top: 3px; text-wrap: pretty; }
+  .action .a-sub { font-size: 12.5px; color: var(--ink-soft); margin-top: 3px; text-wrap: pretty; }
 
   /* Nudges sit above the action checklist. Amber on this screen means one thing
      only: risk. A missing follow-up is housekeeping, so it wears the same quiet
@@ -915,7 +926,7 @@
   }
   .nudge-add input:focus-visible { box-shadow: var(--ring); }
   .nudge-add input[type=number] { width: 64px; }
-  .nudge-add .unit { font-size: 12px; color: var(--ink-faint); }
+  .nudge-add .unit { font-size: 12px; color: var(--ink-soft); }
   .btn-small {
     font: inherit;
     font-size: 13px;
@@ -935,10 +946,10 @@
   .btn-small:disabled { opacity: 0.5; cursor: default; }
 
   .suggestions { margin-top: 18px; }
-  .suggestions h4 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-faint); margin: 0 0 6px; }
+  .suggestions h4 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-soft); margin: 0 0 6px; }
   .suggestions ul { margin: 0; padding-left: 18px; }
   .suggestions li { font-size: 13.5px; color: var(--ink-soft); margin-bottom: 5px; text-wrap: pretty; }
-  .disclaimer { font-size: 12px; color: var(--ink-faint); margin-top: 10px; font-style: italic; text-wrap: pretty; }
+  .disclaimer { font-size: 12px; color: var(--ink-soft); margin-top: 10px; font-style: italic; text-wrap: pretty; }
 
   .btn {
     font: inherit;
@@ -1013,7 +1024,7 @@
   .result-action .r-detail { font-size: 13px; color: var(--ink-soft); margin-top: 2px; text-wrap: pretty; overflow-wrap: anywhere; }
   /* Where the file landed matters, but it is not what the clinician came for. */
   .result-action .r-path {
-    font-size: 11.5px; color: var(--ink-faint); margin-top: 3px;
+    font-size: 11.5px; color: var(--ink-soft); margin-top: 3px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     overflow-wrap: anywhere;
   }
@@ -1061,7 +1072,7 @@
   details.tech { margin-top: 9px; }
   details.tech summary {
     cursor: pointer; list-style: none;
-    font-size: 12.5px; font-weight: 600; color: var(--ink-faint);
+    font-size: 12.5px; font-weight: 600; color: var(--ink-soft);
     padding: 4px 0; border-radius: var(--radius-xs);
   }
   details.tech summary::-webkit-details-marker { display: none; }
@@ -1145,7 +1156,7 @@
   font-family: var(--font-serif);
   font-size: 22px;
   font-weight: 600;
-  color: var(--accent);
+  color: var(--accent-ink);
   padding: 4px 10px 12px;
   letter-spacing: 0.01em;
 }
@@ -1185,7 +1196,7 @@
   overflow: auto;
   padding: 6px;
 }
-.search-group-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); padding: 8px 8px 3px; }
+.search-group-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-soft); padding: 8px 8px 3px; }
 .search-hit {
   display: block; width: 100%; text-align: left; border: none; background: none; font: inherit;
   padding: 8px; border-radius: 8px; cursor: pointer;
@@ -1196,12 +1207,12 @@
 .search-hit:hover { background: var(--accent-soft); }
 .search-hit:active { scale: 0.98; }
 .search-hit .sh-title { font-size: 13.5px; font-weight: 600; color: var(--ink); }
-.search-hit .sh-snip { font-size: 12px; color: var(--ink-faint); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-hit .sh-snip { font-size: 12px; color: var(--ink-soft); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .search-empty { padding: 12px 10px; text-wrap: pretty; }
 .search-empty .se-title { font-size: 13px; font-weight: 600; color: var(--ink-soft); }
-.search-empty .se-body { font-size: 12.5px; color: var(--ink-faint); margin-top: 3px; line-height: 1.45; }
+.search-empty .se-body { font-size: 12.5px; color: var(--ink-soft); margin-top: 3px; line-height: 1.45; }
 
-.nav-sec { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); padding: 14px 10px 6px; }
+.nav-sec { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-soft); padding: 14px 10px 6px; }
 .navitem {
   display: flex;
   align-items: center;
@@ -1251,15 +1262,15 @@
 }
 .navitem .mono {
   width: 26px; height: 26px; border-radius: 50%;
-  background: var(--soft-sage); color: #fff; font-size: 11.5px; font-weight: 700;
+  background: var(--soft-sage); color: var(--ink); font-size: 11.5px; font-weight: 700;
   display: flex; align-items: center; justify-content: center; flex: none;
   font-family: var(--font-sans);
 }
-.navitem .mono.alt { background: var(--accent); }
+.navitem .mono.alt { background: var(--accent); color: #fff; }
 .navitem .mono.alt2 { background: #b99a7b; }
 .side-tail { margin-top: auto; padding-top: 8px; }
 .side-tail .navitem-setup { color: var(--ink-soft); font-size: 13.5px; }
-.side-foot { padding: 12px 10px 4px; font-size: 12px; color: var(--ink-faint); display: flex; align-items: center; gap: 7px; }
+.side-foot { padding: 12px 10px 4px; font-size: 12px; color: var(--ink-soft); display: flex; align-items: center; gap: 7px; }
 .side-foot .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
 
 /* ---------- main pane ---------- */
@@ -1284,7 +1295,7 @@
 .model-strip .ms-text { flex: 1; font-size: 13.5px; line-height: 1.5; color: var(--ink); text-wrap: pretty; }
 .model-strip .ms-btn { flex: none; color: var(--amber); }
 .model-strip .ms-btn:hover { color: var(--amber); background: rgba(228,179,99,0.18); }
-.crumb { font-size: 13px; color: var(--ink-faint); margin-bottom: 16px; text-wrap: pretty; }
+.crumb { font-size: 13px; color: var(--ink-soft); margin-bottom: 16px; text-wrap: pretty; }
 .crumb b { color: var(--ink); font-weight: 600; }
 .crumb .link { cursor: pointer; border-radius: var(--radius-xs); transition-property: color; transition-duration: 150ms; transition-timing-function: var(--ease); }
 .crumb .link:hover { color: var(--accent-ink); }
@@ -1298,12 +1309,12 @@
   display: flex; align-items: center; justify-content: center; flex: none;
 }
 .chead h1 { font-family: var(--font-serif); font-size: 28px; font-weight: 600; margin: 0; text-wrap: balance; }
-.chead .c-meta { font-size: 13.5px; color: var(--ink-faint); margin-top: 2px; text-wrap: pretty; }
+.chead .c-meta { font-size: 13.5px; color: var(--ink-soft); margin-top: 2px; text-wrap: pretty; }
 .chead > div:not(.bigmono) { min-width: 0; }
 /* The appointment block is one short phrase and must never be squeezed into a
    column narrow enough to break it into four ragged lines. */
 .chead .c-next {
-  margin-left: auto; text-align: right; font-size: 13px; color: var(--ink-faint);
+  margin-left: auto; text-align: right; font-size: 13px; color: var(--ink-soft);
   flex: none; min-width: 168px; white-space: nowrap;
 }
 .chead .c-next b { display: block; color: var(--accent-ink); font-size: 14.5px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
@@ -1322,7 +1333,7 @@
 
 .ctabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin: 22px 0 24px; }
 .ctab {
-  padding: 9px 16px; font-size: 14.5px; font-weight: 600; color: var(--ink-faint);
+  padding: 9px 16px; font-size: 14.5px; font-weight: 600; color: var(--ink-soft);
   border: none; background: none; border-bottom: 2px solid transparent; cursor: pointer; font-family: inherit;
   border-radius: var(--radius-xs) var(--radius-xs) 0 0;
   transition-property: color, border-color, background;
@@ -1352,7 +1363,7 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .sesscard:hover { background: rgba(168, 188, 161, 0.08); }
 .sesscard .sdate { width: 46px; flex: none; text-align: center; padding-top: 2px; }
 .sesscard .sdate .d { font-family: var(--font-serif); font-size: 19px; font-weight: 600; color: var(--accent-ink); font-variant-numeric: tabular-nums; }
-.sesscard .sdate .m { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
+.sesscard .sdate .m { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft); }
 .sesscard h4 { font-size: 15px; font-weight: 600; margin: 0 0 3px; text-wrap: balance; }
 .sesscard p { font-size: 13.5px; color: var(--ink-soft); line-height: 1.45; margin: 0; text-wrap: pretty; }
 .rchip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 700; padding: 2.5px 9px; border-radius: 99px; margin-top: 8px; }
@@ -1364,10 +1375,10 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .profcard { padding: 18px; }
 .profrow { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
 .profrow:last-child { border-bottom: none; }
-.profrow .k { color: var(--ink-faint); }
+.profrow .k { color: var(--ink-soft); }
 .profrow .v { font-weight: 600; text-align: right; }
 .goals { padding: 14px 18px 16px; border-top: 1px solid var(--line); }
-.goals .k { font-size: 11px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; }
+.goals .k { font-size: 11px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-soft); margin-bottom: 8px; }
 .goals li { font-size: 14px; line-height: 1.5; margin-left: 18px; margin-bottom: 5px; text-wrap: pretty; }
 
 /* ---------- document grid ---------- */
@@ -1389,7 +1400,7 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .ftype.img { background: var(--amber-line); }
 .ftype.docx { background: #7c93b8; }
 .doc h5 { font-size: 14px; font-weight: 600; margin: 0 0 2px; overflow-wrap: anywhere; text-wrap: balance; }
-.doc .d-sub { font-size: 12.5px; color: var(--ink-faint); text-wrap: pretty; }
+.doc .d-sub { font-size: 12.5px; color: var(--ink-soft); text-wrap: pretty; }
 .doc .acts { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); display: none; gap: 6px; background: var(--panel); padding-left: 8px; }
 .doc:hover .acts { display: flex; }
 .iconbtn {
@@ -1407,7 +1418,7 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .iconbtn::after { content: ""; position: absolute; left: 50%; top: 50%; width: 35px; height: 40px; transform: translate(-50%, -50%); }
 .iconbtn:hover { background: var(--bg); box-shadow: var(--ring-sage); color: var(--ink); }
 .iconbtn:active { scale: 0.96; }
-.doc.add { box-shadow: none; border: 1px dashed var(--line); justify-content: center; color: var(--ink-faint); font-size: 14px; font-weight: 600; cursor: pointer; }
+.doc.add { box-shadow: none; border: 1px dashed var(--line); justify-content: center; color: var(--ink-soft); font-size: 14px; font-weight: 600; cursor: pointer; }
 .doc.add:hover { box-shadow: none; border-color: var(--soft-sage); background: var(--accent-soft); color: var(--accent-ink); }
 .docgrid.drop-active { outline: 2px dashed var(--soft-sage); outline-offset: 6px; border-radius: var(--radius); }
 .doc-rename-input { font: inherit; font-size: 14px; font-weight: 600; border: none; box-shadow: 0 0 0 1px var(--soft-sage); border-radius: var(--radius-xs); padding: 3px 6px; width: 100%; }
@@ -1425,7 +1436,7 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .doc-title:hover { border-bottom-color: var(--soft-sage); }
 .doc-title-input { font-family: var(--font-serif); font-size: 25px; font-weight: 600; border: none; border-bottom: 1.5px dashed var(--soft-sage); background: none; color: var(--ink); outline: none; padding-bottom: 2px; }
 .docbar .pencil {
-  position: relative; font-size: 13px; color: var(--ink-faint); cursor: pointer; border-radius: var(--radius-xs);
+  position: relative; font-size: 13px; color: var(--ink-soft); cursor: pointer; border-radius: var(--radius-xs);
   transition-property: color;
   transition-duration: 150ms;
   transition-timing-function: var(--ease);
@@ -1505,7 +1516,7 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 /* ---------- library ---------- */
 .lib-head { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 22px; }
 .lib-head h1 { font-family: var(--font-serif); font-size: 26px; font-weight: 600; margin: 0; text-wrap: balance; }
-.lib-head .c-meta { font-size: 13.5px; color: var(--ink-faint); margin-top: 3px; text-wrap: pretty; }
+.lib-head .c-meta { font-size: 13.5px; color: var(--ink-soft); margin-top: 3px; text-wrap: pretty; }
 .lib-head .grow { flex: 1; }
 .libgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
 @media (max-width: 900px) { .libgrid { grid-template-columns: repeat(2, 1fr); } }
@@ -1571,8 +1582,8 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .add-client-modal h4 { margin-bottom: 4px; }
 .ac-lead { margin: 0 0 14px; font-size: 13px; color: var(--ink-soft); text-wrap: pretty; }
 .ac-fields { display: flex; flex-direction: column; gap: 12px; }
-.ac-opt { font-weight: 400; color: var(--ink-faint); text-transform: none; letter-spacing: 0; }
-.ac-hint { font-size: 12px; color: var(--ink-faint); margin-top: -4px; }
+.ac-opt { font-weight: 400; color: var(--ink-soft); text-transform: none; letter-spacing: 0; }
+.ac-hint { font-size: 12px; color: var(--ink-soft); margin-top: -4px; }
 /* Validation belongs beside the form the clinician is looking at. */
 .ac-error {
   background: var(--red-soft); color: var(--red);
@@ -1601,7 +1612,7 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
   font-size: 13.5px; line-height: 1.6; color: var(--ink-soft); text-wrap: pretty;
 }
 .es-btn { margin-top: 16px; }
-.es-note { margin-top: 12px; font-size: 12px; color: var(--ink-faint); text-wrap: pretty; }
+.es-note { margin-top: 12px; font-size: 12px; color: var(--ink-soft); text-wrap: pretty; }
 
 /* Toast. Carries an optional action, because "Moved to Trash" is only calm if
    the way back is right there. */
@@ -1629,8 +1640,8 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .trash-row { display: flex; align-items: center; gap: 12px; padding: 13px 16px; border: none; box-shadow: var(--row-shadow); border-radius: var(--radius-row); background: var(--panel); margin-bottom: 10px; }
 .trash-row .t-body { flex: 1; }
 .trash-row .t-title { font-size: 14.5px; font-weight: 600; text-wrap: balance; }
-.trash-row .t-when { font-size: 12.5px; color: var(--ink-faint); margin-top: 2px; font-variant-numeric: tabular-nums; }
-.trash-note { font-size: 13px; color: var(--ink-faint); margin-top: 14px; text-wrap: pretty; }
+.trash-row .t-when { font-size: 12.5px; color: var(--ink-soft); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.trash-note { font-size: 13px; color: var(--ink-soft); margin-top: 14px; text-wrap: pretty; }
 
 @media (max-width: 680px) {
   .app-shell { grid-template-columns: 1fr; }
@@ -1693,7 +1704,7 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .setup-badge.ok { color: var(--accent-ink); background: var(--accent-soft); box-shadow: 0 0 0 1px var(--soft-sage); }
 .setup-skip {
   position: relative;
-  margin-left: auto; font: inherit; font-size: 12.5px; color: var(--ink-faint);
+  margin-left: auto; font: inherit; font-size: 12.5px; color: var(--ink-soft);
   background: none; border: none; cursor: pointer; padding: 2px 4px; text-decoration: underline;
   border-radius: var(--radius-xs);
   transition-property: color, scale;
@@ -1705,7 +1716,7 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 /* Text-sized control: grow the hit area to 40px tall. */
 .setup-skip::after { content: ""; position: absolute; left: -6px; right: -6px; top: 50%; height: 40px; transform: translateY(-50%); }
 .setup-note { font-size: 14px; color: var(--ink-soft); margin: 0 0 14px; line-height: 1.55; text-wrap: pretty; }
-.setup-sub { font-size: 13px; color: var(--ink-faint); margin: 8px 0 0; line-height: 1.5; text-wrap: pretty; }
+.setup-sub { font-size: 13px; color: var(--ink-soft); margin: 8px 0 0; line-height: 1.5; text-wrap: pretty; }
 
 .setup-checks { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
 .setup-check {
@@ -1742,7 +1753,7 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .setup-details { margin-top: 10px; }
 .setup-details summary {
   cursor: pointer; list-style: none;
-  font-size: 12.5px; font-weight: 600; color: var(--ink-faint);
+  font-size: 12.5px; font-weight: 600; color: var(--ink-soft);
   padding: 4px 0; border-radius: var(--radius-xs);
   transition-property: color; transition-duration: 150ms; transition-timing-function: var(--ease);
 }
@@ -1769,7 +1780,7 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .setup-link:hover { color: var(--accent-hover); border-color: var(--accent); }
 /* Text-sized link: grow the hit area to 40px tall. */
 .setup-link::after { content: ""; position: absolute; left: -4px; right: -4px; top: 50%; height: 40px; transform: translateY(-50%); }
-.setup-code-label { font-size: 12.5px; color: var(--ink-faint); margin: 12px 0 6px; text-wrap: pretty; }
+.setup-code-label { font-size: 12.5px; color: var(--ink-soft); margin: 12px 0 6px; text-wrap: pretty; }
 /* Concentric: 6px button radius + 8px block padding = 14px on the code block. */
 .setup-code {
   display: flex; align-items: center; gap: 8px;
@@ -1812,7 +1823,7 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .perm-grant { white-space: nowrap; }
 
 .setup-finish { margin-top: 6px; }
-.setup-foot { font-size: 13px; color: var(--ink-faint); text-align: center; margin-top: 12px; text-wrap: pretty; }
+.setup-foot { font-size: 13px; color: var(--ink-soft); text-align: center; margin-top: 12px; text-wrap: pretty; }
 
 /* ==========================================================================
    Editable review: sections become click-to-edit without losing the paper feel
@@ -1820,7 +1831,7 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .note-sections { display: flex; flex-direction: column; }
 .note-section.editable h4 { display: flex; align-items: center; gap: 6px; }
 .note-section.editable .edit-pencil {
-  font-size: 11px; color: var(--ink-faint); opacity: 0;
+  font-size: 11px; color: var(--ink-soft); opacity: 0;
   text-transform: none; letter-spacing: 0;
   transition-property: opacity;
   transition-duration: 180ms;
@@ -1840,7 +1851,7 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
   transition-timing-function: var(--ease);
   min-height: 1.62em; cursor: text;
 }
-.note-body:empty::before { content: "Click to add"; color: var(--ink-faint); }
+.note-body:empty::before { content: "Click to add"; color: var(--ink-soft); }
 .note-body:hover { background: rgba(95,122,97,0.05); }
 .note-body:focus,
 .note-body:focus-visible {
@@ -1854,14 +1865,14 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
   transition-duration: 180ms;
   transition-timing-function: var(--ease);
 }
-.risk .risk-edit:empty::before { content: "Click to add"; color: var(--ink-faint); }
+.risk .risk-edit:empty::before { content: "Click to add"; color: var(--ink-soft); }
 .risk .risk-edit:hover { background: rgba(95,122,97,0.06); }
 .risk .risk-edit:focus,
 .risk .risk-edit:focus-visible {
   background: var(--panel);
   box-shadow: 0 0 0 3px rgba(228,179,99,0.45), 0 1px 2px rgba(43,46,42,0.05);
 }
-.edit-microcopy { font-size: 12.5px; color: var(--ink-faint); text-align: center; margin: 16px 0 4px; text-wrap: pretty; }
+.edit-microcopy { font-size: 12.5px; color: var(--ink-soft); text-align: center; margin: 16px 0 4px; text-wrap: pretty; }
 /* On the review paper the invitation sits just under the letterhead, where the
    first editable section begins, so it is read before anything is scrolled. */
 .edit-microcopy-top { text-align: left; margin: 10px 0 0; }
@@ -1913,7 +1924,7 @@ select.set-select { appearance: none; -webkit-appearance: none; cursor: pointer;
 }
 .fmt-body { flex: 1; min-width: 0; }
 .fmt-name { font-size: 14px; font-weight: 560; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fmt-meta { font-size: 12px; color: var(--ink-faint); margin-top: 1px; }
+.fmt-meta { font-size: 12px; color: var(--ink-soft); margin-top: 1px; }
 .fmt-del { flex: none; color: var(--red); }
 .fmt-del:hover { color: var(--red); background: rgba(179,82,74,0.08); }
 
@@ -1965,7 +1976,7 @@ select.set-select { appearance: none; -webkit-appearance: none; cursor: pointer;
 .import-head h3 { flex: 1; margin: 0; font-family: var(--font-serif); font-size: 19px; font-weight: 600; text-wrap: balance; }
 .import-x {
   position: relative;
-  border: none; background: none; font-size: 16px; color: var(--ink-faint); cursor: pointer;
+  border: none; background: none; font-size: 16px; color: var(--ink-soft); cursor: pointer;
   padding: 4px; line-height: 1; border-radius: var(--radius-xs);
   transition-property: color, background, scale;
   transition-duration: 150ms;
@@ -1978,7 +1989,7 @@ select.set-select { appearance: none; -webkit-appearance: none; cursor: pointer;
 .import-lead { font-size: 13.5px; color: var(--ink-soft); margin: 0 0 14px; line-height: 1.5; text-wrap: pretty; font-variant-numeric: tabular-nums; }
 .import-error { font-size: 13px; color: var(--amber); background: var(--amber-soft); border: none; box-shadow: var(--ring-amber); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 12px; line-height: 1.5; text-wrap: pretty; }
 .import-file-btn { width: 100%; }
-.import-or { text-align: center; font-size: 12.5px; color: var(--ink-faint); margin: 14px 0 8px; }
+.import-or { text-align: center; font-size: 12.5px; color: var(--ink-soft); margin: 14px 0 8px; }
 .import-bar { display: flex; align-items: center; gap: 10px; margin-top: 18px; }
 .import-bar .grow { flex: 1; }
 /* Concentric: 8px row radius + 12px padding = 20px on the consent box. */
@@ -1998,7 +2009,7 @@ select.set-select { appearance: none; -webkit-appearance: none; cursor: pointer;
 .import-sec-del {
   position: relative;
   flex: none; border: none; box-shadow: var(--ring-hair-strong); background: var(--panel); border-radius: 8px;
-  width: 32px; height: 32px; cursor: pointer; color: var(--ink-faint); font-size: 13px; margin-top: 3px;
+  width: 32px; height: 32px; cursor: pointer; color: var(--ink-soft); font-size: 13px; margin-top: 3px;
   transition-property: color, box-shadow, scale;
   transition-duration: 150ms;
   transition-timing-function: var(--ease);

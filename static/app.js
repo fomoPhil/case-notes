@@ -477,7 +477,7 @@ function ensureShell() {
         </div>
         <button class="navitem" id="navNewDebrief"><span class="nav-ic">${IC.mic}</span> New debrief</button>
         <button class="navitem" id="navAssistant"><span class="nav-ic">${IC.spark}</span> Ask the assistant</button>
-        <div class="nav-sec">Clients</div>
+        <div class="nav-sec" id="navClientsLabel">Clients</div>
         <div id="navClients"></div>
         <div class="nav-sec">Library</div>
         <button class="navitem" id="navWorksheets"><span class="nav-ic">${IC.page}</span> Worksheets</button>
@@ -518,6 +518,9 @@ function renderSidebarClients() {
   const box = document.getElementById("navClients");
   if (!box) return;
   box.innerHTML = "";
+  // A heading over nothing reads as a list that failed to load.
+  const label = document.getElementById("navClientsLabel");
+  if (label) label.style.display = App.clients.length ? "" : "none";
   const styles = ["", "alt", "alt2"];
   App.clients.forEach((c, i) => {
     // Clamped to two lines in CSS, with the full name in the tooltip so a long
@@ -1239,7 +1242,7 @@ function renderReview() {
   }
 
   const list = h(`<div class="actions-list"></div>`);
-  if (!p.actions.length) list.appendChild(h(`<div class="a-sub" style="color:var(--ink-faint)">Nothing to book or send in this debrief. The note is the only thing that gets filed.</div>`));
+  if (!p.actions.length) list.appendChild(h(`<div class="a-sub" style="color:var(--ink-soft)">Nothing to book or send in this debrief. The note is the only thing that gets filed.</div>`));
   p.actions.forEach((a, i) => {
     const when = a.datetime_display ? `<div class="a-when">${esc(a.datetime_display)}</div>` : "";
     const title = a.type === "schedule_followup" ? "Book follow-up appointment"
@@ -2406,7 +2409,7 @@ function pickClientThen(cb) {
   const backdrop = h(`<div class="modal-backdrop"><div class="modal"><h4>Email to which client?</h4><div class="picks"></div><div style="text-align:right;margin-top:8px"><button class="rbtn" id="pickCancel">Cancel</button></div></div></div>`);
   const picks = backdrop.querySelector(".picks");
   App.clients.forEach(c => {
-    const b = h(`<button class="pick">${esc(c.name)} <span style="color:var(--ink-faint)">${esc(c.client_id)}</span></button>`);
+    const b = h(`<button class="pick">${esc(c.name)} <span style="color:var(--ink-soft)">${esc(c.client_id)}</span></button>`);
     b.onclick = () => { backdrop.remove(); cb(c.client_id); };
     picks.appendChild(b);
   });
