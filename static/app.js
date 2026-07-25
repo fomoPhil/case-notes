@@ -972,19 +972,25 @@ function renderRecord() {
   // A recording the server could not process is still here. Offer it back
   // before offering a fresh empty recorder.
   if (App.lastRecording) {
+    // render() suppresses the banner behind this card, so the card has to carry
+    // the whole failure. The server usually knows exactly what is wrong ("Debrief
+    // cannot find LM Studio running on this Mac") and exactly what to do about
+    // it; that beats boilerplate, so it is preferred whenever it is present.
+    const why = toErr(App.error) || {};
+    const fix = why.sub || "Try it again, or open Setup to check that Debrief's tools are running.";
     const retry = h(`<div class="retry-card">
       <h4>That note did not save.</h4>
       <p>Debrief could not finish processing your recording, so nothing was written and nothing was sent. Your recording is still here.</p>
-      <p class="retry-fix">Try it again, or open Setup to check that Debrief's tools are running.</p>
+      ${why.text && why.text !== SERVER_ERROR_TEXT ? `<p class="retry-why">${esc(why.text)}</p>` : ""}
+      <p class="retry-fix">${esc(fix)}</p>
       <div class="retry-actions">
         <button class="btn btn-primary btn-compact" id="retryRec">Try again</button>
         <button class="btn btn-ghost btn-compact" id="dropRec">Discard recording</button>
       </div>
     </div>`);
-    // The reason it failed, folded away, so the card stays calm but nothing is
+    // The raw server text, folded away, so the card stays calm but nothing is
     // hidden from whoever is helping them.
-    const tech = toErr(App.error).technical;
-    if (tech) retry.appendChild(technicalDetails(tech));
+    if (why.technical) retry.appendChild(technicalDetails(why.technical));
     retry.querySelector("#retryRec").onclick = () => { if (App.lastRecording) processRecording(App.lastRecording); };
     retry.querySelector("#dropRec").onclick = () => { App.lastRecording = null; App.error = null; render(); };
     stage.insertBefore(retry, stage.querySelector(".record-client").nextSibling);
