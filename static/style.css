@@ -1614,6 +1614,7 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 /* Its own resting hairline is a box-shadow, so the global ring never landed:
    a focused client row was indistinguishable from an unfocused one. */
 .modal .pick:focus-visible { box-shadow: var(--ring), var(--lift-1); }
+.modal .pick .pick-id { color: var(--ink-soft); }
 
 /* Confirm sheet: used only where an action cannot be undone. */
 .confirm-modal { max-width: 400px; }

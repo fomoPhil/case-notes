@@ -702,9 +702,83 @@ const ADD_CLIENT_FIELDS = [
   { key: "presenting_concerns", label: "Presenting concerns", placeholder: "anxiety, sleep" },
 ];
 
+// ---------------------------------------------------------------------------
+// Dialogs.
+//
+// One contract for every sheet in the app. A sheet that only looks like a
+// dialog is not one: focus has to move into it, stay inside it, come back out
+// to whatever opened it, and Escape has to close it. Everything behind it is
+// inert so a screen reader cannot wander into the sidebar underneath.
+// ---------------------------------------------------------------------------
+
+let uidSeq = 0;
+function uid(prefix) { return `${prefix}-${++uidSeq}`; }
+
+const FOCUSABLE_SEL = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
+
+// Visible, focusable, in DOM order. getClientRects() rather than offsetParent:
+// everything here lives inside a position:fixed backdrop.
+function focusables(root) {
+  return Array.from(root.querySelectorAll(FOCUSABLE_SEL)).filter(e => e.getClientRects().length > 0);
+}
+
+// Nested sheets are not a thing today, but a counter means one closing can
+// never un-inert the app while another is still open.
+let inertDepth = 0;
+
+function openDialog({ backdrop, sheet, labelId, initialFocus, onClose }) {
+  const trigger = document.activeElement;
+  const shell = () => document.querySelector(".app-shell");
+  sheet.setAttribute("role", "dialog");
+  sheet.setAttribute("aria-modal", "true");
+  if (labelId) sheet.setAttribute("aria-labelledby", labelId);
+
+  const onKey = (e) => {
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); return; }
+    if (e.key !== "Tab") return;
+    const items = focusables(sheet);
+    if (!items.length) { e.preventDefault(); focusSheet(sheet); return; }
+    const first = items[0], last = items[items.length - 1];
+    const active = document.activeElement;
+    const inside = sheet.contains(active);
+    if (e.shiftKey && (active === first || !inside)) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (active === last || !inside)) { e.preventDefault(); first.focus(); }
+  };
+
+  function close() {
+    if (!backdrop.isConnected) return;
+    document.removeEventListener("keydown", onKey, true);
+    inertDepth = Math.max(0, inertDepth - 1);
+    const app = shell();
+    if (app && inertDepth === 0) app.removeAttribute("inert");
+    backdrop.remove();
+    if (onClose) onClose();
+    // Back to whatever opened this, so a keyboard user is not dumped at the
+    // top of the document. A re-render may have replaced the trigger, in which
+    // case there is nothing sensible to return to.
+    if (trigger && trigger.isConnected && typeof trigger.focus === "function") trigger.focus();
+  }
+
+  document.addEventListener("keydown", onKey, true);
+  document.body.appendChild(backdrop);
+  const app = shell();
+  if (app) app.setAttribute("inert", "");
+  inertDepth++;
+  const target = initialFocus || focusables(sheet)[0];
+  if (target) target.focus(); else focusSheet(sheet);
+  return close;
+}
+
+// A heading or the sheet itself: focusable only so focus has somewhere to land.
+function focusSheet(node) {
+  node.setAttribute("tabindex", "-1");
+  node.focus();
+}
+
 function openAddClient() {
-  const backdrop = h(`<div class="modal-backdrop"><div class="modal add-client-modal" role="dialog" aria-modal="true">
-    <h4>Add a client</h4>
+  const titleId = uid("dlg");
+  const backdrop = h(`<div class="modal-backdrop"><div class="modal add-client-modal">
+    <h4 id="${titleId}">Add a client</h4>
     <p class="ac-lead">This creates a folder for them in your records. Only a name is required.</p>
     <div class="ac-error" hidden></div>
     <div class="ac-fields"></div>
@@ -729,8 +803,7 @@ function openAddClient() {
 
   const errBox = backdrop.querySelector(".ac-error");
   const showError = (msg) => { errBox.textContent = String(msg || ""); errBox.hidden = !msg; };
-  const close = () => { document.removeEventListener("keydown", onKey); backdrop.remove(); };
-  const onKey = (e) => { if (e.key === "Escape") close(); };
+  let close = () => backdrop.remove();
   const save = backdrop.querySelector("#acSave");
 
   const submit = async () => {
@@ -768,13 +841,16 @@ function openAddClient() {
     }
   };
 
-  backdrop.querySelector("#acCancel").onclick = close;
+  backdrop.querySelector("#acCancel").onclick = () => close();
   save.onclick = submit;
   Object.values(inputs).forEach(i => { i.onkeydown = (e) => { if (e.key === "Enter") submit(); }; });
   backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
-  document.addEventListener("keydown", onKey);
-  document.body.appendChild(backdrop);
-  inputs.name.focus();
+  close = openDialog({
+    backdrop,
+    sheet: backdrop.querySelector(".modal"),
+    labelId: titleId,
+    initialFocus: inputs.name,
+  });
 }
 
 function renderClients() {
@@ -1294,22 +1370,27 @@ function renderReview() {
 // A small, keyboard-dismissable confirm. Used for the one action on the review
 // screen that cannot be undone.
 function confirmModal({ title, body, cancelLabel, confirmLabel, danger, onConfirm }) {
-  const backdrop = h(`<div class="modal-backdrop"><div class="modal confirm-modal" role="dialog" aria-modal="true">
-    <h4>${esc(title)}</h4>
+  const titleId = uid("dlg");
+  const backdrop = h(`<div class="modal-backdrop"><div class="modal confirm-modal">
+    <h4 id="${titleId}">${esc(title)}</h4>
     <p class="confirm-body">${esc(body)}</p>
     <div class="confirm-actions">
       <button class="btn btn-ghost" id="cfCancel">${esc(cancelLabel)}</button>
       <button class="btn ${danger ? "btn-danger" : "btn-primary"}" id="cfGo">${esc(confirmLabel)}</button>
     </div>
   </div>`);
-  const close = () => { document.removeEventListener("keydown", onKey); backdrop.remove(); };
-  const onKey = (e) => { if (e.key === "Escape") close(); };
-  backdrop.querySelector("#cfCancel").onclick = close;
+  const cancel = backdrop.querySelector("#cfCancel");
+  let close = () => backdrop.remove();
+  cancel.onclick = () => close();
   backdrop.querySelector("#cfGo").onclick = () => { close(); onConfirm(); };
   backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
-  document.addEventListener("keydown", onKey);
-  document.body.appendChild(backdrop);
-  backdrop.querySelector("#cfCancel").focus();
+  close = openDialog({
+    backdrop,
+    sheet: backdrop.querySelector(".modal"),
+    labelId: titleId,
+    // The safe option, not the irreversible one.
+    initialFocus: cancel,
+  });
 }
 
 function confirmDiscard() {
@@ -2429,16 +2510,18 @@ function renderLibrary() {
 }
 
 function pickClientThen(cb) {
-  const backdrop = h(`<div class="modal-backdrop"><div class="modal"><h4>Email to which client?</h4><div class="picks"></div><div style="text-align:right;margin-top:8px"><button class="rbtn" id="pickCancel">Cancel</button></div></div></div>`);
+  const titleId = uid("dlg");
+  const backdrop = h(`<div class="modal-backdrop"><div class="modal"><h4 id="${titleId}">Email to which client?</h4><div class="picks"></div><div style="text-align:right;margin-top:8px"><button type="button" class="rbtn" id="pickCancel">Cancel</button></div></div></div>`);
   const picks = backdrop.querySelector(".picks");
+  let close = () => backdrop.remove();
   App.clients.forEach(c => {
-    const b = h(`<button class="pick">${esc(c.name)} <span style="color:var(--ink-soft)">${esc(c.client_id)}</span></button>`);
-    b.onclick = () => { backdrop.remove(); cb(c.client_id); };
+    const b = h(`<button type="button" class="pick">${esc(c.name)} <span class="pick-id">${esc(c.client_id)}</span></button>`);
+    b.onclick = () => { close(); cb(c.client_id); };
     picks.appendChild(b);
   });
-  backdrop.querySelector("#pickCancel").onclick = () => backdrop.remove();
-  backdrop.onclick = (e) => { if (e.target === backdrop) backdrop.remove(); };
-  document.body.appendChild(backdrop);
+  backdrop.querySelector("#pickCancel").onclick = () => close();
+  backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
+  close = openDialog({ backdrop, sheet: backdrop.querySelector(".modal"), labelId: titleId });
 }
 
 // ---------------------------------------------------------------------------
@@ -2833,24 +2916,43 @@ function launchImportFlow({ profession, fromWizard, onSaved }) {
   };
 
   const backdrop = h(`<div class="modal-backdrop import-backdrop"><div class="modal import-modal"><div class="import-body"></div></div></div>`);
+  const sheet = backdrop.querySelector(".import-modal");
   const bodyEl = backdrop.querySelector(".import-body");
   backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
-  function close() { flow.apiKey = ""; backdrop.remove(); }
+  // Reassigned by openDialog once the sheet is up. The API key is dropped on
+  // every close path, including Escape and the backdrop click.
+  let close = () => { flow.apiKey = ""; backdrop.remove(); };
+  let opened = false;
   function repaint() {
     bodyEl.innerHTML = "";
-    renderImportStage(flow, bodyEl, { repaint, close, onSaved });
+    renderImportStage(flow, bodyEl, { repaint, close: () => close(), onSaved });
     // Re-trigger the stage transition: the container survives the repaint, so
     // the animation has to be removed and reflowed to play again.
     bodyEl.classList.remove("stage-in");
     void bodyEl.offsetWidth;
     bodyEl.classList.add("stage-in");
+    // Each stage is a new screen inside one dialog. Relabel the sheet, and once
+    // it is open, land on the new heading rather than leaving focus on a button
+    // that no longer exists.
+    const head = bodyEl.querySelector(".import-head h3");
+    if (head) {
+      sheet.setAttribute("aria-labelledby", head.id);
+      if (opened) focusSheet(head);
+    }
   }
-  document.body.appendChild(backdrop);
   repaint();
+  const labelled = bodyEl.querySelector(".import-head h3");
+  close = openDialog({
+    backdrop,
+    sheet,
+    labelId: labelled ? labelled.id : null,
+    onClose: () => { flow.apiKey = ""; },
+  });
+  opened = true;
 }
 
 function importHeader(flow, close, title) {
-  const head = h(`<div class="import-head"><h3>${esc(title)}</h3><button class="import-x" aria-label="Close">✕</button></div>`);
+  const head = h(`<div class="import-head"><h3 id="${uid("imp")}">${esc(title)}</h3><button type="button" class="import-x" aria-label="Close, and discard this import"><span aria-hidden="true">✕</span></button></div>`);
   head.querySelector(".import-x").onclick = close;
   return head;
 }
