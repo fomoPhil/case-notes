@@ -486,3 +486,35 @@ def test_create_client_splits_and_dedupes_a_concerns_string(vault):
         "Alex Rivera", presenting_concerns=" anxiety , sleep ,, anxiety ,  "
     )
     assert created["presenting_concerns"] == ["anxiety", "sleep"]
+
+
+def test_search_snippets_never_leak_frontmatter(vault):
+    """Search results show prose, not raw YAML.
+
+    Snippets used to be cut from the whole file, so a hit near the top produced
+    results like "d] tags: [cli" in the sidebar.
+    """
+    vault.ensure_vault()
+    hits = vault.search_vault("worthlessness")
+    assert hits, "expected at least one hit"
+    for h in hits:
+        s = h["snippet"]
+        for marker in ("---", "tags:", "client_id:", "type:", "session_date:"):
+            assert marker not in s, f"frontmatter leaked into snippet: {s!r}"
+
+
+def test_search_still_finds_a_client_by_name(vault):
+    """Names often live only in frontmatter, so the title must stay searchable."""
+    vault.ensure_vault()
+    hits = vault.search_vault("Maya Chen")
+    assert any("C-0003" in h["path"] for h in hits), "client name search regressed"
+
+
+def test_search_matches_frontmatter_but_shows_prose(vault):
+    """A frontmatter-only match still finds the record, and still shows prose."""
+    vault.ensure_vault()
+    hits = vault.search_vault("DBT")
+    assert any("C-0003" in h["path"] for h in hits), "framework search must still work"
+    for h in hits:
+        assert "framework:" not in h["snippet"]
+        assert not h["snippet"].startswith("---")

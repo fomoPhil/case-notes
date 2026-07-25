@@ -838,7 +838,12 @@ def search_vault(query: str, limit: int = 12) -> list[dict]:
                 text = path.read_text(encoding="utf-8")
             except OSError:
                 continue
-            fm, _ = _split_frontmatter(text)
+            fm, body = _split_frontmatter(text)
+            title = _title_for(path, fm)
+            # Match against everything, including frontmatter, so searching a
+            # framework, a theme, or a diagnosis code still finds the record.
+            # The SNIPPET is cut from the body only, because snippeting the raw
+            # file produced results like "d] tags: [cli" in the sidebar.
             haystack = f"{path.name}\n{text}"
             if q.lower() not in haystack.lower():
                 continue
@@ -852,8 +857,8 @@ def search_vault(query: str, limit: int = 12) -> list[dict]:
             results.append(
                 {
                     "path": rel,
-                    "title": _title_for(path, fm),
-                    "snippet": _snippet(text, q),
+                    "title": title,
+                    "snippet": _snippet(body, q),
                 }
             )
             if len(results) >= limit:
