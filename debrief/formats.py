@@ -511,7 +511,13 @@ def is_known(format_id: str | None) -> bool:
 
 
 def list_specs() -> list[dict]:
-    """Return [{id, name, clinical}] summaries: builtins in order, then customs.
+    """Return [{id, name, clinical, builtin, sections}] summaries: builtins in
+    order, then customs.
+
+    ``builtin`` and ``sections`` (a count) exist so the settings screen can group
+    the picker into "Built in" and "Your imports" and offer Remove only on the
+    ones that can be removed, without hard-coding the builtin id list in the
+    browser where a new builtin would silently go stale.
 
     A custom file is advertised only when its filename stem matches the spec's
     own id (spec["id"] == path.stem). Lookup elsewhere is by filename stem, so a
@@ -523,7 +529,15 @@ def list_specs() -> list[dict]:
     out: list[dict] = []
     seen: set[str] = set()
     for fid, spec in _BUILTIN_SPECS.items():
-        out.append({"id": fid, "name": spec["name"], "clinical": spec["clinical"]})
+        out.append(
+            {
+                "id": fid,
+                "name": spec["name"],
+                "clinical": spec["clinical"],
+                "builtin": True,
+                "sections": len(spec.get("sections") or []),
+            }
+        )
         seen.add(fid)
     try:
         custom_files = sorted(settings_store.formats_dir().glob("*.json"))
@@ -544,7 +558,15 @@ def list_specs() -> list[dict]:
             continue
         if spec["id"] in seen:
             continue
-        out.append({"id": spec["id"], "name": spec["name"], "clinical": spec["clinical"]})
+        out.append(
+            {
+                "id": spec["id"],
+                "name": spec["name"],
+                "clinical": spec["clinical"],
+                "builtin": False,
+                "sections": len(spec.get("sections") or []),
+            }
+        )
         seen.add(spec["id"])
     return out
 
