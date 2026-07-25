@@ -210,7 +210,7 @@ function computeNudges(plan) {
       id: "risk",
       kind: "risk",
       text: "This note documents risk.",
-      sub: "Read the risk section closely before you approve. The wording is yours to change, and nothing is filed until you do.",
+      sub: "Read the risk section closely before you approve. The wording is yours to change, and nothing is filed until you approve it.",
     });
   }
   return nudges;
@@ -368,10 +368,13 @@ function startStatusPolling() {
   window.addEventListener("focus", pollStatus);
 }
 
-// The strip, plus its own [Check again]. Suppressed inside the setup wizard,
-// whose first card is this same check said at length.
+// Screens that already say this, in place and at full size. Repeating the same
+// sentence twice on one screen reads as a stutter, not as emphasis.
+const STRIP_SUPPRESSED = new Set(["setupWizard", "record"]);
+
+// The strip, plus its own [Check again].
 function modelStrip() {
-  if (!modelDown() || App.state === "setupWizard") return null;
+  if (!modelDown() || STRIP_SUPPRESSED.has(App.state)) return null;
   const strip = h(`<div class="model-strip">
     <span class="ms-ic" aria-hidden="true">${ALERT_SVG}</span>
     <span class="ms-text">${esc(MODEL_DOWN_TEXT)}</span>
