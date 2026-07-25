@@ -25,8 +25,6 @@ def client(monkeypatch, tmp_path):
     # scaffold it so profiles (client emails) and Documents dirs exist.
     monkeypatch.setattr(app_module.config, "VAULT_DIR", vault_dir)
     monkeypatch.setattr(app_module.vault, "VAULT_DIR", vault_dir)
-    import debrief.audit as audit_mod
-    monkeypatch.setattr(audit_mod, "VAULT_DIR", vault_dir)
     app_module.vault.ensure_vault()
     # Healthy model so the readiness guard passes.
     monkeypatch.setattr(app_module.doctor, "run_checks", _healthy_checks)

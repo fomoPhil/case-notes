@@ -17,8 +17,7 @@ def audit(tmp_path, monkeypatch):
 
     import debrief.audit as audit_mod
 
-    # Rebind the module-level VAULT_DIR that audit.py imported by value.
-    monkeypatch.setattr(audit_mod, "VAULT_DIR", tmp_path / "vault")
+    # audit resolves config.VAULT_DIR at call time, so patching config is enough.
     return audit_mod
 
 
@@ -54,7 +53,7 @@ def _sample_result() -> dict:
 def _result_in_vault(audit, tmp_path) -> dict:
     """Sample result whose note_path lives under the temp vault."""
     result = _sample_result()
-    note = audit.VAULT_DIR / "Clients" / "C-0001" / "Sessions" / "2026-07-18-session.md"
+    note = tmp_path / "vault" / "Clients" / "C-0001" / "Sessions" / "2026-07-18-session.md"
     result["note_path"] = str(note)
     return result
 
@@ -172,3 +171,23 @@ def test_logging_failure_does_not_raise_out(audit, tmp_path, monkeypatch):
     assert any(
         isinstance(e, dict) and e.get("stage") == "audit" for e in result["errors"]
     ), "a logging failure must be recorded in result['errors']"
+
+
+def test_activity_path_resolves_at_call_time(tmp_path, monkeypatch):
+    """Regression: audit must never write to the real vault during tests.
+
+    audit.py used to bind VAULT_DIR at import time, so any test that redirected
+    only config.VAULT_DIR still appended entries to the developer's real vault.
+    """
+    import datetime as _dt
+
+    import debrief.audit as audit_mod
+    import debrief.config as config
+
+    redirected = tmp_path / "redirected-vault"
+    monkeypatch.setattr(config, "VAULT_DIR", redirected)
+
+    audit_mod.log_records_change("renamed", str(redirected / "Clients" / "x.md"), "test")
+
+    today = _dt.date.today().isoformat()
+    assert (redirected / "_Activity" / f"{today}.md").exists()

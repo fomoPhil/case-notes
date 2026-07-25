@@ -22,9 +22,6 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(app_module.config, "VAULT_DIR", vault_dir)
     monkeypatch.setattr(app_module.vault, "VAULT_DIR", vault_dir)
     monkeypatch.setattr(app_module.records, "VAULT_DIR", vault_dir)
-    import debrief.audit as audit_mod
-
-    monkeypatch.setattr(audit_mod, "VAULT_DIR", vault_dir)
     app_module.vault.ensure_vault()
     monkeypatch.setattr(app_module.doctor, "run_checks", _healthy_checks)
     app_module._doctor_cache["checks"] = None

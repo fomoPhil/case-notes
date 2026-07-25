@@ -19,7 +19,7 @@ import datetime as _dt
 import os
 from pathlib import Path
 
-from .config import VAULT_DIR
+from . import config
 
 _ACTIVITY_DIRNAME = "_Activity"
 _WHAT_I_SEE_MAX = 120
@@ -58,7 +58,7 @@ def _note_wikilink(note_path: str | None) -> str | None:
     if not note_path:
         return None
     try:
-        rel = Path(note_path).relative_to(VAULT_DIR)
+        rel = Path(note_path).relative_to(config.VAULT_DIR)
     except ValueError:
         rel = Path(note_path)
     target = str(rel.with_suffix(""))
@@ -209,7 +209,7 @@ def _build_assistant_entry(run: dict, now: _dt.datetime) -> str:
         status = r.get("status", "?")
         if status == "ok" and r.get("path"):
             try:
-                rel = Path(r["path"]).relative_to(VAULT_DIR)
+                rel = Path(r["path"]).relative_to(config.VAULT_DIR)
                 target = f"[[{str(rel.with_suffix(''))}|{rel.stem}]]"
             except (ValueError, TypeError):
                 target = str(r.get("path"))
@@ -231,7 +231,7 @@ def log_assistant_run(run: dict) -> Path | None:
     try:
         now = _dt.datetime.now()
         today = now.date().isoformat()
-        day_file = VAULT_DIR / _ACTIVITY_DIRNAME / f"{today}.md"
+        day_file = config.VAULT_DIR / _ACTIVITY_DIRNAME / f"{today}.md"
 
         entry = _build_assistant_entry(run, now)
         if day_file.exists():
@@ -260,10 +260,10 @@ def log_records_change(action: str, path: str, detail: str = "") -> Path | None:
     try:
         now = _dt.datetime.now()
         today = now.date().isoformat()
-        day_file = VAULT_DIR / _ACTIVITY_DIRNAME / f"{today}.md"
+        day_file = config.VAULT_DIR / _ACTIVITY_DIRNAME / f"{today}.md"
 
         try:
-            rel = Path(path).relative_to(VAULT_DIR)
+            rel = Path(path).relative_to(config.VAULT_DIR)
         except ValueError:
             rel = Path(path)
         target = f"[[{str(rel.with_suffix(''))}|{rel.stem}]]" if str(rel) else "?"
@@ -294,7 +294,7 @@ def log_debrief_run(result: dict) -> Path | None:
     try:
         now = _dt.datetime.now()
         today = now.date().isoformat()
-        day_file = VAULT_DIR / _ACTIVITY_DIRNAME / f"{today}.md"
+        day_file = config.VAULT_DIR / _ACTIVITY_DIRNAME / f"{today}.md"
 
         entry = _build_entry(result, now)
         if day_file.exists():
