@@ -1153,11 +1153,6 @@
   /* Text-sized control, so the hit area is grown to 40px tall behind it. */
   .backlink::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 40px; transform: translateY(-50%); }
 
-  @media (prefers-reduced-motion: reduce) {
-    .rec-btn, .rec-wrap.recording .ring, .enter, .setup-check.changed, .modal-backdrop, .modal, .import-body.stage-in, .done-mark, .toast { animation: none !important; }
-    .home-row, .home-row:hover, .home-mc, .home-mc:hover { transform: none; }
-  }
-
 /* ==========================================================================
    Phase 3: persistent shell + client records UI (ported from the mockup)
    Namespaced classes (rchip, rbtn, doc-title) avoid colliding with the
@@ -2114,3 +2109,91 @@ select.set-select { appearance: none; -webkit-appearance: none; cursor: pointer;
 }
 .import-saved-name { font-size: 15px; font-weight: 600; color: var(--ink); text-wrap: balance; }
 .import-saved-meta { font-size: 12.5px; color: var(--ink-soft); margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+/* ==========================================================================
+   Reduced motion.
+
+   Last in the file on purpose: every rule it neutralises is declared above it,
+   so ordinary cascade order does the work and !important is only needed where
+   a rule sets the same property in a state this block cannot name.
+
+   The rule is not "stop everything". A spinner still has to say "busy", so
+   spinners slow down rather than stop. What goes is travel, zoom, and blur:
+   the staggered entrances, the record button's breathe and ripple, the
+   scale-and-blur cross-fades, the sheet and toast rises, and every press-scale.
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  /* Entrances, arrivals, and decorative loops: gone. */
+  .enter,
+  .rec-btn,
+  .rec-wrap.recording .ring,
+  .setup-check.changed,
+  .setup-check.changed .sc-mark,
+  .modal-backdrop,
+  .modal,
+  .import-body.stage-in,
+  .done-mark,
+  .import-saved-check,
+  .toast {
+    animation: none !important;
+  }
+
+  /* Spinners keep turning, four times slower. Stopping them would say the app
+     had finished when it has not. */
+  .spinner,
+  .btn-spinner,
+  .pstep.active .ic {
+    animation-duration: 3.6s !important;
+    animation-timing-function: linear !important;
+  }
+
+  /* Cross-fades keep their opacity and drop the zoom and the blur: the record
+     button's mic-to-stop swap fires on every start and stop, and the step
+     ticks fire four times per note. */
+  .rec-btn .icon-mic,
+  .rec-btn .icon-stop,
+  .pstep .ic svg {
+    transition-property: opacity;
+    transform: none !important;
+    filter: none !important;
+  }
+
+  /* Travel. Hover lifts, the "Saved" rise, and the affordance that slides in. */
+  .home-row,
+  .home-row:hover,
+  .home-mc,
+  .home-mc:hover,
+  .set-saved,
+  .set-saved.on,
+  .skip-link:focus-visible {
+    transform: none;
+  }
+  .skip-link { transform: translateY(-160%); }
+
+  /* Press feedback: the ~20 :active scale rules across buttons, cards, rows,
+     chips, and menu items. */
+  .btn:active,
+  .btn-small:active,
+  .rbtn:active,
+  .iconbtn:active,
+  .navitem:active,
+  .backlink:active,
+  .copybtn:active,
+  .search-hit:active,
+  .toast-action:active,
+  .setup-skip:active,
+  .import-x:active,
+  .import-sec-del:active:not(:disabled),
+  .home-row:active,
+  .home-mc:active,
+  .home-ask:active,
+  .doc:active,
+  .libcard:active,
+  .action:active,
+  .set-radio:active,
+  .set-toggle:active,
+  .modal .pick:active,
+  .rec-btn:active {
+    scale: 1;
+  }
+}
