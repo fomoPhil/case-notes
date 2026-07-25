@@ -1991,36 +1991,55 @@ function renderDocumentsTab(d) {
   el.appendChild(wrap);
 }
 
+// A document card is a real button, and its three actions are real buttons
+// BESIDE it rather than inside it: a button inside a button is invalid, and
+// nesting them was why Rename, Download, and Email did not exist for anyone
+// using a keyboard. The action group is absolutely positioned over the card's
+// right edge and revealed on hover AND focus-within; it is faded, never
+// display:none, because a hidden element is not focusable.
 function buildDocCard(doc, d) {
   const ft = FTYPE[doc.kind] || FTYPE.markdown;
   const meta = (doc.agent_made ? "Made by the assistant" : "Uploaded") + (doc.date_display ? " · " + doc.date_display : "");
-  const card = h(`<div class="doc">
-    <div class="ftype ${ft.badge}">${ft.label}</div>
-    <div style="flex:1;min-width:0"><h5>${esc(doc.title)}</h5><div class="d-sub">${esc(meta)}</div></div>
-    <div class="acts">
-      <button class="iconbtn" title="Rename">✎</button>
-      <button class="iconbtn" title="Download PDF">⬇</button>
-      <button class="iconbtn" title="Email draft">✉</button>
-    </div>
+  const wrap = h(`<div class="doc-wrap"></div>`);
+  const card = h(`<button type="button" class="doc">
+    <span class="ftype ${ft.badge}" aria-hidden="true">${ft.label}</span>
+    <span class="doc-body"><h3>${esc(doc.title)}</h3><span class="d-sub">${esc(meta)}</span></span>
+  </button>`);
+  const acts = h(`<div class="acts">
+    ${iconBtnHTML("✎", "Rename " + doc.title)}
+    ${iconBtnHTML("⬇", "Download " + doc.title + " as PDF")}
+    ${iconBtnHTML("✉", "Email " + doc.title + " to the client")}
   </div>`);
   const isMd = doc.path.toLowerCase().endsWith(".md");
-  card.onclick = (e) => {
-    if (e.target.closest(".acts")) return;
+  card.onclick = () => {
     if (isMd) openDocument(doc.path, { client: d, section: "Documents", title: doc.title });
     else if (doc.path.toLowerCase().endsWith(".pdf")) downloadPdf(doc.path);
     else post("/api/open", { path: doc.path });  // open images/docx in their native app
   };
-  const [renameBtn, dlBtn, emailBtn] = card.querySelectorAll(".iconbtn");
-  renameBtn.onclick = (e) => { e.stopPropagation(); inlineRenameCard(card, doc, d); };
-  dlBtn.onclick = (e) => { e.stopPropagation(); if (isMd || doc.path.toLowerCase().endsWith(".pdf")) downloadPdf(doc.path); else post("/api/open", { path: doc.path }); };
-  emailBtn.onclick = (e) => { e.stopPropagation(); emailDocument(d.client_id, doc.path); };
-  return card;
+  const [renameBtn, dlBtn, emailBtn] = acts.querySelectorAll(".iconbtn");
+  renameBtn.onclick = () => inlineRenameCard(card, doc, d);
+  dlBtn.onclick = () => { if (isMd || doc.path.toLowerCase().endsWith(".pdf")) downloadPdf(doc.path); else post("/api/open", { path: doc.path }); };
+  emailBtn.onclick = () => emailDocument(d.client_id, doc.path);
+  wrap.appendChild(card);
+  wrap.appendChild(acts);
+  return wrap;
 }
 
+// An icon button whose accessible name says which document it acts on. The
+// glyph itself is decorative: title= lands in the description, not the name,
+// so the tree used to read name='✎'.
+function iconBtnHTML(glyph, label) {
+  return `<button type="button" class="iconbtn" aria-label="${esc(label)}"><span aria-hidden="true">${glyph}</span></button>`;
+}
+
+// Renaming swaps the whole card for the field. The card is a button now, and
+// an input inside a button cannot be typed into: the button swallows the click
+// and Enter activates it instead of committing the name.
 function inlineRenameCard(card, doc, d) {
-  const titleEl = card.querySelector("h5");
-  const input = h(`<input class="doc-rename-input" value="${esc(doc.title)}" />`);
-  titleEl.replaceWith(input);
+  const box = h(`<div class="doc doc-renaming"></div>`);
+  const input = h(`<input class="doc-rename-input" aria-label="New name for ${esc(doc.title)}" value="${esc(doc.title)}" />`);
+  box.appendChild(input);
+  card.replaceWith(box);
   input.focus();
   input.select();
   const commit = async () => {
@@ -2390,16 +2409,20 @@ function renderLibrary() {
   }
   items.forEach(it => {
     const isAgent = it.agent_made;
+    // Same shape as a document card: the card body is a button, and "Email to
+    // client" is its own button beside it rather than a span nested inside it.
     const card = h(`<div class="libcard">
-      <div class="thumb">${libThumb(it.title)}</div>
-      <h5>${esc(it.title)}</h5>
+      <button type="button" class="libcard-open">
+        <span class="thumb" aria-hidden="true">${libThumb(it.title)}</span>
+        <h2>${esc(it.title)}</h2>
+      </button>
       <div class="lib-row">
-        <span class="rchip ${isAgent ? "agent" : "ok"}">${isAgent ? "✦ Assistant" : "Template"}</span>
-        <span class="lib-send">Email to client…</span>
+        <span class="rchip ${isAgent ? "agent" : "ok"}"><span aria-hidden="true">${isAgent ? "✦ " : ""}</span>${isAgent ? "Assistant" : "Template"}</span>
+        <button type="button" class="lib-send" aria-label="Email ${esc(it.title)} to a client">Email to client…</button>
       </div>
     </div>`);
-    card.querySelector(".lib-send").onclick = (e) => { e.stopPropagation(); pickClientThen(cid => emailDocument(cid, it.path)); };
-    card.onclick = () => openDocument(it.path, { section: which === "reference" ? "Reference" : "Worksheets", title: it.title });
+    card.querySelector(".lib-send").onclick = () => pickClientThen(cid => emailDocument(cid, it.path));
+    card.querySelector(".libcard-open").onclick = () => openDocument(it.path, { section: which === "reference" ? "Reference" : "Worksheets", title: it.title });
     grid.appendChild(card);
   });
   el.appendChild(grid);

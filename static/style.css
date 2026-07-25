@@ -1352,11 +1352,13 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 /* ---------- session cards ---------- */
 .sesscard {
   display: flex; gap: 14px; padding: 15px 18px; border-bottom: 1px solid var(--line); cursor: pointer;
-  text-align: left; width: 100%; border-left: none; border-right: none; border-top: none; background: none; font: inherit;
+  text-align: left; width: 100%; border-left: none; border-right: none; border-top: none; background: none;
+  font: inherit; color: inherit;
   transition-property: background;
   transition-duration: 150ms;
   transition-timing-function: var(--ease);
 }
+.sesscard:focus-visible { box-shadow: var(--ring); position: relative; z-index: 1; }
 .sesscard:first-child { border-radius: var(--radius) var(--radius) 0 0; }
 .sesscard:last-child { border-bottom: none; border-radius: 0 0 var(--radius) var(--radius); }
 .sesscard:only-child { border-radius: var(--radius); }
@@ -1385,24 +1387,45 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .docs { margin-top: 26px; }
 .docgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 @media (max-width: 640px) { .docgrid { grid-template-columns: 1fr; } }
+/* The card is the button; the action group is its sibling, laid over the card's
+   right edge. The wrap is what the grid lays out. */
+.doc-wrap { position: relative; display: flex; min-width: 0; }
 .doc {
   background: var(--panel); border: none; box-shadow: var(--row-shadow); border-radius: var(--radius-row);
   padding: 13px 15px; display: flex; gap: 12px; align-items: center; cursor: pointer; position: relative; text-align: left;
+  flex: 1; min-width: 0; width: 100%; font: inherit; color: inherit;
   transition-property: box-shadow, background, scale;
   transition-duration: 180ms;
   transition-timing-function: var(--ease);
 }
+.doc-body { flex: 1; min-width: 0; }
 .doc:hover { box-shadow: var(--ring-sage), var(--lift-1), var(--lift-2); }
 .doc:active { scale: 0.99; }
+/* Explicit: the global :focus-visible ring loses to .doc's own box-shadow
+   rules, which come later at equal specificity, so a focused card showed none. */
+.doc:focus-visible { box-shadow: var(--ring), var(--lift-1); }
+/* The card, while its name is being edited. */
+.doc-renaming { flex: 1; cursor: default; }
 .ftype { width: 38px; height: 44px; border-radius: var(--radius-xs); flex: none; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 5px; font-size: 9.5px; font-weight: 800; letter-spacing: 0.05em; color: #fff; }
 .ftype.note { background: var(--accent); }
 .ftype.pdf { background: var(--terracotta); }
 .ftype.img { background: var(--amber-line); }
 .ftype.docx { background: #7c93b8; }
-.doc h5 { font-size: 14px; font-weight: 600; margin: 0 0 2px; overflow-wrap: anywhere; text-wrap: balance; }
-.doc .d-sub { font-size: 12.5px; color: var(--ink-soft); text-wrap: pretty; }
-.doc .acts { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); display: none; gap: 6px; background: var(--panel); padding-left: 8px; }
-.doc:hover .acts { display: flex; }
+.doc h3 { font-size: 14px; font-weight: 600; margin: 0 0 2px; overflow-wrap: anywhere; text-wrap: balance; }
+.doc .d-sub { display: block; font-size: 12.5px; color: var(--ink-soft); text-wrap: pretty; }
+/* Faded, not display:none. A hidden element is out of the tab order and out of
+   the accessibility tree, which is why these three actions did not exist for
+   anyone not using a mouse. Focus inside the wrap reveals them. */
+.doc-wrap .acts {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  display: flex; gap: 6px; background: var(--panel); padding-left: 8px;
+  opacity: 0; pointer-events: none;
+  transition-property: opacity;
+  transition-duration: 150ms;
+  transition-timing-function: var(--ease);
+}
+.doc-wrap:hover .acts,
+.doc-wrap:focus-within .acts { opacity: 1; pointer-events: auto; }
 .iconbtn {
   position: relative;
   width: 29px; height: 29px; border-radius: 8px; border: none; box-shadow: var(--ring-hair-strong);
@@ -1418,8 +1441,12 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .iconbtn::after { content: ""; position: absolute; left: 50%; top: 50%; width: 35px; height: 40px; transform: translate(-50%, -50%); }
 .iconbtn:hover { background: var(--bg); box-shadow: var(--ring-sage); color: var(--ink); }
 .iconbtn:active { scale: 0.96; }
+.iconbtn:focus-visible { box-shadow: var(--ring); }
 .doc.add { box-shadow: none; border: 1px dashed var(--line); justify-content: center; color: var(--ink-soft); font-size: 14px; font-weight: 600; cursor: pointer; }
 .doc.add:hover { box-shadow: none; border-color: var(--soft-sage); background: var(--accent-soft); color: var(--accent-ink); }
+/* .doc.add resolves its own box-shadow to none, so without this the only way to
+   add a document showed no focus indicator at all. */
+.doc.add:focus-visible { box-shadow: var(--ring); border-color: var(--soft-sage); }
 .docgrid.drop-active { outline: 2px dashed var(--soft-sage); outline-offset: 6px; border-radius: var(--radius); }
 .doc-rename-input { font: inherit; font-size: 14px; font-weight: 600; border: none; box-shadow: 0 0 0 1px var(--soft-sage); border-radius: var(--radius-xs); padding: 3px 6px; width: 100%; }
 .doc-rename-input:focus { outline: none; box-shadow: var(--ring); }
@@ -1521,27 +1548,41 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .libgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
 @media (max-width: 900px) { .libgrid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 620px) { .libgrid { grid-template-columns: 1fr; } }
+/* The card is the container; the button that opens it and the button that
+   emails it are siblings inside it. "Email to client" used to be a span with
+   tabIndex -1, so emailing a worksheet was mouse-only. */
 .libcard {
   background: var(--panel); border: none; box-shadow: var(--row-shadow); border-radius: var(--radius);
-  padding: 18px; cursor: pointer; display: flex; flex-direction: column; gap: 8px; text-align: left;
+  padding: 18px; display: flex; flex-direction: column; gap: 8px; text-align: left;
   transition-property: box-shadow, scale;
   transition-duration: 180ms;
   transition-timing-function: var(--ease);
 }
 .libcard:hover { box-shadow: var(--ring-sage), var(--lift-1), var(--lift-2); }
 .libcard:active { scale: 0.99; }
+/* The ring goes on the whole card when its open button has focus, so the
+   indicator matches what a click on the card would do. */
+.libcard:has(.libcard-open:focus-visible) { box-shadow: var(--ring), var(--lift-1); }
+.libcard-open {
+  display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 0;
+  border: none; background: none; padding: 0; margin: 0; text-align: left;
+  font: inherit; color: inherit; cursor: pointer;
+}
+.libcard-open:focus-visible { box-shadow: none; }
 .libcard .thumb { height: 82px; border-radius: var(--radius-sm); background: linear-gradient(135deg, rgba(168, 188, 161, 0.25), rgba(95, 122, 97, 0.12)); display: flex; align-items: center; justify-content: center; font-size: 30px; }
 /* The title is the card's content now that the repeated blurb is gone, so it
    takes the slack the paragraph used to hold. */
-.libcard h5 { font-family: var(--font-serif); font-size: 16.5px; font-weight: 600; margin: 0; flex: 1; text-wrap: balance; }
+.libcard h2 { font-family: var(--font-serif); font-size: 16.5px; font-weight: 600; margin: 0; flex: 1; text-wrap: balance; }
 .libcard .lib-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .libcard .lib-send {
-  position: relative; font-size: 13px; font-weight: 700; color: var(--accent-ink); cursor: pointer; border-radius: var(--radius-xs);
+  position: relative; font: inherit; font-size: 13px; font-weight: 700; color: var(--accent-ink);
+  background: none; border: none; padding: 0; cursor: pointer; border-radius: var(--radius-xs);
   transition-property: color;
   transition-duration: 150ms;
   transition-timing-function: var(--ease);
 }
 .libcard .lib-send:hover { color: var(--accent-hover); }
+.libcard .lib-send:focus-visible { box-shadow: var(--ring); }
 /* Text-sized action inside a card: grow its own hit area to 40px tall. */
 .libcard .lib-send::after { content: ""; position: absolute; left: -6px; right: -6px; top: 50%; height: 40px; transform: translateY(-50%); }
 
@@ -1563,13 +1604,16 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .modal .pick {
   display: block; width: 100%; text-align: left; border: none; box-shadow: var(--ring-hair-strong);
   background: var(--panel); border-radius: var(--radius-row); padding: 11px 13px; margin-bottom: 8px;
-  cursor: pointer; font: inherit; font-size: 14px;
+  cursor: pointer; font: inherit; font-size: 14px; color: inherit;
   transition-property: background, box-shadow, scale;
   transition-duration: 150ms;
   transition-timing-function: var(--ease);
 }
 .modal .pick:hover { box-shadow: var(--ring-sage); background: var(--accent-soft); }
 .modal .pick:active { scale: 0.98; }
+/* Its own resting hairline is a box-shadow, so the global ring never landed:
+   a focused client row was indistinguishable from an unfocused one. */
+.modal .pick:focus-visible { box-shadow: var(--ring), var(--lift-1); }
 
 /* Confirm sheet: used only where an action cannot be undone. */
 .confirm-modal { max-width: 400px; }
