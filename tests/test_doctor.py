@@ -24,8 +24,10 @@ def _servers(lm_up=True, lm_gemma="gemma-4-12b-it-qat", ol_up=False, ol_gemma=No
     ]
 
 
-def _by_name(checks):
-    return {c["name"]: c for c in checks}
+def _by_key(checks):
+    """Index by the STABLE key. Display names are clinician-facing copy and are
+    expected to change; tests must never depend on their wording."""
+    return {c["key"]: c for c in checks}
 
 
 def test_all_pass(monkeypatch, tmp_path):
@@ -39,11 +41,11 @@ def test_all_pass(monkeypatch, tmp_path):
     monkeypatch.setattr(doctor.shutil, "which", lambda name: f"/usr/bin/{name}")
 
     checks = doctor.run_checks()
-    by = _by_name(checks)
-    assert by["Model server reachable"]["ok"] is True
-    assert by["Gemma model loaded"]["ok"] is True
-    assert by["Vault writable"]["ok"] is True
-    assert by["ffmpeg on PATH"]["ok"] is True
+    by = _by_key(checks)
+    assert by["model_server"]["ok"] is True
+    assert by["model_loaded"]["ok"] is True
+    assert by["records_folder"]["ok"] is True
+    assert by["audio_tools"]["ok"] is True
     # No hard failure -> main() exits 0.
     hard_fail = [c for c in checks if c.get("hard") and not c["ok"]]
     assert hard_fail == []
@@ -58,11 +60,11 @@ def test_server_down_is_hard_fail(monkeypatch, tmp_path):
     monkeypatch.setattr(doctor.shutil, "which", lambda name: f"/usr/bin/{name}")
 
     checks = doctor.run_checks()
-    by = _by_name(checks)
-    assert by["Model server reachable"]["ok"] is False
-    assert by["Model server reachable"]["hard"] is True
-    assert by["Gemma model loaded"]["ok"] is False
-    assert by["Model server reachable"]["fix"]
+    by = _by_key(checks)
+    assert by["model_server"]["ok"] is False
+    assert by["model_server"]["hard"] is True
+    assert by["model_loaded"]["ok"] is False
+    assert by["model_server"]["fix"]
 
 
 def test_ffmpeg_missing_is_hard(monkeypatch, tmp_path):
@@ -75,9 +77,9 @@ def test_ffmpeg_missing_is_hard(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(doctor.shutil, "which", lambda name: None)
 
-    by = _by_name(doctor.run_checks())
-    assert by["ffmpeg on PATH"]["ok"] is False
-    assert by["ffmpeg on PATH"]["hard"] is True
+    by = _by_key(doctor.run_checks())
+    assert by["audio_tools"]["ok"] is False
+    assert by["audio_tools"]["hard"] is True
 
 
 def test_pdf_is_soft_warning(monkeypatch, tmp_path):
@@ -91,11 +93,11 @@ def test_pdf_is_soft_warning(monkeypatch, tmp_path):
     monkeypatch.setattr(doctor.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(doctor, "_importable", lambda mod: False)
 
-    by = _by_name(doctor.run_checks())
-    pdf = by["PDF export (weasyprint + markdown)"]
+    by = _by_key(doctor.run_checks())
+    pdf = by["pdf_export"]
     assert pdf["ok"] is False
     assert pdf["hard"] is False
-    assert "uv sync --extra pdf" in pdf["fix"]
+    assert "uv sync --extra pdf" in pdf["command"]
 
 
 def test_stt_check_reflects_selected_engine(monkeypatch, tmp_path):
@@ -113,11 +115,11 @@ def test_stt_check_reflects_selected_engine(monkeypatch, tmp_path):
     # Not cached -> the check stays ok but adds the first-download hint.
     monkeypatch.setattr(doctor.stt, "is_engine_model_cached", lambda eng: False)
 
-    by = _by_name(doctor.run_checks())
-    stt_check = by["Speech-to-text (mlx-whisper)"]
+    by = _by_key(doctor.run_checks())
+    stt_check = by["transcription"]
     assert stt_check["ok"] is True
     assert stt_check["hard"] is False
-    assert "mlx-whisper" in stt_check["detail"]
+    assert "Whisper" in stt_check["name"]
     assert "1.6 GB" in stt_check["detail"]
 
 
@@ -134,8 +136,8 @@ def test_stt_check_parakeet_default_no_download_hint(monkeypatch, tmp_path):
     monkeypatch.setattr(doctor, "_importable", lambda mod: True)
     monkeypatch.setattr(doctor.stt, "is_engine_model_cached", lambda eng: True)
 
-    by = _by_name(doctor.run_checks())
-    stt_check = by["Speech-to-text (parakeet-mlx)"]
+    by = _by_key(doctor.run_checks())
+    stt_check = by["transcription"]
     assert stt_check["ok"] is True
     assert "1.6 GB" not in stt_check["detail"]
 
@@ -150,7 +152,7 @@ def test_ollama_gemma_reported_when_lmstudio_lacks_it(monkeypatch, tmp_path):
     monkeypatch.setattr(doctor.models, "pick_gemma", lambda: None)
     monkeypatch.setattr(doctor.shutil, "which", lambda name: f"/usr/bin/{name}")
 
-    by = _by_name(doctor.run_checks())
-    gemma = by["Gemma model loaded"]
+    by = _by_key(doctor.run_checks())
+    gemma = by["model_loaded"]
     assert gemma["ok"] is False
     assert "Ollama" in gemma["detail"]

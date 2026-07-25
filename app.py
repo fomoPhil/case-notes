@@ -141,7 +141,12 @@ def _require_model_ready() -> None:
     """
     checks = _cached_checks()
     for c in checks:
-        if c["name"] in ("Model server reachable", "Gemma model loaded") and not c["ok"]:
+        # Match on the stable key, never the display name: check names are
+        # clinician-facing copy and are expected to change.
+        model_check = c.get("key") in ("model_server", "model_loaded") or c.get(
+            "name"
+        ) in ("Model server reachable", "Gemma model loaded")
+        if model_check and not c["ok"]:
             raise HTTPException(
                 status_code=503,
                 detail={"error": c["detail"], "fix": c["fix"]},

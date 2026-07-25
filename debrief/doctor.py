@@ -55,28 +55,31 @@ def run_checks() -> list[dict]:
     gemma = models.pick_gemma()
 
     if reachable:
-        names = ", ".join(s["provider"] for s in reachable)
         checks.append({
-            "name": "Model server reachable",
+            "key": "model_server",
+            "name": "Local AI",
             "ok": True,
-            "detail": f"reachable: {names}",
+            "detail": "LM Studio is running on this Mac.",
             "fix": "",
             "hard": True,
         })
     else:
         checks.append({
-            "name": "Model server reachable",
+            "key": "model_server",
+            "name": "Local AI",
             "ok": False,
-            "detail": "no model server answered on :1234 (LM Studio) or :11434 (Ollama)",
-            "fix": "Open LM Studio and start its server (lms server start).",
+            "detail": "Debrief cannot find LM Studio running on this Mac.",
+            "fix": "Open LM Studio and press Start Server, then Re-check.",
+            "command": "lms server start",
             "hard": True,
         })
 
     if gemma is not None:
         checks.append({
-            "name": "Gemma model loaded",
+            "key": "model_loaded",
+            "name": "AI model",
             "ok": True,
-            "detail": f"{gemma['model']} via {gemma['base_url']}",
+            "detail": "The Gemma model is loaded and ready.",
             "fix": "",
             "hard": True,
         })
@@ -86,41 +89,48 @@ def run_checks() -> list[dict]:
         ollama = next((s for s in servers if s["provider"] == "ollama"), None)
         if ollama and ollama["reachable"] and ollama["gemma_model"]:
             detail = (
-                f"only Ollama has a gemma ({ollama['gemma_model']}); "
-                "the agent needs it in LM Studio"
+                "Ollama has a Gemma model, but Debrief needs it loaded in "
+                "LM Studio."
             )
-            fix = f"In LM Studio, load {config.MODEL} --context-length 64000."
         elif lmstudio and lmstudio["reachable"]:
-            detail = "LM Studio is up but no gemma model is loaded"
-            fix = f"In LM Studio: lms load {config.MODEL} --context-length 64000 -y"
+            detail = "LM Studio is running, but no model is loaded yet."
         else:
-            detail = "no gemma model available"
-            fix = f"Start LM Studio and load {config.MODEL}."
+            detail = "No AI model is loaded yet."
         checks.append({
-            "name": "Gemma model loaded",
+            "key": "model_loaded",
+            "name": "AI model",
             "ok": False,
             "detail": detail,
-            "fix": fix,
+            "fix": "In LM Studio, load the Gemma model using the line below, then Re-check.",
+            "command": f"lms load {config.MODEL} --context-length 64000 -y",
             "hard": True,
         })
 
     # --- Vault ---------------------------------------------------------------
     vault_ok, vault_detail = _vault_writable()
     checks.append({
-        "name": "Vault writable",
+        "key": "records_folder",
+        "name": "Your records folder",
         "ok": vault_ok,
-        "detail": vault_detail,
-        "fix": "" if vault_ok else "Set DEBRIEF_VAULT_DIR to a writable folder.",
+        "detail": vault_detail if vault_ok else "Debrief cannot save to this folder.",
+        "fix": "" if vault_ok else (
+            "Choose a folder Debrief is allowed to write to, or set "
+            "DEBRIEF_VAULT_DIR to one before opening Debrief."
+        ),
         "hard": True,
     })
 
     # --- ffmpeg (audio transcode) --------------------------------------------
     ffmpeg = shutil.which("ffmpeg")
     checks.append({
-        "name": "ffmpeg on PATH",
+        "key": "audio_tools",
+        "name": "Audio tools",
         "ok": ffmpeg is not None,
-        "detail": ffmpeg or "ffmpeg not found",
-        "fix": "" if ffmpeg else "brew install ffmpeg",
+        "detail": "Installed." if ffmpeg else (
+            "Not installed yet. Debrief needs this to read your microphone."
+        ),
+        "fix": "" if ffmpeg else "Paste this into Terminal, then Re-check.",
+        "command": "" if ffmpeg else "brew install ffmpeg",
         "hard": True,
     })
 
@@ -131,53 +141,62 @@ def run_checks() -> list[dict]:
     module = _STT_MODULE.get(selected, "parakeet_mlx")
     label = _STT_LABEL.get(selected, selected)
     stt_ok = _importable(module)
+    pretty = "Parakeet" if selected == "parakeet" else "MLX Whisper"
+    stt_command = ""
     if stt_ok:
-        detail = f"{module} importable (selected engine: {label})"
+        detail = "Ready."
         try:
             cached = stt.is_engine_model_cached(selected)
         except Exception:  # noqa: BLE001
             cached = True
         if not cached:
-            size = "about 1.6 GB for whisper" if selected == "mlx-whisper" else "the model"
-            detail += f"; first transcription downloads {size}, allow a minute"
+            size = "about 1.6 GB" if selected == "mlx-whisper" else "a few hundred MB"
+            detail = f"Ready. The first transcription downloads {size}, so allow a minute."
         stt_fix = ""
     else:
-        detail = f"{module} not importable (selected engine: {label})"
-        stt_fix = "uv sync (the STT engines install on Apple Silicon)."
+        detail = (
+            "Not installed yet. Debrief cannot turn speech into text until "
+            "this is in place."
+        )
+        stt_fix = "Reinstall Debrief, or paste this into Terminal, then Re-check."
+        stt_command = "uv sync"
     checks.append({
-        "name": f"Speech-to-text ({label})",
+        "key": "transcription",
+        "name": f"Transcription ({pretty})",
         "ok": stt_ok,
         "detail": detail,
         "fix": stt_fix,
+        "command": stt_command,
         "hard": False,
     })
 
     # --- PDF stack (soft) -----------------------------------------------------
     # Reflect real render capability: markdown importable AND WeasyPrint can do a
     # trivial render (import plus native pango/gobject actually loading).
-    pdf_fix = (
-        "uv sync --extra pdf (on macOS also: brew install pango if weasyprint "
-        "fails on native libs)."
+    _PDF_UNAVAILABLE = (
+        "Not set up. Debrief will save a styled page instead, which prints the same."
     )
     if not _importable("markdown"):
-        pdf_ok, pdf_detail = False, "markdown library not importable"
+        pdf_ok, pdf_detail = False, _PDF_UNAVAILABLE
     else:
         try:
             from . import render
 
             pdf_ok = render.pdf_available()
             pdf_detail = (
-                "PDF rendering works (weasyprint + native libs)"
+                "Notes and worksheets can be saved as PDF."
                 if pdf_ok
-                else "weasyprint present but native libs did not render (falling back to HTML)"
+                else _PDF_UNAVAILABLE
             )
-        except Exception as exc:  # noqa: BLE001
-            pdf_ok, pdf_detail = False, f"PDF probe failed: {exc}"
+        except Exception:  # noqa: BLE001
+            pdf_ok, pdf_detail = False, _PDF_UNAVAILABLE
     checks.append({
-        "name": "PDF export (weasyprint + markdown)",
+        "key": "pdf_export",
+        "name": "PDF export",
         "ok": pdf_ok,
         "detail": pdf_detail,
-        "fix": "" if pdf_ok else pdf_fix,
+        "fix": "" if pdf_ok else "Optional. Paste this into Terminal, then Re-check.",
+        "command": "" if pdf_ok else "uv sync --extra pdf",
         "hard": False,
     })
 
@@ -185,11 +204,14 @@ def run_checks() -> list[dict]:
     if platform.system() == "Darwin":
         afconvert = shutil.which("afconvert")
         checks.append({
+            "key": "afconvert",
             "name": "afconvert (macOS)",
             "ok": afconvert is not None,
             "detail": afconvert or "afconvert not found",
             "fix": "" if afconvert else "afconvert ships with macOS; check your PATH.",
             "hard": False,
+            # Plumbing detail: useful in the terminal, noise in the wizard.
+            "cli_only": True,
         })
 
     return checks
