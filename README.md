@@ -23,9 +23,9 @@ After every session, a solo therapist loses 15 to 30 minutes to admin. Debrief t
 3. **Drafts the client email** in Apple Mail with the worksheet attached. Always a draft, never auto-sent.
 4. **Verifies it on screen**: it screenshots Calendar, the note, and Mail, and Gemma 4 vision reads the live screen to confirm each action actually happened.
 
-It also includes a **Clinician Voice Journal**: between sessions, dictate an observation or session-prep thought and it becomes a dated draft in that client's folder. Journal entries never schedule, email, or send anything.
+There is also an **assistant** for everything that is not a session debrief. Ask it out loud for a box breathing worksheet, an email draft, or something from a client's history, and it prepares the work for you to approve. It stages proposals; it never files or sends on its own.
 
-All processing happens locally on your Mac; recordings and notes never leave the device. The demo data is fictional.
+Your recordings, notes, and client records never leave this Mac. The one exception is the optional template importer described under "Make it yours", which asks first and sends only the one template document you choose. The demo data is fictional.
 
 ## Make it yours
 
@@ -44,7 +44,7 @@ The architecture principle is **deterministic hands, model brain, model eyes.**
 
 - **Brain**: Gemma 4 12B (QAT, via LM Studio) makes one JSON-schema-constrained call that extracts the clinical note and the requested actions from the transcript. It is also the editor (a glossary pass fixes clinical-term transcription errors) and the eyes (its vision reads the verification screenshots).
 - **Hands**: actions execute through deterministic code only (atomic file writes, AppleScript). The model never does date math: it copies the spoken time phrase ("next Tuesday at 3") and Python resolves it, with the absolute datetime shown in an approval checklist before anything runs. A dedup guard makes double-booking impossible.
-- **Stack**: FastAPI server + single-file vanilla JS web UI + a plain markdown vault + LM Studio for the model + parakeet-mlx for fully offline speech-to-text on Apple Silicon.
+- **Stack**: FastAPI server + a vanilla JS web UI with no build step + a plain markdown vault + LM Studio for the model + parakeet-mlx or mlx-whisper for fully offline speech-to-text on Apple Silicon.
 
 This split is why a 12B local model is enough to run a reliable agent.
 
