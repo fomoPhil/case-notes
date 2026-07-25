@@ -29,6 +29,7 @@ const App = {
   status: null,            // GET /api/status payload
   setupPerms: null,        // { calendar, mail, screen } permission results
   checkWasFailing: null,   // presentation only: which setup checks failed before the last Re-check
+  activity: null,          // GET /api/activity/recent -> { items, filed_today }
   settings: null,          // GET /api/settings -> settings object (features, etc.)
   settingsPayload: null,   // full GET /api/settings payload (settings, dictionary, professions, formats)
   wizard: null,            // in-progress onboarding choices, POSTed before setup/complete
@@ -158,16 +159,43 @@ async function refreshSettings() {
   App.settings = SETTINGS_DEFAULTS;
 }
 
+// The home screen's activity rail. Best effort: a failure leaves the rail in
+// its empty state rather than blocking the caseload.
+async function refreshActivity() {
+  try {
+    const r = await fetch("/api/activity/recent?limit=6");
+    if (r.ok) App.activity = await r.json();
+  } catch (e) { /* the rail degrades to its empty copy */ }
+}
+
+// Re-read the caseload without disturbing the current screen on failure.
+async function refreshClients() {
+  try {
+    const r = await fetch("/api/clients");
+    if (r.ok) App.clients = await r.json();
+  } catch (e) { /* keep the list we already have */ }
+}
+
+// Home is a live surface: filing a note has to show up in "Filed today" and in
+// the client's session count the moment you land back here.
+async function refreshHome() {
+  await Promise.all([refreshClients(), refreshActivity()]);
+  if (App.state === "clients") render();
+}
+
 async function loadClients() {
-  // Load clients and settings in parallel; settings gate feature UI (e.g. the
-  // assistant sidebar item) so it must be ready before the first render.
+  // Load clients, settings, and recent activity in parallel; settings gate
+  // feature UI (e.g. the assistant sidebar item) so it must be ready before
+  // the first render.
   const settingsReady = refreshSettings();
+  const activityReady = refreshActivity();
   try {
     const r = await fetch("/api/clients");
     if (!r.ok) throw new Error("Could not load clients (" + r.status + ")");
     App.clients = await r.json();
   } catch (e) { App.error = e.message; }
   await settingsReady;
+  await activityReady;
   // First run: if the setup marker is absent and we were opened at the root
   // (not a deep link), show the setup wizard. Deep links are never hijacked.
   if (!location.hash) {
@@ -218,6 +246,7 @@ function go(state) {
   else if (state === "settings") App.nav = "settings";
   else if (!["clientRecord", "document", "library", "trash"].includes(state)) App.nav = "home";
   render();
+  if (state === "clients") refreshHome();
 }
 
 const DISPATCH = {
@@ -236,6 +265,19 @@ const DISPATCH = {
 
 const LOCK_DOT = `<span class="dot"></span>`;
 
+// One icon language for the whole sidebar: 24-grid stroke paths that inherit
+// colour and weight from the row, never colour emoji.
+const IC = {
+  mic: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4"/></svg>`,
+  spark: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l1.6 4.4L18 10l-4.4 1.6L12 16l-1.6-4.4L6 10l4.4-1.6z"/></svg>`,
+  page: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5"/></svg>`,
+  books: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H10a2 2 0 0 1 2 2v13a2 2 0 0 0-2-2H5.5A1.5 1.5 0 0 1 4 15.5z"/><path d="M20 5.5A1.5 1.5 0 0 0 18.5 4H14a2 2 0 0 0-2 2v13a2 2 0 0 1 2-2h4.5a1.5 1.5 0 0 0 1.5-1.5z"/></svg>`,
+  trash: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 7V5h4v2M6 7l1 13h10l1-13"/></svg>`,
+  // Sliders, not a gear: a rimless gear reads as a sun at 18px.
+  sliders: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M19 7h1M4 17h3M13 17h7"/><circle cx="16" cy="7" r="2.6"/><circle cx="10" cy="17" r="2.6"/></svg>`,
+  ready: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.4 12.3l2.6 2.6 4.6-5.4"/></svg>`,
+};
+
 function initials(name) {
   return (name || "?").trim().split(/\s+/).map(w => w[0]).slice(0, 2).join("").toUpperCase();
 }
@@ -252,17 +294,17 @@ function ensureShell() {
           <input type="search" id="globalSearch" placeholder="Search records" autocomplete="off" />
           <div id="searchResults"></div>
         </div>
-        <button class="navitem" id="navNewDebrief"><span class="nav-ic">🎙</span> New debrief</button>
-        <button class="navitem" id="navAssistant"><span class="nav-ic">✦</span> Ask the assistant</button>
+        <button class="navitem" id="navNewDebrief"><span class="nav-ic">${IC.mic}</span> New debrief</button>
+        <button class="navitem" id="navAssistant"><span class="nav-ic">${IC.spark}</span> Ask the assistant</button>
         <div class="nav-sec">Clients</div>
         <div id="navClients"></div>
         <div class="nav-sec">Library</div>
-        <button class="navitem" id="navWorksheets"><span class="nav-ic">📄</span> Worksheets</button>
-        <button class="navitem" id="navReference"><span class="nav-ic">📚</span> Reference</button>
-        <button class="navitem" id="navTrash"><span class="nav-ic">🗑</span> Trash</button>
+        <button class="navitem" id="navWorksheets"><span class="nav-ic">${IC.page}</span> Worksheets</button>
+        <button class="navitem" id="navReference"><span class="nav-ic">${IC.books}</span> Reference</button>
+        <button class="navitem" id="navTrash"><span class="nav-ic">${IC.trash}</span> Trash</button>
         <div class="side-tail">
-          <button class="navitem navitem-setup" id="navSettings"><span class="nav-ic">⚙</span> Settings</button>
-          <button class="navitem navitem-setup" id="navSetup"><span class="nav-ic">✦</span> Setup</button>
+          <button class="navitem navitem-setup" id="navSettings"><span class="nav-ic">${IC.sliders}</span> Settings</button>
+          <button class="navitem navitem-setup" id="navSetup"><span class="nav-ic">${IC.ready}</span> Setup</button>
           <div class="side-foot">${LOCK_DOT} Data secure on this Mac</div>
         </div>
       </aside>
@@ -379,40 +421,177 @@ function render() {
   (DISPATCH[App.state] || renderClients)();
 }
 
+// ---------------------------------------------------------------------------
+// Home: greeting and status, today's calendar, the caseload, activity rail.
+// The screen answers "where am I and what is outstanding" before it offers a
+// list, so the first thing you can click is the person you just saw.
+// ---------------------------------------------------------------------------
+
+const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// The app books and files at one session length everywhere (pipeline default,
+// manual follow-up default). Profiles carry a time, not a duration.
+const DEFAULT_SESSION_MIN = 50;
+const COUNT_WORDS = ["Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine"];
+const MONO_STYLES = ["", "alt", "alt2"];
+
+function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function isoDatePart(value) { return String(value == null ? "" : value).slice(0, 10); }
+
+// Dates and times in the vault are plain local wall-clock strings. Parsing them
+// through Date() would drag a timezone in and slide an appointment a day.
+function fmtShortDate(value) {
+  const m = isoDatePart(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return "";
+  return `${MONTHS_SHORT[+m[2] - 1]} ${+m[3]}`;
+}
+function fmtApptTime(value) {
+  const m = String(value == null ? "" : value).match(/T(\d{2}):(\d{2})/);
+  if (!m) return "";
+  const hh = +m[1];
+  return `${hh % 12 || 12}:${m[2]} ${hh >= 12 ? "PM" : "AM"}`;
+}
+function countWord(n) { return (n >= 0 && n < COUNT_WORDS.length) ? COUNT_WORDS[n] : String(n); }
+function plural(n, word) { return `${word}${n === 1 ? "" : "s"}`; }
+
+function greetingFor(d) {
+  const hh = d.getHours();
+  if (hh < 12) return "Good morning";
+  if (hh < 17) return "Good afternoon";
+  return "Good evening";
+}
+
+// The one line that tells you what is outstanding. Four cases, all real data.
+function homeStatus(todayCount, filedCount) {
+  const onCalendar = `${countWord(todayCount)} ${plural(todayCount, "session")} on today's calendar.`;
+  if (!todayCount && !filedCount) return "No sessions on today's calendar.";
+  if (todayCount && !filedCount) return `${onCalendar} Nothing filed yet.`;
+  if (todayCount && filedCount) return `${onCalendar} ${countWord(filedCount)} filed.`;
+  return `${countWord(filedCount)} ${plural(filedCount, "note")} filed today.`;
+}
+window.homeStatus = homeStatus;
+
 function renderClients() {
-  el.appendChild(h(`<div class="step-title ${ent(1)}">Choose a client to debrief</div>`));
-  const grid = h(`<div class="clients"></div>`);
-  if (!App.clients.length) grid.appendChild(h(`<div class="hint">No clients found in the vault.</div>`));
-  App.clients.forEach((c, i) => {
-    const risk = (c.risk_flags && c.risk_flags.length) ? `<span class="tag-risk">risk history on file</span>` : "";
-    const concerns = (c.presenting_concerns || []).join(", ");
-    const initials = (c.name || "?").trim().split(/\s+/).map(w => w[0]).slice(0, 2).join("").toUpperCase();
-    const card = h(`<button class="client-card ${ent(i + 2)}">
-      <span class="mono">${esc(initials)}</span>
-      <span>
-        <div class="name">${esc(c.name)}</div>
-        <div class="meta">${esc(c.client_id)} &middot; ${esc(c.framework || "")}</div>
-        <div class="concerns">${esc(concerns)}</div>
-        ${risk}
-      </span>
-      <span class="card-arrow" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>
-    </button>`);
-    card.onclick = () => { App.client = c; go("record"); };
-    grid.appendChild(card);
-  });
-  el.appendChild(grid);
+  const clients = App.clients || [];
+  const activity = App.activity || { items: [], filed_today: 0 };
+  const filed = Number(activity.filed_today) || 0;
+  const today = todayISO();
+  const scheduled = clients.filter(c => isoDatePart(c.next_session) === today);
+  const now = new Date();
+  const dateLabel = now.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+
+  const home = h(`<div class="home"></div>`);
+  home.appendChild(h(`<div class="home-hello ${ent(1)}">
+    <div class="home-greet">
+      <h2>${esc(greetingFor(now))}</h2>
+      <div class="home-sub">${esc(homeStatus(scheduled.length, filed))}</div>
+    </div>
+    <div class="home-date">${esc(dateLabel)}</div>
+  </div>`));
+
+  const col = h(`<div class="home-col"></div>`);
+
+  // Today first. Nobody scheduled means no block at all, never an empty one.
+  if (scheduled.length) {
+    const blk = h(`<div class="home-blk ${ent(2)}"><h3>On your calendar today</h3><div class="home-rows"></div></div>`);
+    const rows = blk.querySelector(".home-rows");
+    scheduled.forEach(c => rows.appendChild(buildTodayRow(c, clients.indexOf(c))));
+    col.appendChild(blk);
+  }
+
+  const allBlk = h(`<div class="home-blk ${ent(3)}"><h3>All clients</h3><div class="home-mini"></div></div>`);
+  const mini = allBlk.querySelector(".home-mini");
+  if (!clients.length) mini.appendChild(h(`<div class="home-empty">No clients found in the vault.</div>`));
+  clients.forEach((c, i) => mini.appendChild(buildClientCard(c, i)));
+  col.appendChild(allBlk);
 
   if (assistantEnabled()) {
-    const asstRow = h(`<div class="asst-entry ${ent(5)}">
-      <button class="btn btn-ghost btn-asst" id="asstEntry">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3a4 4 0 0 0-4 4v4a4 4 0 0 0 8 0V7a4 4 0 0 0-4-4z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
-        Ask the assistant
+    const askBlk = h(`<div class="home-blk ${ent(4)}">
+      <button class="home-ask" id="asstEntry">
+        <span class="home-ask-ic">${IC.spark}</span>
+        <span class="home-ask-body">
+          <span class="home-ask-lab">Ask the assistant</span>
+          <span class="home-ask-hint">Make a worksheet, draft an email, or look something up</span>
+        </span>
       </button>
-      <span class="asst-hint">Make a worksheet, draft an email, or look something up</span>
     </div>`);
-    asstRow.querySelector("#asstEntry").onclick = () => { App.assistant = null; go("assistant"); };
-    el.appendChild(asstRow);
+    askBlk.querySelector("#asstEntry").onclick = () => { App.assistant = null; go("assistant"); };
+    col.appendChild(askBlk);
   }
+
+  home.appendChild(col);
+  home.appendChild(buildActivityRail(activity.items || [], filed));
+  el.appendChild(home);
+}
+
+function buildTodayRow(c, idx) {
+  const bits = [];
+  if (c.framework) bits.push(esc(c.framework));
+  const concerns = (c.presenting_concerns || []).join(", ");
+  if (concerns) bits.push(esc(concerns));
+  const seen = fmtShortDate(c.last_session);
+  if (seen) bits.push("last seen " + esc(seen));
+  const risk = (c.risk_flags && c.risk_flags.length)
+    ? `<span class="home-flag">Risk history</span>` : "";
+  const row = h(`<button class="home-row">
+    <span class="hmono ${MONO_STYLES[idx % 3]}">${esc(initials(c.name))}</span>
+    <span class="hr-who">
+      <span class="hr-name">${esc(c.name)}${risk}</span>
+      <span class="hr-meta">${bits.join(" &middot; ")}</span>
+    </span>
+    <span class="hr-when">
+      <span class="hr-t">${esc(fmtApptTime(c.next_session))}</span>
+      <span class="hr-l">${DEFAULT_SESSION_MIN} min</span>
+    </span>
+    <span class="hr-go" aria-hidden="true">Debrief &rsaquo;</span>
+  </button>`);
+  row.onclick = () => { App.client = c; go("record"); };
+  return row;
+}
+
+function buildClientCard(c, idx) {
+  const n = Number(c.session_count) || 0;
+  const bits = [];
+  if (c.framework) bits.push(esc(c.framework));
+  bits.push(`${n} ${plural(n, "session")}`);
+  const card = h(`<button class="home-mc">
+    <span class="hmono ${MONO_STYLES[idx % 3]}">${esc(initials(c.name))}</span>
+    <span class="hmc-body">
+      <span class="hr-name">${esc(c.name)}</span>
+      <span class="hmc-meta">${bits.join(" &middot; ")}</span>
+    </span>
+  </button>`);
+  card.onclick = () => { App.client = c; go("record"); };
+  return card;
+}
+
+function buildActivityRail(items, filed) {
+  const rail = h(`<aside class="home-rail ${ent(4)}"></aside>`);
+
+  const filedCard = h(`<div class="rail-card"><h4>Filed today</h4></div>`);
+  filedCard.appendChild(filed
+    ? h(`<div class="rail-count">${esc(countWord(filed))} ${plural(filed, "note")} filed today.</div>`)
+    : h(`<div class="rail-empty">Nothing yet. After a session, pick a client above and talk for a minute.</div>`));
+  rail.appendChild(filedCard);
+
+  const recentCard = h(`<div class="rail-card"><h4>Recently</h4></div>`);
+  if (!items.length) {
+    recentCard.appendChild(h(`<div class="rail-empty">Nothing filed yet. Notes you file will appear here.</div>`));
+  } else {
+    const feed = h(`<div class="rail-feed"></div>`);
+    items.forEach(it => feed.appendChild(h(`<div class="rail-item">
+      <span class="rail-tick" aria-hidden="true">${CHECK_SVG}</span>
+      <span class="rail-body">
+        <span class="rail-txt"><b>${esc(it.client_name)}</b>, ${esc(it.title)} filed</span>
+        <span class="rail-when">${esc(fmtShortDate(it.date))}</span>
+      </span>
+    </div>`)));
+    recentCard.appendChild(feed);
+  }
+  rail.appendChild(recentCard);
+  return rail;
 }
 
 function renderRecord() {

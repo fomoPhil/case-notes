@@ -179,78 +179,284 @@
     padding: 22px 24px;
   }
 
-  .clients {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 14px;
-  }
-  @media (max-width: 560px) { .clients { grid-template-columns: 1fr; } }
+  /* ========================================================================
+     Home screen. Two columns: the caseload and a live activity rail. The page
+     opens by telling you what is outstanding, then leads with today.
+     ======================================================================== */
 
-  .client-card {
-    position: relative;
+  .home {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 296px;
+    gap: 26px;
+    align-items: start;
+    /* Past this the rows would stretch a name and its appointment time to
+       opposite ends of a 27 inch display. The measure stays put instead. */
+    max-width: 1080px;
+    margin: 0 auto;
+  }
+
+  .home-hello {
+    grid-column: 1 / -1;
     display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 8px 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--divider);
+  }
+  .home-greet { min-width: 0; }
+  .home-hello h2 {
+    font-family: var(--font-serif);
+    font-size: 27px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .home-sub { font-size: 14.5px; color: var(--ink-soft); margin-top: 3px; text-wrap: pretty; }
+  .home-date {
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    padding-bottom: 3px;
+  }
+
+  .home-col { min-width: 0; }
+  .home-blk { margin-top: 22px; }
+  .home-blk:first-child { margin-top: 0; }
+  .home-blk h3 {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 10px;
+  }
+  .home-empty { grid-column: 1 / -1; font-size: 13.5px; color: var(--ink-faint); text-wrap: pretty; }
+
+  /* Monograms match the sidebar's, so a client keeps one colour everywhere. */
+  .hmono {
+    border-radius: 50%;
+    background: var(--soft-sage);
+    color: #fff;
+    font-family: var(--font-sans);
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+  }
+  .hmono.alt { background: var(--accent); }
+  .hmono.alt2 { background: #b99a7b; }
+
+  /* ---- today's calendar rows ---- */
+  .home-rows { display: flex; flex-direction: column; gap: 8px; }
+  .home-row {
+    width: 100%;
+    display: flex;
+    align-items: center;
     gap: 13px;
-    align-items: flex-start;
     text-align: left;
-    background: rgba(255,255,255,0.92);
-    border: none;
-    border-radius: 16px;
-    padding: 16px 16px 15px;
-    cursor: pointer;
     font: inherit;
     color: inherit;
-    box-shadow: var(--card-ring), 0 1px 2px rgba(43,46,42,0.05), 0 6px 18px rgba(43,46,42,0.05);
+    background: var(--panel);
+    border: none;
+    border-radius: var(--radius);
+    box-shadow: var(--card-ring), var(--shadow-sm);
+    padding: 13px 15px;
+    cursor: pointer;
     transition-property: box-shadow, transform, scale;
-    transition-duration: 200ms;
+    transition-duration: 180ms;
     transition-timing-function: var(--ease);
   }
-  .client-card:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 0 0 1px rgba(95,122,97,0.25), 0 2px 6px rgba(43,46,42,0.06), 0 14px 34px rgba(43,46,42,0.10);
+  .home-row:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 0 0 1px rgba(95,122,97,0.25), 0 2px 6px rgba(43,46,42,0.06), 0 10px 22px rgba(43,46,42,0.09);
   }
-  .client-card:focus-visible {
-    box-shadow: var(--ring), 0 1px 2px rgba(43,46,42,0.05), 0 6px 18px rgba(43,46,42,0.05);
-  }
-  .client-card:hover .card-arrow { opacity: 1; transform: none; }
-  .client-card:active { transform: translateY(-2px); scale: 0.96; }
-  .client-card .mono {
-    flex: none;
-    width: 42px;
-    height: 42px;
-    border-radius: 13px;
-    background: linear-gradient(150deg, #dfe8db, #c6d5c0);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.7), inset 0 -1px 2px rgba(95,122,97,0.15);
-    display: grid;
-    place-items: center;
+  .home-row:focus-visible { box-shadow: var(--ring), var(--shadow-sm); }
+  .home-row:active { scale: 0.995; }
+  .home-row .hmono { width: 38px; height: 38px; font-size: 13px; }
+  .hr-who { flex: 1; min-width: 0; }
+  .hr-name {
+    display: block;
     font-family: var(--font-serif);
+    font-size: 17.5px;
     font-weight: 600;
-    font-size: 16px;
-    color: var(--accent-ink);
+    line-height: 1.25;
+    letter-spacing: -0.005em;
   }
-  .client-card .name { font-family: var(--font-serif); font-weight: 600; font-size: 17.5px; letter-spacing: -0.005em; text-wrap: balance; }
-  .client-card .meta { font-size: 12px; color: var(--ink-faint); margin-top: 2px; letter-spacing: 0.02em; }
-  .client-card .concerns { font-size: 12.5px; color: var(--ink-soft); margin-top: 7px; text-wrap: pretty; }
-  .card-arrow {
-    position: absolute;
-    right: 14px;
-    top: 16px;
-    color: var(--accent-ink);
+  .hr-meta {
+    display: block;
+    font-size: 13px;
+    color: var(--ink-soft);
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .hr-when { flex: none; text-align: right; }
+  .hr-t { display: block; font-size: 14px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .hr-l { display: block; font-size: 11.5px; color: var(--ink-faint); margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .hr-go {
+    flex: none;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent);
+    white-space: nowrap;
     opacity: 0;
-    transform: translateX(-4px);
-    transition-property: opacity, transform;
-    transition-duration: 200ms;
+    transition-property: opacity;
+    transition-duration: 150ms;
     transition-timing-function: var(--ease);
   }
-  .tag-risk {
+  .home-row:hover .hr-go, .home-row:focus-visible .hr-go { opacity: 1; }
+  .home-flag {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    margin-top: 9px;
+    font-family: var(--font-sans);
     font-size: 11px;
-    font-weight: 600;
+    font-weight: 700;
     color: var(--amber);
+    background: var(--amber-soft);
+    padding: 2px 8px;
+    border-radius: 999px;
+    margin-left: 8px;
+    vertical-align: middle;
   }
-  .tag-risk::before { content: ""; width: 6px; height: 6px; border-radius: 999px; background: var(--amber-line); }
+
+  /* ---- the rest of the caseload ---- */
+  .home-mini { display: grid; grid-template-columns: repeat(auto-fill, minmax(228px, 1fr)); gap: 8px; }
+  .home-mc {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    background: var(--panel);
+    border: none;
+    border-radius: var(--radius);
+    box-shadow: var(--card-ring), var(--shadow-sm);
+    padding: 11px 13px;
+    cursor: pointer;
+    transition-property: box-shadow, transform, scale;
+    transition-duration: 180ms;
+    transition-timing-function: var(--ease);
+  }
+  .home-mc:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 0 0 1px rgba(95,122,97,0.25), 0 2px 6px rgba(43,46,42,0.06), 0 10px 22px rgba(43,46,42,0.09);
+  }
+  .home-mc:focus-visible { box-shadow: var(--ring), var(--shadow-sm); }
+  .home-mc:active { scale: 0.99; }
+  .home-mc .hmono { width: 32px; height: 32px; font-size: 12px; }
+  .home-mc .hr-name { font-size: 16px; }
+  .hmc-body { min-width: 0; }
+  .hmc-meta {
+    display: block;
+    font-size: 12.5px;
+    color: var(--ink-faint);
+    margin-top: 1px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ---- assistant invitation ---- */
+  .home-ask {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    background: transparent;
+    border: 1px dashed rgba(95,122,97,0.35);
+    border-radius: var(--radius);
+    padding: 13px 15px;
+    cursor: pointer;
+    transition-property: background, border-color, scale;
+    transition-duration: 160ms;
+    transition-timing-function: var(--ease);
+  }
+  .home-ask:hover { background: rgba(168,188,161,0.12); border-color: rgba(95,122,97,0.55); }
+  .home-ask:active { scale: 0.995; }
+  .home-ask-ic { display: flex; flex: none; color: var(--accent); }
+  .home-ask-ic svg {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .home-ask-body { min-width: 0; }
+  .home-ask-lab { display: block; font-size: 14px; font-weight: 600; color: var(--accent); }
+  .home-ask-hint { display: block; font-size: 12.5px; color: var(--ink-faint); margin-top: 1px; text-wrap: pretty; }
+
+  /* ---- activity rail ---- */
+  .home-rail {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-width: 0;
+    position: sticky;
+    top: 18px;
+  }
+  .rail-card {
+    background: var(--panel);
+    border-radius: var(--radius);
+    box-shadow: var(--card-ring), var(--shadow-sm);
+    padding: 16px;
+  }
+  .rail-card h4 {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 11px;
+  }
+  .rail-count { font-size: 13.5px; color: var(--ink); text-wrap: pretty; }
+  .rail-empty { font-size: 13px; color: var(--ink-faint); line-height: 1.5; text-wrap: pretty; }
+  .rail-feed { display: flex; flex-direction: column; gap: 11px; }
+  .rail-item { display: flex; align-items: flex-start; gap: 10px; }
+  .rail-tick {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: rgba(95,122,97,0.14);
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    margin-top: 2px;
+  }
+  .rail-tick svg { width: 9px; height: 9px; }
+  .rail-body { min-width: 0; }
+  .rail-txt { display: block; font-size: 13.2px; line-height: 1.45; color: var(--ink-soft); text-wrap: pretty; }
+  .rail-txt b { color: var(--ink); font-weight: 600; }
+  .rail-when { display: block; font-size: 11.5px; color: var(--ink-faint); margin-top: 1px; font-variant-numeric: tabular-nums; }
+
+  /* The rail stacks under the caseload rather than squeezing it, and lies down
+     as a row of cards so it does not become a column of wide empty boxes. */
+  @media (max-width: 1150px) {
+    .home { grid-template-columns: minmax(0, 1fr); }
+    .home-rail {
+      position: static;
+      flex-direction: row;
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+    .home-rail > .rail-card { flex: 1 1 250px; }
+  }
 
   .record-stage {
     display: flex;
@@ -609,11 +815,7 @@
   .actions-bar { display: flex; align-items: center; gap: 12px; margin-top: 26px; }
   .actions-bar .grow { flex: 1; }
 
-  /* Assistant entry point + cards */
-  .asst-entry { display: flex; align-items: center; gap: 12px; margin-top: 22px; flex-wrap: wrap; }
-  .btn-asst { border: 1px dashed var(--line); border-radius: var(--radius); padding: 11px 16px; }
-  .btn-asst:hover { border-color: var(--soft-sage); background: var(--accent-soft); color: var(--accent-ink); }
-  .asst-hint { font-size: 12.5px; color: var(--ink-faint); text-wrap: pretty; }
+  /* Assistant cards (the home screen's own invitation lives with .home-*) */
   .asst-card { display: flex; flex-direction: column; gap: 14px; }
   .asst-lead { font-size: 14px; color: var(--ink-soft); text-wrap: pretty; }
   .asst-textarea {
@@ -706,7 +908,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .rec-btn, .rec-wrap.recording .ring, .enter, .setup-check.changed, .modal-backdrop, .modal, .import-body.stage-in { animation: none !important; }
-    .client-card, .client-card:hover { transform: none; }
+    .home-row, .home-row:hover, .home-mc, .home-mc:hover { transform: none; }
   }
 
 /* ==========================================================================
@@ -823,7 +1025,18 @@
 .navitem:hover { background: rgba(168, 188, 161, 0.18); }
 .navitem:active { scale: 0.98; }
 .navitem.on { background: rgba(95, 122, 97, 0.13); color: var(--accent-ink); font-weight: 600; }
-.navitem .nav-ic { width: 26px; text-align: center; font-size: 15px; opacity: 0.75; flex: none; }
+/* One stroke-icon language across the rail. The 26px box keeps the label
+   column aligned with the client monograms below it. */
+.navitem .nav-ic { width: 26px; display: flex; align-items: center; justify-content: center; opacity: 0.75; flex: none; }
+.navitem .nav-ic svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .navitem .mono {
   width: 26px; height: 26px; border-radius: 50%;
   background: var(--soft-sage); color: #fff; font-size: 11.5px; font-weight: 700;
