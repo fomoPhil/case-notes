@@ -428,3 +428,113 @@ def test_activity_recent_stays_inside_the_vault(client, tmp_path):
     body = tc.get("/api/activity/recent").json()
     assert all(i["title"] != "Session 99" for i in body["items"])
     assert all(i["date"] != "2026-12-31" for i in body["items"])
+
+
+# ---------------------------------------------------------------------------
+# POST /api/clients: adding a real client
+# ---------------------------------------------------------------------------
+
+
+def test_create_client_returns_the_slim_shape(client):
+    tc, vault_dir = client
+    resp = tc.post(
+        "/api/clients",
+        json={
+            "name": "Alex Rivera",
+            "email": "alex@example.com",
+            "framework": "CBT",
+            "presenting_concerns": "workplace stress, low mood",
+        },
+    )
+    assert resp.status_code == 201
+    created = resp.json()
+    listed = tc.get("/api/clients").json()
+    # Exactly the shape /api/clients returns, so the UI can append it in place.
+    assert set(created) == set(listed[0])
+    assert created == {
+        "client_id": "C-0004",
+        "name": "Alex Rivera",
+        "framework": "CBT",
+        "presenting_concerns": ["workplace stress", "low mood"],
+        "risk_flags": [],
+        "next_session": None,
+        "last_session": None,
+        "session_count": 0,
+        "sample": False,
+    }
+    assert (vault_dir / "Clients" / "C-0004" / "_Profile.md").is_file()
+
+
+def test_created_client_appears_in_the_listing(client):
+    tc, _ = client
+    tc.post("/api/clients", json={"name": "Alex Rivera"})
+    body = tc.get("/api/clients").json()
+    assert [c["client_id"] for c in body] == ["C-0001", "C-0002", "C-0003", "C-0004"]
+    alex = body[-1]
+    assert alex["name"] == "Alex Rivera"
+    assert alex["sample"] is False
+
+
+def test_created_client_detail_is_readable(client):
+    tc, _ = client
+    tc.post("/api/clients", json={"name": "Alex Rivera", "framework": "ACT"})
+    detail = tc.get("/api/clients/C-0004")
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["profile"]["name"] == "Alex Rivera"
+    assert body["sessions"] == []
+    assert body["next_session"] is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"name": ""},
+        {"name": "   "},
+        {"name": "A" * 200},
+        {"name": "Alex Rivera", "email": "not-an-email"},
+        {"name": "Alex Rivera", "presenting_concerns": 42},
+    ],
+)
+def test_create_client_validation_failures_are_400(client, payload):
+    tc, vault_dir = client
+    resp = tc.post("/api/clients", json=payload)
+    assert resp.status_code == 400
+    # A plain, already-readable sentence, not a stack trace.
+    assert isinstance(resp.json()["detail"], str)
+    assert "Traceback" not in resp.json()["detail"]
+    assert not (vault_dir / "Clients" / "C-0004").exists()
+
+
+def test_create_client_rejects_a_non_object_body(client):
+    tc, _ = client
+    assert tc.post("/api/clients", json=["Alex"]).status_code == 400
+
+
+def test_clients_payload_flags_the_seeded_samples(client):
+    tc, _ = client
+    body = tc.get("/api/clients").json()
+    assert all(c["sample"] is True for c in body)
+    tc.post("/api/clients", json={"name": "Alex Rivera"})
+    after = {c["client_id"]: c["sample"] for c in tc.get("/api/clients").json()}
+    assert after == {
+        "C-0001": True,
+        "C-0002": True,
+        "C-0003": True,
+        "C-0004": False,
+    }
+
+
+def test_upload_rejection_explains_heic(client):
+    tc, _ = client
+    resp = tc.post(
+        "/api/documents/upload",
+        data={"client_id": "C-0001"},
+        files={"file": ("consent.heic", b"ftypheic", "image/heic")},
+    )
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "HEIC" in detail and "Most Compatible" in detail
+    assert "PDF, PNG, JPG, DOCX, and Markdown" in detail
+    assert "not allowed" not in detail

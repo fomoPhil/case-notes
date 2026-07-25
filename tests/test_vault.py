@@ -292,3 +292,197 @@ def test_obsidian_uri_format(vault, monkeypatch):
     assert uri.startswith("obsidian://open?vault=")
     assert "C-0001" in uri
     assert ".md" not in uri, "file param should drop the extension"
+
+
+# ---------------------------------------------------------------------------
+# Seeded sample clients: labelled, and scheduled relative to the seeding date
+# ---------------------------------------------------------------------------
+
+
+def test_seeded_clients_are_marked_as_samples(vault):
+    for client in vault.list_clients():
+        assert client["sample"] is True, f"{client['client_id']} should be a sample"
+
+
+def test_seeded_next_sessions_are_in_the_future(vault):
+    today = dt.date.today()
+    for client in vault.list_clients():
+        raw = str(client["next_session"])
+        booked = dt.datetime.fromisoformat(raw)
+        assert booked.date() > today, (
+            f"{client['client_id']} advertises a next session on {raw}, "
+            "which is not in the future"
+        )
+
+
+def test_seeded_next_sessions_keep_their_times_of_day(vault):
+    today = dt.date.today()
+    by_id = {c["client_id"]: c for c in vault.list_clients()}
+    expected = {
+        "C-0001": (3, dt.time(15, 0)),
+        "C-0002": (4, dt.time(14, 0)),
+        "C-0003": (5, dt.time(16, 0)),
+    }
+    for cid, (offset, time_of_day) in expected.items():
+        booked = dt.datetime.fromisoformat(str(by_id[cid]["next_session"]))
+        assert booked == dt.datetime.combine(today + dt.timedelta(days=offset), time_of_day)
+
+
+def test_seeded_last_sessions_are_in_the_past(vault):
+    today = dt.date.today()
+    for client in vault.list_clients():
+        last = client["last_session"]
+        assert isinstance(last, dt.date), "last_session should parse as a date"
+        assert last < today, f"{client['client_id']} last session {last} is not in the past"
+
+
+def test_seeded_risk_flag_matches_the_relative_last_session(vault):
+    bob = next(c for c in vault.list_clients() if c["client_id"] == "C-0001")
+    assert bob["risk_flags"] == [f"SI-passive-{bob['last_session'].isoformat()}"]
+    # The prose summary quotes the same assessment date, so the record stays
+    # internally consistent rather than citing a hardcoded July date.
+    ctx = vault.client_context("C-0001")
+    assert f"assessed {bob['last_session'].isoformat()}" in ctx["summary"]
+
+
+def test_seeded_session_notes_match_the_relative_last_session(vault):
+    maya = next(c for c in vault.list_clients() if c["client_id"] == "C-0003")
+    sessions = vault.VAULT_DIR / "Clients" / "C-0003" / "Sessions"
+    stems = sorted(p.stem for p in sessions.glob("*.md"))
+    assert len(stems) == 2
+    assert stems[-1] == f"{maya['last_session'].isoformat()}-session"
+
+
+# ---------------------------------------------------------------------------
+# create_client
+# ---------------------------------------------------------------------------
+
+
+def test_create_client_writes_a_full_record(vault):
+    created = vault.create_client(
+        "  Alex   Rivera  ",
+        email="alex@example.com",
+        framework="CBT",
+        presenting_concerns=["workplace stress", "low mood"],
+    )
+    assert created["client_id"] == "C-0004"
+    # Whitespace is collapsed, not just stripped.
+    assert created["name"] == "Alex Rivera"
+
+    client_dir = vault.VAULT_DIR / "Clients" / "C-0004"
+    assert (client_dir / "Sessions").is_dir()
+    assert (client_dir / "Treatment-Plan.md").is_file()
+    fm = _read_frontmatter(client_dir / "_Profile.md")
+    assert fm["type"] == "client-profile"
+    assert fm["email"] == "alex@example.com"
+    assert fm["framework"] == "CBT"
+    assert fm["presenting_concerns"] == ["workplace stress", "low mood"]
+    assert fm["status"] == "active"
+    assert fm["intake_date"] == dt.date.today()
+    assert fm["last_session"] is None and fm["next_session"] is None
+    assert fm["diagnosis"] == [] and fm["themes"] == [] and fm["risk_flags"] == []
+
+    plan_fm = _read_frontmatter(client_dir / "Treatment-Plan.md")
+    assert plan_fm["type"] == "treatment-plan"
+    assert plan_fm["client_id"] == "C-0004"
+
+
+def test_created_profile_keys_match_the_seeded_ones(vault):
+    """Downstream readers must not have to special-case a hand-added client."""
+    vault.create_client("Alex Rivera")
+    seeded = list(_read_frontmatter(vault.VAULT_DIR / "Clients" / "C-0001" / "_Profile.md"))
+    created = list(_read_frontmatter(vault.VAULT_DIR / "Clients" / "C-0004" / "_Profile.md"))
+    # The seeds carry one extra key: the sample marker.
+    assert seeded == created + ["sample"]
+
+
+def test_created_client_is_not_marked_as_a_sample(vault):
+    vault.create_client("Alex Rivera")
+    by_id = {c["client_id"]: c for c in vault.list_clients()}
+    assert "sample" not in by_id["C-0004"]
+    assert by_id["C-0001"]["sample"] is True
+
+
+def test_created_client_is_readable_by_list_and_context(vault):
+    vault.create_client("Alex Rivera", framework="ACT", presenting_concerns="anxiety")
+    ids = sorted(c["client_id"] for c in vault.list_clients())
+    assert ids == ["C-0001", "C-0002", "C-0003", "C-0004"]
+
+    ctx = vault.client_context("C-0004")
+    assert ctx["name"] == "Alex Rivera"
+    assert ctx["framework"] == "ACT"
+    assert ctx["summary"].startswith("Alex Rivera was added to the caseload on")
+    assert "anxiety" in ctx["summary"]
+    assert ctx["last_session_note"] == ""
+
+
+def test_create_client_id_allocation_skips_gaps(vault):
+    """Ids come from max+1, so deleting an earlier client never causes a clash."""
+    import shutil
+
+    vault.create_client("Alex Rivera")  # C-0004
+    vault.create_client("Sam Patel")  # C-0005
+    shutil.rmtree(vault.VAULT_DIR / "Clients" / "C-0002")
+    shutil.rmtree(vault.VAULT_DIR / "Clients" / "C-0004")
+    created = vault.create_client("Robin Okafor")
+    assert created["client_id"] == "C-0006"
+    assert (vault.VAULT_DIR / "Clients" / "C-0005" / "_Profile.md").is_file()
+
+
+def test_create_client_ignores_non_client_folders(vault):
+    (vault.VAULT_DIR / "Clients" / "Archive").mkdir()
+    (vault.VAULT_DIR / "Clients" / "C-not-a-number").mkdir()
+    assert vault.create_client("Alex Rivera")["client_id"] == "C-0004"
+
+
+def test_create_client_leaves_no_staging_folder_in_clients(vault):
+    vault.create_client("Alex Rivera")
+    names = sorted(p.name for p in (vault.VAULT_DIR / "Clients").iterdir())
+    assert names == ["C-0001", "C-0002", "C-0003", "C-0004"]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"name": ""},
+        {"name": "   "},
+        {"name": None},
+        {"name": "\n\t "},
+        {"name": "A" * (200)},
+        {"name": "Alex Rivera", "email": "not-an-email"},
+        {"name": "Alex Rivera", "email": "alex@example"},
+        {"name": "Alex Rivera", "email": "alex @example.com"},
+        {"name": "Alex Rivera", "framework": "F" * 100},
+        {"name": "Alex Rivera", "presenting_concerns": ["x" * 200]},
+        {"name": "Alex Rivera", "presenting_concerns": [f"c{i}" for i in range(30)]},
+        {"name": "Alex Rivera", "presenting_concerns": 42},
+        {"name": "Alex Rivera", "presenting_concerns": [["nested"]]},
+    ],
+)
+def test_create_client_rejects_bad_input(vault, kwargs):
+    with pytest.raises(vault.ClientInputError):
+        vault.create_client(**kwargs)
+
+
+def test_create_client_rejects_leave_nothing_behind(vault):
+    with pytest.raises(vault.ClientInputError):
+        vault.create_client("")
+    assert sorted(p.name for p in (vault.VAULT_DIR / "Clients").iterdir()) == [
+        "C-0001",
+        "C-0002",
+        "C-0003",
+    ]
+
+
+def test_create_client_optional_fields_default_empty(vault):
+    created = vault.create_client("Alex Rivera")
+    assert created["email"] == ""
+    assert created["framework"] == ""
+    assert created["presenting_concerns"] == []
+
+
+def test_create_client_splits_and_dedupes_a_concerns_string(vault):
+    created = vault.create_client(
+        "Alex Rivera", presenting_concerns=" anxiety , sleep ,, anxiety ,  "
+    )
+    assert created["presenting_concerns"] == ["anxiety", "sleep"]

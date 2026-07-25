@@ -226,6 +226,25 @@ def test_upload_allowlist_rejects_bad_type(records):
         records.save_upload("C-0001", "malware.exe", b"MZ")
 
 
+def test_upload_rejection_message_covers_iphone_photos(records):
+    """HEIC is the iPhone camera default, so this is a likely first attempt."""
+    with pytest.raises(records.VaultPathError) as excinfo:
+        records.save_upload("C-0001", "consent-form.heic", b"ftypheic")
+    message = str(excinfo.value)
+    assert message == records.UPLOAD_REJECTED_MESSAGE
+    assert "PDF, PNG, JPG, DOCX, and Markdown" in message
+    assert "HEIC" in message and "export it as JPG" in message
+    assert "Most Compatible" in message
+    # No developer-speak, and no leaking of the raw extension.
+    assert "file type not allowed" not in message
+    assert ".heic" not in message
+
+
+def test_heic_stays_off_the_allowlist(records):
+    assert ".heic" not in records._UPLOAD_ALLOWLIST
+    assert ".heif" not in records._UPLOAD_ALLOWLIST
+
+
 def test_upload_sanitizes_and_collides(records):
     m1 = records.save_upload("C-0001", "My Weird File!.PDF", b"%PDF a")
     assert m1["path"].endswith("my-weird-file.pdf")

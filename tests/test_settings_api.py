@@ -131,3 +131,100 @@ def test_post_traversal_note_format_400(client):
     )
     assert resp.status_code == 400
     assert tc.get("/api/settings").json()["settings"]["note_format"] == "DAP"
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/settings/formats/{id}
+# ---------------------------------------------------------------------------
+
+
+def _import_format(tc, name="Ward Round", set_active=False):
+    """Save a custom format through the real import endpoint. Returns its id."""
+    resp = tc.post(
+        "/api/settings/import/save",
+        json={
+            "spec": {
+                "id": app_module.formats.slugify_id(name),
+                "name": name,
+                "sections": [{"key": "summary", "heading": "Summary"}],
+            },
+            "set_active": set_active,
+        },
+    )
+    assert resp.status_code == 200
+    return resp.json()["id"]
+
+
+def test_delete_imported_format(client):
+    tc, vault_dir = client
+    fid = _import_format(tc)
+    assert fid in [f["id"] for f in tc.get("/api/settings").json()["formats"]]
+
+    resp = tc.delete(f"/api/settings/formats/{fid}")
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": fid, "active_note_format": "DAP"}
+    assert fid not in [f["id"] for f in tc.get("/api/settings").json()["formats"]]
+    assert not (vault_dir / "_Settings" / "formats" / f"{fid}.json").exists()
+
+
+def test_delete_active_format_falls_back_to_dap(client):
+    tc, _ = client
+    fid = _import_format(tc, set_active=True)
+    assert tc.get("/api/settings").json()["settings"]["note_format"] == fid
+
+    resp = tc.delete(f"/api/settings/formats/{fid}")
+    assert resp.status_code == 200
+    # The response says what the active format became, so the UI can explain it.
+    assert resp.json() == {"deleted": fid, "active_note_format": "DAP"}
+    assert tc.get("/api/settings").json()["settings"]["note_format"] == "DAP"
+
+
+def test_delete_inactive_format_leaves_the_active_one_alone(client):
+    tc, _ = client
+    keeper = _import_format(tc, name="Keeper", set_active=True)
+    doomed = _import_format(tc, name="Doomed")
+    resp = tc.delete(f"/api/settings/formats/{doomed}")
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": doomed, "active_note_format": keeper}
+    assert tc.get("/api/settings").json()["settings"]["note_format"] == keeper
+
+
+@pytest.mark.parametrize("builtin", ["DAP", "SOAP", "GROW", "meeting-memo"])
+def test_delete_refuses_builtin_formats(client, builtin):
+    tc, _ = client
+    resp = tc.delete(f"/api/settings/formats/{builtin}")
+    assert resp.status_code == 400
+    assert "built-in" in resp.json()["detail"]
+    assert builtin in [f["id"] for f in tc.get("/api/settings").json()["formats"]]
+
+
+def test_delete_unknown_format_404s(client):
+    tc, _ = client
+    assert tc.delete("/api/settings/formats/never-existed").status_code == 404
+
+
+@pytest.mark.parametrize("bad_id", ["..", "My%20Format", "settings"])
+def test_delete_rejects_unsafe_ids(client, bad_id):
+    tc, vault_dir = client
+    assert tc.delete(f"/api/settings/formats/{bad_id}").status_code in (404, 405)
+    assert (vault_dir / "_Settings" / "settings.json").is_file()
+
+
+def test_delete_also_removes_the_prompt_layer(client):
+    tc, vault_dir = client
+    resp = tc.post(
+        "/api/settings/import/save",
+        json={
+            "spec": {
+                "id": "layered",
+                "name": "Layered",
+                "sections": [{"key": "summary", "heading": "Summary"}],
+            },
+            "prompt_layer": "House style guidance.",
+        },
+    )
+    assert resp.status_code == 200
+    layer = vault_dir / "_Settings" / "profile" / "layered.prompt.md"
+    assert layer.is_file()
+    assert tc.delete("/api/settings/formats/layered").status_code == 200
+    assert not layer.exists()

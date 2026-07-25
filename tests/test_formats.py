@@ -476,3 +476,123 @@ def test_validate_spec_caps_description_length(store):
     }
     with pytest.raises(formats.InvalidFormatSpec):
         formats.save_custom(spec)
+
+
+# ---------------------------------------------------------------------------
+# Reserved section keys: explain, do not just reject
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "heading,key,field,suggestion",
+    [
+        ("Interventions", "interventions", "interventions", "Approach used"),
+        ("Risk", "risk", "risk", "Safety review"),
+        ("Themes", "themes", "recurring themes", "Topics explored"),
+        ("Client Quotes", "client_quotes", "client quotes", "In their words"),
+    ],
+)
+def test_reserved_key_message_explains_and_names_the_heading(
+    heading, key, field, suggestion
+):
+    """These are among the most common headings in a real clinical template."""
+    with pytest.raises(formats.InvalidFormatSpec) as excinfo:
+        formats._validate_spec(
+            {"id": "custom", "name": "Custom", "sections": [{"heading": heading}]}
+        )
+    message = str(excinfo.value)
+    assert f'"{heading}"' in message, "the offending heading must be named"
+    assert f"already records {field} as a structured field" in message
+    assert "it will still be captured" in message
+    assert suggestion in message
+    # No implementation vocabulary survives.
+    assert "section key" not in message
+    assert "reserved" not in message.lower()
+
+
+def test_reserved_key_message_uses_the_heading_the_user_typed():
+    with pytest.raises(formats.InvalidFormatSpec) as excinfo:
+        formats._validate_spec(
+            {
+                "id": "custom",
+                "name": "Custom",
+                "sections": [{"key": "interventions", "heading": "Interventions Used"}],
+            }
+        )
+    assert '"Interventions Used"' in str(excinfo.value)
+
+
+def test_reserved_key_message_falls_back_to_the_key():
+    """A spec with a bare key and no heading still gets a readable label."""
+    message = formats.reserved_key_message("client_quotes")
+    assert '"Client Quotes"' in message
+
+
+def test_every_reserved_key_has_its_own_copy():
+    for key in formats.RESERVED_KEYS:
+        message = formats.reserved_key_message(key, key.title())
+        assert "something more specific" not in message, f"{key} has no tailored copy"
+
+
+# ---------------------------------------------------------------------------
+# delete_custom
+# ---------------------------------------------------------------------------
+
+
+def _save_spec(fid: str = "my-format") -> dict:
+    return formats.save_custom(
+        {
+            "id": fid,
+            "name": fid.replace("-", " ").title(),
+            "sections": [{"key": "summary", "heading": "Summary"}],
+        }
+    )
+
+
+def test_delete_custom_removes_the_spec_file(store):
+    saved = _save_spec()
+    path = store.formats_dir() / f"{saved['id']}.json"
+    assert path.is_file()
+    assert formats.delete_custom(saved["id"]) == saved["id"]
+    assert not path.exists()
+    assert not formats.is_known(saved["id"])
+    assert saved["id"] not in [f["id"] for f in formats.list_specs()]
+
+
+def test_delete_custom_also_removes_the_prompt_layer(store):
+    saved = _save_spec()
+    store.profile_dir().mkdir(parents=True, exist_ok=True)
+    layer = store.profile_dir() / f"{saved['id']}.prompt.md"
+    layer.write_text("Old guidance.\n", encoding="utf-8")
+    formats.delete_custom(saved["id"])
+    assert not layer.exists(), "a stale layer would attach to a future format"
+
+
+@pytest.mark.parametrize("builtin", ["DAP", "SOAP", "GROW", "meeting-memo"])
+def test_delete_custom_refuses_builtins(store, builtin):
+    with pytest.raises(formats.InvalidFormatSpec):
+        formats.delete_custom(builtin)
+    assert formats.is_known(builtin)
+
+
+def test_delete_custom_unknown_id_raises(store):
+    with pytest.raises(formats.UnknownFormat):
+        formats.delete_custom("never-existed")
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    ["../../etc/passwd", "..", "/etc/passwd", "a/b", "", "   ", "My Format"],
+)
+def test_delete_custom_rejects_unsafe_ids(store, bad_id):
+    with pytest.raises(formats.UnknownFormat):
+        formats.delete_custom(bad_id)
+
+
+def test_delete_custom_cannot_reach_outside_the_formats_dir(store, tmp_path):
+    """A slug-shaped id can only ever resolve inside _Settings/formats."""
+    outsider = store.settings_dir() / "settings.json"
+    assert outsider.is_file()
+    with pytest.raises(formats.UnknownFormat):
+        formats.delete_custom("settings")
+    assert outsider.is_file()

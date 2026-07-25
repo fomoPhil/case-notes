@@ -313,3 +313,94 @@ def test_save_rejects_oversized_prompt_layer(client):
         json={"spec": spec, "prompt_layer": "x" * 50_001},
     )
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# An unreachable model returns {error, fix}, never a raw traceback
+# ---------------------------------------------------------------------------
+
+# The exact string requests raises when LM Studio is not running. The readiness
+# guard runs off a ~10s cache, so this can happen between the check and the call.
+_REFUSED = (
+    "LM Studio request failed: HTTPConnectionPool(host='127.0.0.1', port=1234): "
+    "Max retries exceeded with url: /v1/chat/completions (Caused by "
+    "NewConnectionError('<urllib3.connection.HTTPConnection object at 0x1>: "
+    "Failed to establish a new connection: [Errno 61] Connection refused'))"
+)
+
+
+def _raise_model_unreachable(*_args, **_kwargs):
+    """Fail the way compile_local really fails when LM Studio is not running."""
+    from debrief import llm
+
+    try:
+        raise llm.ModelUnavailable(_REFUSED)
+    except llm.ModelUnavailable as exc:
+        raise compiler.CompilerError(f"local compile failed: {exc}") from exc
+
+
+def test_compile_local_unreachable_model_returns_error_and_fix(client, monkeypatch):
+    tc, _ = client
+    monkeypatch.setattr(app_module.compiler, "compile_local", _raise_model_unreachable)
+    resp = tc.post(
+        "/api/settings/import/compile",
+        json={"doc_text": "some text", "mode": "local"},
+    )
+    assert resp.status_code == 503
+    detail = resp.json()["detail"]
+    # The shape the import modal already understands, not a bare string.
+    assert isinstance(detail, dict)
+    assert set(detail) == {"error", "fix"}
+    assert detail["fix"] == (
+        "Debrief could not reach the local model, so it could not read your "
+        "template. Open LM Studio, load the model, then press Compile again."
+    )
+    # The technical line is still available for a bug report, but it is not the
+    # only thing the user is shown.
+    assert "Connection refused" in detail["error"]
+
+
+def test_compile_local_bad_output_is_still_422(client, monkeypatch):
+    """A model that answered with something unusable is not a connection problem."""
+    tc, _ = client
+
+    def bad_output(doc_text, profession):
+        raise compiler.CompilerError("local compile returned an unexpected shape")
+
+    monkeypatch.setattr(app_module.compiler, "compile_local", bad_output)
+    resp = tc.post(
+        "/api/settings/import/compile",
+        json={"doc_text": "some text", "mode": "local"},
+    )
+    assert resp.status_code == 422
+
+
+def test_preview_unreachable_model_returns_error_and_fix(client, monkeypatch):
+    tc, _ = client
+    monkeypatch.setattr(app_module.compiler, "dry_run", _raise_model_unreachable)
+    resp = tc.post(
+        "/api/settings/import/preview",
+        json={"spec": {"id": "x", "name": "X", "sections": [{"key": "a", "heading": "A"}]}},
+    )
+    assert resp.status_code == 503
+    detail = resp.json()["detail"]
+    assert set(detail) == {"error", "fix"}
+    assert "LM Studio" in detail["fix"]
+
+
+def test_preview_raw_model_unavailable_returns_error_and_fix(client, monkeypatch):
+    """dry_run calls the extractor directly, so ModelUnavailable can surface bare."""
+    from debrief import llm
+
+    tc, _ = client
+
+    def boom(spec, profession):
+        raise llm.ModelUnavailable(_REFUSED)
+
+    monkeypatch.setattr(app_module.compiler, "dry_run", boom)
+    resp = tc.post(
+        "/api/settings/import/preview",
+        json={"spec": {"id": "x", "name": "X", "sections": [{"key": "a", "heading": "A"}]}},
+    )
+    assert resp.status_code == 503
+    assert set(resp.json()["detail"]) == {"error", "fix"}
