@@ -506,6 +506,30 @@
   .record-client { font-family: var(--font-serif); font-size: 17px; color: var(--ink-soft); }
   .record-client b { color: var(--ink); font-weight: 600; }
 
+  /* A recording the server could not process. Offered back before a fresh
+     empty recorder is offered, so a spoken session is never quietly lost. */
+  .retry-card {
+    width: 100%; max-width: 460px;
+    background: var(--panel-2); border-radius: var(--radius);
+    box-shadow: 0 0 0 1px rgba(168,188,161,0.85), var(--lift-1);
+    padding: 16px 18px; text-align: left;
+  }
+  .retry-card h4 { margin: 0; font-family: var(--font-serif); font-size: 17px; font-weight: 600; color: var(--ink); }
+  .retry-card p { margin: 6px 0 0; font-size: 13.5px; line-height: 1.55; color: var(--ink-soft); text-wrap: pretty; }
+  .retry-actions { display: flex; gap: 8px; align-items: center; margin-top: 13px; flex-wrap: wrap; }
+
+  /* The record button, replaced by the reason there is no point pressing it. */
+  .rec-blocked {
+    width: 100%; max-width: 420px;
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
+    background: var(--panel-2); border-radius: var(--radius);
+    box-shadow: 0 0 0 1px rgba(168,188,161,0.85), var(--lift-1);
+    padding: 26px 22px; margin: 10px 0 2px;
+  }
+  .rec-blocked .rb-ic { width: 26px; height: 26px; color: var(--amber); }
+  .rec-blocked .rb-ic svg { width: 100%; height: 100%; }
+  .rec-blocked .rb-text { font-size: 14px; line-height: 1.55; color: var(--ink); text-align: center; text-wrap: pretty; }
+
   .rec-wrap { position: relative; width: 196px; height: 196px; display: grid; place-items: center; margin: -4px 0; }
   .ring { position: absolute; inset: 0; border-radius: 999px; border: 1px solid rgba(95,122,97,0.22); pointer-events: none; }
   .ring.r2 { inset: 22px; border-color: rgba(95,122,97,0.32); }
@@ -901,10 +925,8 @@
     font-size: 13px;
     line-height: 1.55;
     color: var(--ink-soft);
-    margin: 10px 0 0;
-    text-align: right;
-    margin-left: auto;
-    max-width: 58ch;
+    margin: 10px 0 0 auto;
+    max-width: 46ch;
     text-wrap: pretty;
   }
 
@@ -960,7 +982,7 @@
   .verify-card.unconfirmed { box-shadow: var(--ring-amber), var(--lift-1); background: var(--amber-soft); }
   .verify-head { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--accent-ink); }
   .verify-card.unconfirmed .verify-head { color: var(--amber); }
-  .verify-surface { text-transform: capitalize; }
+  .verify-surface { font-weight: 600; }
   .verify-quote { font-size: 13.5px; color: var(--ink); margin-top: 8px; font-style: italic; text-wrap: pretty; }
   .verify-quote::before { content: "\201C"; }
   .verify-quote::after { content: "\201D"; }
@@ -976,7 +998,16 @@
     overflow-wrap: anywhere;
   }
   .banner-error { background: var(--red-soft); color: var(--red); border: none; box-shadow: 0 0 0 1px rgba(179,82,74,0.28), var(--lift-1); }
+  /* Recoverable, not broken. A note that was moved or renamed is a fact about
+     the world, so it gets sage and cream, and red is reserved for real failure. */
+  .banner-notice {
+    background: var(--panel-2); color: var(--ink); border: none;
+    box-shadow: 0 0 0 1px rgba(168,188,161,0.85), var(--lift-1);
+  }
   .banner-sub { margin-top: 5px; font-size: 13px; color: var(--ink-soft); }
+  /* A dead end always carries its own way out. */
+  .dead-end { font-size: 14.5px; line-height: 1.5; }
+  .dead-end-actions { margin-top: 12px; }
 
   /* Server output, folded away. Present for whoever is helping, absent for the
      clinician who just wants to know nothing was filed. */
@@ -1173,6 +1204,22 @@
 /* ---------- main pane ---------- */
 .main-pane { padding: 34px 40px 64px; overflow: auto; min-height: 100vh; }
 .flow-wrap { max-width: 680px; margin: 0 auto; }
+
+/* Model readiness. Persistent and calm: this is a thing to go and fix, not an
+   emergency, so it takes amber over cream and never the error red. */
+.model-strip {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--amber-soft);
+  box-shadow: var(--ring-amber), var(--lift-1);
+  border-radius: var(--radius);
+  padding: 11px 15px;
+  margin: -6px 0 22px;
+}
+.model-strip .ms-ic { flex: none; width: 19px; height: 19px; color: var(--amber); }
+.model-strip .ms-ic svg { width: 100%; height: 100%; }
+.model-strip .ms-text { flex: 1; font-size: 13.5px; line-height: 1.5; color: var(--ink); text-wrap: pretty; }
+.model-strip .ms-btn { flex: none; color: var(--amber); }
+.model-strip .ms-btn:hover { color: var(--amber); background: rgba(228,179,99,0.18); }
 .crumb { font-size: 13px; color: var(--ink-faint); margin-bottom: 16px; text-wrap: pretty; }
 .crumb b { color: var(--ink); font-weight: 600; }
 .crumb .link { cursor: pointer; border-radius: var(--radius-xs); transition-property: color; transition-duration: 150ms; transition-timing-function: var(--ease); }

@@ -33,6 +33,14 @@ const App = {
   settings: null,          // GET /api/settings -> settings object (features, etc.)
   settingsPayload: null,   // full GET /api/settings payload (settings, dictionary, professions, formats)
   wizard: null,            // in-progress onboarding choices, POSTed before setup/complete
+  // A debrief the server could not process. Held so the clinician is offered
+  // the same audio back instead of losing a session they just spoke.
+  lastRecording: null,
+  // Dead-end state for the two screens that fetch one thing and have nothing to
+  // show without it: { missing: bool, err } or null.
+  docError: null,
+  recordError: null,
+  statusTimer: null,       // readiness poll handle
 };
 
 // Mirror of settings_store DEFAULTS: used when /api/settings has not loaded yet
@@ -102,6 +110,9 @@ async function failure(r) {
   const err = httpError(r.status, data);
   const e = new Error(err.text);
   e.debrief = err;
+  // Carried so a screen can tell "the thing is gone" (recoverable, calm) from
+  // "the thing broke" (a real failure that keeps the red).
+  e.status = r.status;
   return e;
 }
 function errOf(e) { return (e && e.debrief) || (e && e.message) || "Something went wrong."; }
@@ -127,6 +138,31 @@ function errorBanner(e) {
   if (err.sub) banner.appendChild(h(`<div class="banner-sub">${esc(err.sub)}</div>`));
   if (err.technical) banner.appendChild(technicalDetails(err.technical));
   return banner;
+}
+
+// A screen that fetched one thing and did not get it has nothing to render. It
+// must say so and offer a way out, never a spinner that turns forever. Gone is
+// a recoverable state and gets the calm notice; a real failure keeps the red.
+function missingText(noun) {
+  return `That ${noun} is no longer here. It may have been renamed, moved, or sent to Trash.`;
+}
+
+function deadEndPanel({ missing, err, noun, backLabel, onBack }) {
+  const panel = h(`<div class="banner ${missing ? "banner-notice" : "banner-error"} dead-end"></div>`);
+  if (missing) {
+    panel.appendChild(h(`<div>${esc(missingText(noun || "note"))}</div>`));
+  } else {
+    const e = toErr(err);
+    panel.appendChild(h(`<div>${esc(e.text)}</div>`));
+    if (e.sub) panel.appendChild(h(`<div class="banner-sub">${esc(e.sub)}</div>`));
+    if (e.technical) panel.appendChild(technicalDetails(e.technical));
+  }
+  const bar = h(`<div class="dead-end-actions"></div>`);
+  const btn = h(`<button class="btn btn-primary btn-compact">${esc(backLabel)}</button>`);
+  btn.onclick = onBack;
+  bar.appendChild(btn);
+  panel.appendChild(bar);
+  return panel;
 }
 
 // Errors that name a pipeline stage: say which part struggled, in plain words.
@@ -288,12 +324,13 @@ async function loadClients() {
   } catch (e) { App.error = errOf(e); }
   await settingsReady;
   await activityReady;
+  // Readiness is fetched on every boot, not only at the root, so the strip and
+  // the record gate are honest on a deep link too.
+  await refreshStatus();
+  startStatusPolling();
   // First run: if the setup marker is absent and we were opened at the root
   // (not a deep link), show the setup wizard. Deep links are never hijacked.
-  if (!location.hash) {
-    await refreshStatus();
-    if (App.status && App.status.first_run) { go("setupWizard"); return; }
-  }
+  if (!location.hash && App.status && App.status.first_run) { go("setupWizard"); return; }
   if (!applyHash()) render();
 }
 
@@ -302,6 +339,51 @@ async function refreshStatus() {
     const r = await fetch("/api/status");
     if (r.ok) App.status = await r.json();
   } catch (e) { /* status is best-effort; the app still works without it */ }
+}
+
+// ---------------------------------------------------------------------------
+// Readiness.
+//
+// Nobody should speak a whole session into an app that already knew the model
+// was unreachable. Readiness is polled on focus and once a minute, and a calm
+// strip says so before the recording, not after it.
+// ---------------------------------------------------------------------------
+
+const MODEL_DOWN_TEXT = "Debrief cannot reach the local model right now, so notes cannot be written yet. Open LM Studio and load the model.";
+const STATUS_POLL_MS = 60000;
+
+// True only once /api/status has actually answered. Unknown is not "down": a
+// slow first fetch must not flash a warning at a perfectly healthy app.
+function modelDown() { return !!(App.status && App.status.ready === false); }
+
+async function pollStatus() {
+  const before = modelDown();
+  await refreshStatus();
+  if (modelDown() !== before) render();
+}
+
+function startStatusPolling() {
+  if (App.statusTimer) return;
+  App.statusTimer = setInterval(pollStatus, STATUS_POLL_MS);
+  window.addEventListener("focus", pollStatus);
+}
+
+// The strip, plus its own [Check again]. Suppressed inside the setup wizard,
+// whose first card is this same check said at length.
+function modelStrip() {
+  if (!modelDown() || App.state === "setupWizard") return null;
+  const strip = h(`<div class="model-strip">
+    <span class="ms-ic" aria-hidden="true">${ALERT_SVG}</span>
+    <span class="ms-text">${esc(MODEL_DOWN_TEXT)}</span>
+    <button class="btn btn-ghost btn-compact ms-btn">Check again</button>
+  </div>`);
+  strip.querySelector(".ms-btn").onclick = async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true; btn.textContent = "Checking...";
+    await refreshStatus();
+    render();
+  };
+  return strip;
 }
 
 // Lightweight deep links so a record, document, or library view is bookmarkable
@@ -328,11 +410,15 @@ window.addEventListener("hashchange", applyHash);
 
 function clearProcTimers() { (App.procTimers || []).forEach(clearTimeout); App.procTimers = []; }
 
-function go(state) {
+// Navigate. Arriving somewhere new clears the banner, EXCEPT when the caller is
+// navigating precisely because something failed: `keepError` carries the reason
+// across the trip so a failed debrief never lands on a clean screen that acts
+// as though nothing happened.
+function go(state, opts) {
   clearProcTimers();
   App.overflowOpen = false;
   App.state = state;
-  App.error = null;
+  if (!(opts && opts.keepError)) App.error = null;
   if (state === "assistant") App.nav = "assistant";
   else if (state === "setupWizard") App.nav = "setup";
   else if (state === "settings") App.nav = "settings";
@@ -501,15 +587,19 @@ function render() {
   enterOn = now < enterUntil;
   const pane = document.getElementById("main-pane");
   pane.innerHTML = "";
+  // Readiness sits above everything: if the model is down, that is the first
+  // thing worth knowing, whatever screen you are on.
+  const strip = modelStrip();
+  if (strip) pane.appendChild(strip);
   if (FLOW_STATES.has(App.state)) {
     el = h(`<div class="flow-wrap"></div>`);
     pane.appendChild(el);
   } else {
     el = pane;
   }
-  if (App.error && (App.state === "clients" || App.state === "record")) {
-    el.appendChild(errorBanner(App.error));
-  }
+  // Unconditional. An allowlist of screens allowed to show an error is an
+  // allowlist of screens that silently swallow one.
+  if (App.error) el.appendChild(errorBanner(App.error));
   (DISPATCH[App.state] || renderClients)();
 }
 
@@ -690,9 +780,15 @@ function renderRecord() {
   App.recMode = "debrief";
   const c = App.client;
   const bars = Array.from({ length: 24 }, () => "<i></i>").join("");
-  const stage = h(`<div class="panel record-stage ${ent(1)}">
-    <button class="backlink">&larr; back to clients</button>
-    <div class="record-client">Debrief for <b>${esc(c.name)}</b> &middot; ${esc(c.framework || "")}</div>
+  const down = modelDown();
+  // The recorder itself, or the reason there is no point pressing it. Recording
+  // into a model that is not there wastes a whole session.
+  const recorder = down ? `
+    <div class="rec-blocked">
+      <span class="rb-ic" aria-hidden="true">${ALERT_SVG}</span>
+      <div class="rb-text">${esc(MODEL_DOWN_TEXT)}</div>
+      <button class="btn btn-ghost btn-compact" id="recCheck">Check again</button>
+    </div>` : `
     <div class="rec-wrap" id="recWrap">
       <div class="ring"></div>
       <div class="ring r2"></div>
@@ -703,7 +799,12 @@ function renderRecord() {
     </div>
     <div class="timer idle" id="timer">00:00</div>
     <div class="wave" id="wave" aria-hidden="true">${bars}</div>
-    <div class="hint" id="recHint">Press to start. Say what happened, when you want to see them next, and anything you want emailed.</div>
+    <div class="hint" id="recHint">Press to start. Say what happened, when you want to see them next, and anything you want emailed.</div>`;
+
+  const stage = h(`<div class="panel record-stage ${ent(1)}">
+    <button class="backlink">&larr; back to clients</button>
+    <div class="record-client">Debrief for <b>${esc(c.name)}</b> &middot; ${esc(c.framework || "")}</div>
+    ${recorder}
     <div class="dictate-guide">
       <div class="dg-title">Worth mentioning</div>
       <ul>
@@ -716,8 +817,33 @@ function renderRecord() {
       <p class="dg-foot">When you stop, Debrief writes a draft and shows it to you. Nothing is filed until you approve it.</p>
     </div>
   </div>`);
-  stage.querySelector(".backlink").onclick = () => { stopStream(); go("clients"); };
-  stage.querySelector("#recBtn").onclick = toggleRecord;
+  stage.querySelector(".backlink").onclick = () => { stopStream(); App.lastRecording = null; go("clients"); };
+  if (down) {
+    stage.querySelector("#recCheck").onclick = async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true; btn.textContent = "Checking...";
+      await refreshStatus();
+      render();
+    };
+  } else {
+    stage.querySelector("#recBtn").onclick = toggleRecord;
+  }
+
+  // A recording the server could not process is still here. Offer it back
+  // before offering a fresh empty recorder.
+  if (App.lastRecording) {
+    const retry = h(`<div class="retry-card">
+      <h4>That note did not save.</h4>
+      <p>Debrief could not finish processing your recording, so nothing was written. Your recording is still here.</p>
+      <div class="retry-actions">
+        <button class="btn btn-primary btn-compact" id="retryRec">Try again</button>
+        <button class="btn btn-ghost btn-compact" id="dropRec">Discard recording</button>
+      </div>
+    </div>`);
+    retry.querySelector("#retryRec").onclick = () => { if (App.lastRecording) processRecording(App.lastRecording); };
+    retry.querySelector("#dropRec").onclick = () => { App.lastRecording = null; App.error = null; render(); };
+    stage.insertBefore(retry, stage.querySelector(".record-client").nextSibling);
+  }
   el.appendChild(stage);
 }
 
@@ -1223,7 +1349,7 @@ async function submitAssistant({ text, blob }) {
     App.assistant = { finalText: data.final_text, proposals: (data.proposals || []).map(p => ({ ...p, include: true })), rawTranscript: data.raw_transcript };
     go("assistantReview");
   } catch (e) {
-    App.error = errOf(e); go("assistant");
+    App.error = errOf(e); go("assistant", { keepError: true });
   }
 }
 
@@ -1306,7 +1432,6 @@ async function executeAssistant() {
     go("assistantResults");
   } catch (e) {
     App.error = errOf(e); App.state = "assistantReview"; render();
-    el.insertBefore(errorBanner(App.error), el.firstChild);
   }
 }
 
@@ -1415,6 +1540,14 @@ async function onRecordingStopped() {
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
   const blob = new Blob(App.chunks, { type: "audio/webm" });
   if (App.recMode === "assistant") { submitAssistant({ blob }); return; }
+  processRecording(blob);
+}
+
+// Post a recording for processing. The blob is held on App.lastRecording for
+// the whole round trip, so a failure can hand the same audio back rather than
+// throwing away a session the clinician has already spoken.
+async function processRecording(blob) {
+  App.lastRecording = blob;
   go("processing");
   const fd = new FormData();
   fd.append("audio", blob, "debrief.webm");
@@ -1423,17 +1556,13 @@ async function onRecordingStopped() {
     const r = await fetch("/api/debrief", { method: "POST", body: fd });
     if (!r.ok) throw await failure(r);
     App.plan = await r.json();
+    App.lastRecording = null;
     go("review");
   } catch (e) {
-    // The recorder is about to reset to empty. Say plainly that the audio is
-    // gone, rather than letting them wonder where it went.
-    const err = toErr(errOf(e));
-    App.error = {
-      text: "Debrief could not process that recording, and the recording was not kept. You will need to record it again. Sorry.",
-      sub: "Nothing was filed and nothing was sent. " + SERVER_ERROR_FIX,
-      technical: err.technical || (err.text === SERVER_ERROR_TEXT ? "" : err.text),
-    };
-    go("record");
+    // The reason travels with them; the audio stays put. renderRecord offers
+    // both back on arrival.
+    App.error = errOf(e);
+    go("record", { keepError: true });
   }
 }
 
@@ -1449,8 +1578,7 @@ async function executePlan() {
     App.result = await r.json();
     go("results");
   } catch (e) {
-    App.state = "review"; render();
-    el.insertBefore(errorBanner(errOf(e)), el.firstChild);
+    App.error = errOf(e); App.state = "review"; render();
   }
 }
 
@@ -1526,7 +1654,9 @@ function sessionCardTitle(s) {
   const fid = s && s.format;
   if (!fid) return t;
   const m = t.match(/^(Session \d+, )?(.+?) note$/);
-  if (m && m[2] === String(fid)) return `${m[1] || ""}${noteLabel(fid)}`;
+  // Titles take the display name as written ("GROW model", "Meeting memo");
+  // only prose adds the word "note" after it.
+  if (m && m[2] === String(fid)) return `${m[1] || ""}${formatDisplayName(fid)}`;
   return t;
 }
 
@@ -1546,12 +1676,13 @@ async function openClient(c) {
   App.state = "clientRecord";
   App.recordData = null;
   App.error = null;
+  App.recordError = null;
   render();
   try {
     const r = await fetch("/api/clients/" + encodeURIComponent(c.client_id));
     if (!r.ok) throw await failure(r);
     App.recordData = await r.json();
-  } catch (e) { App.error = errOf(e); }
+  } catch (e) { App.recordError = { missing: e.status === 404, err: errOf(e) }; }
   if (App.state === "clientRecord") render();
 }
 
@@ -1562,6 +1693,17 @@ function renderClientRecord() {
   el.appendChild(h(`<div class="crumb"><span class="link" id="crHome">Clients</span> / <b>${esc(name)}</b></div>`));
   el.querySelector("#crHome").onclick = () => { App.client = null; go("clients"); };
 
+  // Mutually exclusive: a record that could not be opened is not still opening.
+  if (App.recordError) {
+    el.appendChild(deadEndPanel({
+      missing: App.recordError.missing,
+      err: App.recordError.err,
+      noun: "client record",
+      backLabel: "Back to clients",
+      onBack: () => { App.client = null; App.recordError = null; go("clients"); },
+    }));
+    return;
+  }
   if (!d) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Opening the record...</div></div>`)); return; }
   const pf = d.profile || {};
   const framework = pf.framework || c.framework || "";
@@ -1697,8 +1839,12 @@ function inlineRenameCard(card, doc, d) {
   input.select();
   const commit = async () => {
     const v = input.value.trim();
-    if (v && v !== doc.title) { await renameDocument(doc.path, v); openClient(App.client); }
-    else render();
+    if (v && v !== doc.title) {
+      // Only reload on success: reopening the record would clear the banner
+      // renameDocument just set, and the rename would fail silently.
+      const newPath = await renameDocument(doc.path, v);
+      if (newPath) openClient(App.client); else render();
+    } else render();
   };
   input.onkeydown = (e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") render(); };
   input.onblur = commit;
@@ -1758,12 +1904,13 @@ async function openDocument(path, crumb) {
   App.doc = null;
   App.docCrumb = crumb || null;
   App.error = null;
+  App.docError = null;
   render();
   try {
     const r = await fetch("/api/notes?path=" + encodeURIComponent(path));
     if (!r.ok) throw await failure(r);
     App.doc = await r.json();
-  } catch (e) { App.error = errOf(e); }
+  } catch (e) { App.docError = { missing: e.status === 404, err: errOf(e) }; }
   if (App.state === "document") render();
 }
 
@@ -1776,7 +1923,21 @@ function renderDocument() {
   el.appendChild(bc);
   bc.querySelector("#dcClient").onclick = () => { if (d) openClient(App.client); else go("clients"); };
 
-  if (App.error) el.appendChild(errorBanner(App.error));
+  // Mutually exclusive: a document that could not be opened is not still
+  // opening, and the breadcrumb is not the only way out of it.
+  if (App.docError) {
+    el.appendChild(deadEndPanel({
+      missing: App.docError.missing,
+      err: App.docError.err,
+      noun: "note",
+      backLabel: App.client ? "Back to the record" : "Back to clients",
+      onBack: () => {
+        App.docError = null;
+        if (App.client) openClient(App.client); else go("clients");
+      },
+    }));
+    return;
+  }
   if (!doc) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Opening the document...</div></div>`)); return; }
 
   const fm = doc.frontmatter || {};
@@ -1823,7 +1984,7 @@ function frontTitle(doc) {
   if (fm.title) return String(fm.title);
   if (doc.kind === "session-note") {
     const n = fm.session_number;
-    const label = noteLabel(fm.format || "DAP");
+    const label = formatDisplayName(fm.format || "DAP");
     return n ? `Session ${n}, ${label}` : label;
   }
   return (App.docCrumb && App.docCrumb.title) || "Document";
@@ -1987,7 +2148,9 @@ function renderLibrary() {
   </div>`));
   const libAsk = el.querySelector("#libAsk");
   if (libAsk) libAsk.onclick = () => { App.assistant = null; go("assistant"); };
-  if (App.error) el.appendChild(errorBanner(App.error));
+  // The banner is rendered once, by render(). A screen that failed to load is
+  // not still loading, so the spinner never sits under an error.
+  if (App.error) return;
   if (!lib) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Opening the library...</div></div>`)); return; }
 
   const items = which === "reference" ? (lib.reference || []) : (lib.worksheets || []);
@@ -2043,7 +2206,7 @@ async function openTrash() {
 
 function renderTrash() {
   el.appendChild(h(`<h1 style="font-family:var(--font-serif);font-size:26px;font-weight:600;margin-bottom:16px">Trash</h1>`));
-  if (App.error) el.appendChild(errorBanner(App.error));
+  if (App.error) return;
   if (App.trash === null) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Opening the Trash...</div></div>`)); return; }
   const list = h(`<div class="trash-list"></div>`);
   if (!App.trash.length) list.appendChild(h(`<div class="hint">Trash is empty.</div>`));
@@ -2951,7 +3114,7 @@ function renderSetupStep3() {
       <h2>Mac permissions</h2>
       <button class="setup-skip" id="permSkip">Skip for now</button>
     </div>
-    <p class="setup-note">These are only needed for calendar booking, email drafts, and on-screen verification. Grant them now, or skip and do it later.</p>
+    <p class="setup-note">These are only needed for calendar booking, email drafts, and the on-screen check. Grant them now, or skip and do it later.</p>
   </div>`);
   const rows = h(`<div class="perm-rows"></div>`);
   PERMS.forEach(p => rows.appendChild(buildPermRow(p)));
