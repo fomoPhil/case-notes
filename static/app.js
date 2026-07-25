@@ -517,7 +517,9 @@ function renderSidebarClients() {
   box.innerHTML = "";
   const styles = ["", "alt", "alt2"];
   App.clients.forEach((c, i) => {
-    const item = h(`<button class="navitem"><span class="mono ${styles[i % 3]}">${esc(initials(c.name))}</span> ${esc(c.name)}</button>`);
+    // Clamped to two lines in CSS, with the full name in the tooltip so a long
+    // one is still readable without widening the rail.
+    const item = h(`<button class="navitem" title="${esc(c.name)}"><span class="mono ${styles[i % 3]}">${esc(initials(c.name))}</span><span class="nav-name">${esc(c.name)}</span></button>`);
     item.onclick = () => openClient(c);
     box.appendChild(item);
   });
@@ -1889,7 +1891,15 @@ function renderClientRecord() {
 function renderSessionsTab(d) {
   const sessions = d.sessions || [];
   const card = h(`<div class="rcard"></div>`);
-  if (!sessions.length) card.appendChild(h(`<div class="hint" style="padding:24px">No session notes yet. Use New debrief to record one.</div>`));
+  if (!sessions.length) {
+    const first = firstName((d.profile && d.profile.name) || (App.client && App.client.name) || "");
+    card.appendChild(emptyState({
+      title: "No sessions filed yet",
+      body: `After your next session with ${first}, press record and talk for a minute. Debrief writes the note, you approve it, then it files.`,
+      buttonLabel: "Record a debrief",
+      onClick: () => { App.client = App.client || { client_id: d.client_id, name: (d.profile && d.profile.name) || "" }; go("record"); },
+    }));
+  }
   sessions.forEach(s => {
     const dd = (s.date || "").split("-");
     const day = dd[2] || "";
@@ -1938,6 +1948,15 @@ function renderProfileTab(d) {
 function renderDocumentsTab(d) {
   const docs = d.documents || [];
   const wrap = h(`<div class="docs" style="margin-top:0"></div>`);
+  // Says what belongs here and how it gets here. The add card and the drop
+  // target below stay live either way.
+  if (!docs.length) {
+    wrap.appendChild(emptyState({
+      title: "No documents yet",
+      body: "Intake forms, referral letters, worksheets you have shared. Drag a file here or use the button.",
+      note: "Accepts PDF, PNG, JPG, DOCX, and Markdown.",
+    }));
+  }
   const grid = h(`<div class="docgrid"></div>`);
   docs.forEach(doc => grid.appendChild(buildDocCard(doc, d)));
 
@@ -2345,7 +2364,18 @@ function renderLibrary() {
 
   const items = which === "reference" ? (lib.reference || []) : (lib.worksheets || []);
   const grid = h(`<div class="libgrid"></div>`);
-  if (!items.length) grid.appendChild(h(`<div class="hint">Nothing here yet.</div>`));
+  if (!items.length) {
+    const isRef = which === "reference";
+    grid.appendChild(emptyState({
+      title: isRef ? "No reference material yet" : "No worksheets yet",
+      body: assistantEnabled()
+        ? "Ask the assistant for one by voice, or add your own from a client's Documents tab."
+        : "Add your own from a client's Documents tab.",
+      buttonLabel: assistantEnabled() ? "Ask the assistant" : "",
+      onClick: assistantEnabled() ? () => { App.assistant = null; go("assistant"); } : null,
+      wide: true,
+    }));
+  }
   items.forEach(it => {
     const isAgent = it.agent_made;
     const card = h(`<div class="libcard">
@@ -2399,7 +2429,12 @@ function renderTrash() {
   if (App.error) return;
   if (App.trash === null) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Opening the Trash...</div></div>`)); return; }
   const list = h(`<div class="trash-list"></div>`);
-  if (!App.trash.length) list.appendChild(h(`<div class="hint">Trash is empty.</div>`));
+  if (!App.trash.length) {
+    list.appendChild(emptyState({
+      title: "Trash is empty",
+      body: "Anything you delete waits here for 30 days before it goes.",
+    }));
+  }
   App.trash.forEach(item => {
     const row = h(`<div class="trash-row">
       <div class="t-body"><div class="t-title">${esc(item.title)}</div><div class="t-when">${esc(item.original)} · ${esc((item.trashed_at || "").slice(0, 10))}</div></div>
@@ -2451,7 +2486,12 @@ function renderSearchResults(box, data, query) {
       box.appendChild(item);
     });
   });
-  if (!any) box.appendChild(h(`<div class="search-empty">No matches for "${esc(query)}".</div>`));
+  if (!any) {
+    box.appendChild(h(`<div class="search-empty">
+      <div class="se-title">No matches for &ldquo;${esc(query)}&rdquo;</div>
+      <div class="se-body">Search looks at client names, note text, and your library.</div>
+    </div>`));
+  }
 }
 
 function closeSearch() {

@@ -1195,7 +1195,9 @@
 .search-hit:active { scale: 0.98; }
 .search-hit .sh-title { font-size: 13.5px; font-weight: 600; color: var(--ink); }
 .search-hit .sh-snip { font-size: 12px; color: var(--ink-faint); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.search-empty { padding: 12px 10px; font-size: 13px; color: var(--ink-faint); text-wrap: pretty; }
+.search-empty { padding: 12px 10px; text-wrap: pretty; }
+.search-empty .se-title { font-size: 13px; font-weight: 600; color: var(--ink-soft); }
+.search-empty .se-body { font-size: 12.5px; color: var(--ink-faint); margin-top: 3px; line-height: 1.45; }
 
 .nav-sec { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); padding: 14px 10px 6px; }
 .navitem {
@@ -1220,6 +1222,18 @@
 }
 .navitem:hover { background: rgba(168, 188, 161, 0.18); }
 .navitem:active { scale: 0.98; }
+/* A long client name gets two lines and then an ellipsis, with the full name on
+   hover, rather than pushing the monogram off the rail. */
+.navitem .nav-name {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.28;
+  overflow-wrap: anywhere;
+}
 .navitem.on { background: rgba(95, 122, 97, 0.13); color: var(--accent-ink); font-weight: 600; }
 /* One stroke-icon language across the rail. The 26px box keeps the label
    column aligned with the client monograms below it. */
@@ -1280,8 +1294,26 @@
 }
 .chead h1 { font-family: var(--font-serif); font-size: 28px; font-weight: 600; margin: 0; text-wrap: balance; }
 .chead .c-meta { font-size: 13.5px; color: var(--ink-faint); margin-top: 2px; text-wrap: pretty; }
-.chead .c-next { margin-left: auto; text-align: right; font-size: 13px; color: var(--ink-faint); }
+.chead > div:not(.bigmono) { min-width: 0; }
+/* The appointment block is one short phrase and must never be squeezed into a
+   column narrow enough to break it into four ragged lines. */
+.chead .c-next {
+  margin-left: auto; text-align: right; font-size: 13px; color: var(--ink-faint);
+  flex: none; min-width: 168px; white-space: nowrap;
+}
 .chead .c-next b { display: block; color: var(--accent-ink); font-size: 14.5px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+/* Below this the header cannot hold a name and an appointment side by side, so
+   the appointment moves under the name instead of fighting it for width. */
+@media (max-width: 1100px) {
+  .chead { flex-wrap: wrap; align-items: flex-start; }
+  .chead .c-next {
+    margin-left: 68px; text-align: left; min-width: 0;
+    flex-basis: 100%; margin-top: 10px;
+  }
+}
+@media (max-width: 560px) {
+  .chead .c-next { margin-left: 0; }
+}
 
 .ctabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin: 22px 0 24px; }
 .ctab {
