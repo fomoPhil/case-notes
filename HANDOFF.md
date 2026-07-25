@@ -21,8 +21,8 @@ Test counts: 413 non-live. Live extract, agent, and full pipeline all pass; `eva
 
 The hackathon is over (2nd place, Build with Gemma: JustBuild, Track 2). That build is frozen at the `v0.1-hackathon` tag with a GitHub Release. Everything since is the public open source phase, and it is complete: two full plans shipped (open source release, then launch readiness), plus a design polish pass.
 
-- **HEAD:** `87890ba`. Branch `main`, pushed.
-- **Tests:** 413 non-live passing, 4 deselected (`.venv/bin/pytest -m "not live"`). Live suite passes except one known-stale test (see open items).
+- **Branch:** `main`, pushed. See the overnight section above for the current state.
+- **Tests:** 413 non-live passing, 4 deselected (`.venv/bin/pytest -m "not live"`). The live suite passes in full.
 - **Launch command:** `uv run debrief`, then open http://127.0.0.1:8377. First run downloads Parakeet (a few hundred MB) and opens the setup wizard.
 - **Diagnostics:** `uv run debrief-doctor` prints the same environment checks the wizard shows.
 
@@ -45,9 +45,8 @@ The hackathon is over (2nd place, Build with Gemma: JustBuild, Track 2). That bu
 ## Open items
 
 1. **Phil has not hands-on tested** the records UI, settings, or wizard on his real vault yet. This is the highest-value next step before the launch video.
-2. **Activity log junk:** `DebriefVault/_Activity/2026-07-24.md` has 52 entries, 50 of which are test pollution from the (now fixed) audit path bug. Worth cleaning if the Activity log appears in the video.
-3. **Repo rename undecided:** still `fomoPhil/case-notes` while the product is Debrief. GitHub redirects old URLs if renamed.
-4. **`test_pipeline_live_runs_twice`** is coupled to the real vault's seeded C-0001 (expects an email on file), so it fails against a fresh scratch vault. The pipeline itself is verified working. Fix: have the test seed its own client fixture.
+2. **Repo rename undecided:** still `fomoPhil/case-notes` while the product is Debrief. GitHub redirects old URLs if renamed.
+3. **Phil's vault predates the new seeds.** `ensure_vault` never overwrites, so his Bob, Jane, and Maya keep their old hardcoded July 21 to 23 appointments and carry no `sample` flag. A fresh vault gets relative, always-future dates. Moving `DebriefVault/Clients/` aside gives clean demo data.
 5. **PDF export is an optional extra** (`uv sync --extra pdf`, plus `brew install pango`). Absent, it is a soft doctor warning, not a failure.
 6. **Ollama is detect-only.** The agent runs against LM Studio; Ollama tool-call support was deliberately deferred.
 7. **Packaged Mac app** (signed DMG, embedded model, no terminal) is the next big build if pursued. Business thinking lives in the gitignored `docs/business/`.
