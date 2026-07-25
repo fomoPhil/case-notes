@@ -93,7 +93,10 @@ def verify_on_screen(checks: list[dict]) -> list[dict]:
         result = dict(check)
         if not _capture_and_downscale(_SHOT_PATH):
             result["confirmed"] = False
-            result["what_i_see"] = "Verification error: could not capture the screen."
+            result["what_i_see"] = (
+                f"Debrief could not see the screen this time, so it cannot confirm. "
+                f"Open {app_name} and check it yourself."
+            )
             results.append(result)
             continue
 
@@ -110,10 +113,19 @@ def verify_on_screen(checks: list[dict]) -> list[dict]:
                 result["what_i_see"] = str(answer.get("what_i_see", ""))
             else:
                 result["confirmed"] = False
-                result["what_i_see"] = f"Unexpected model reply: {answer!r}"
-        except Exception as exc:  # keep the demo alive on any model failure
+                result["what_i_see"] = (
+                    f"Debrief could not read the screen clearly, so it cannot "
+                    f"confirm. Open {app_name} and check it yourself."
+                )
+                # Keep the raw reply for debugging without showing it to the user.
+                result["error_detail"] = repr(answer)
+        except Exception as exc:  # keep the run alive on any model failure
             result["confirmed"] = False
-            result["what_i_see"] = f"Verification error: {exc}"
+            result["what_i_see"] = (
+                f"Debrief could not check the screen this time. "
+                f"Open {app_name} and check it yourself."
+            )
+            result["error_detail"] = str(exc)
 
         results.append(result)
 

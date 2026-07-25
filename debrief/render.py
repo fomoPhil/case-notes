@@ -30,8 +30,14 @@ from pathlib import Path
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 _CSS_PATH = _STATIC_DIR / "print" / "quiet-sage.css"
 
-# The doctor's fix text, mirrored here so PdfUnavailable can carry it.
+# What the clinician reads when a PDF cannot be made. The developer command
+# lives in PDF_FIX_COMMAND so the UI can offer it behind a details disclosure
+# instead of putting shell syntax in front of a therapist.
 PDF_FIX = (
+    "PDF export is not set up on this Mac yet. Debrief can still save a styled "
+    "page that prints the same way. Open Setup to finish PDF setup."
+)
+PDF_FIX_COMMAND = (
     "uv sync --extra pdf (on macOS also: brew install pango if weasyprint "
     "fails on native libs)."
 )
@@ -40,11 +46,11 @@ PDF_FIX = (
 class PdfUnavailable(RuntimeError):
     """Raised when a PDF was requested but WeasyPrint cannot render one.
 
-    Carries the doctor's fix text so callers can surface it or fall back to
-    styled HTML.
+    Carries clinician-readable fix text so callers can surface it or fall back
+    to styled HTML. The developer command is available as PDF_FIX_COMMAND.
     """
 
-    def __init__(self, message: str = "PDF rendering is unavailable.", fix: str = PDF_FIX):
+    def __init__(self, message: str = "PDF export is not available.", fix: str = PDF_FIX):
         super().__init__(message)
         self.fix = fix
 
