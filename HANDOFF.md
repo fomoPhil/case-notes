@@ -1,66 +1,62 @@
-# HANDOFF: Debrief (Gemma Hackathon, Track 2)
+# HANDOFF: Debrief
 
-Read this first, then IMPLEMENTATION_PLAN.md. This file is the session-to-session state of the project. Update it whenever meaningful state changes.
+Session-to-session state of the project. Read this first. Update it whenever meaningful state changes.
 
-Status update: the hackathon is over (2nd place). The project is now in its public open source phase per the current plan; the hackathon build is frozen at the v0.1-hackathon tag.
+## Where things stand (2026-07-24)
 
-## Launch readiness (2026-07-24)
+The hackathon is over (2nd place, Build with Gemma: JustBuild, Track 2). That build is frozen at the `v0.1-hackathon` tag with a GitHub Release. Everything since is the public open source phase, and it is complete: two full plans shipped (open source release, then launch readiness), plus a design polish pass.
 
-All build phases (A through H) of the launch-readiness plan are complete and pushed. Phase I (launch checklist) is verified: full non-live suite green (323 passed, including the golden DAP schema test and the vocab byte-parity tests), the live-gated pipeline/extract/actions run against a temp vault, and a fresh-clone `uv sync` + boot from scratch. Shipped since v0.1-hackathon: a persistent `_Settings` store, profession onboarding, selectable note formats (DAP, SOAP, GROW, meeting memo, and custom via template import), two STT engines (Parakeet default, mlx-whisper optional), a personal dictionary, editable pre-file review, feature toggles, and a template-import prompt compiler (local by default, with an optional one-time consented Gemini boost using the user's own key that is never stored or logged).
+- **HEAD:** `87890ba`. Branch `main`, pushed.
+- **Tests:** 320 non-live passing, 4 deselected (`.venv/bin/pytest -m "not live"`). Live suite passes except one known-stale test (see open items).
+- **Launch command:** `uv run debrief`, then open http://127.0.0.1:8377. First run downloads Parakeet (a few hundred MB) and opens the setup wizard.
+- **Diagnostics:** `uv run debrief-doctor` prints the same environment checks the wizard shows.
 
-Open items: the `test_pipeline_live_runs_twice` live test is coupled to the real DebriefVault's seeded C-0001 (it expects an email address on file), so it does not pass unmodified against a fresh scratch vault; the underlying pipeline is verified working. The PDF export path is an optional extra (`uv sync --extra pdf`) and is a non-blocking doctor warning when absent. More profession packs and a one-command install remain.
+## What exists now
 
-## What this project is (3 sentences)
-
-**Debrief** is a clinician-controlled documentation agent for solo therapists, built for the "Build with Gemma: JustBuild" hackathon (July 17-18, 2026, in-person at Pattern, Lehi UT), **Track 2: Voice-to-Action Agents**. The therapist can speak one post-session debrief or use a between-session Voice Journal; the agent creates a review-required draft, can book a follow-up and draft an email only for an approved debrief, then uses Gemma 4 vision to verify the visible result. The demo uses fictional data and local processing; it makes no healthcare-compliance claim.
-
-## Hard deadlines (Saturday July 18)
-
-- **10:00 AM** team registration due
-- **3:00 PM** Kaggle writeup due (mandatory; must link public GitHub repo)
-- **3:00-4:30 PM** live 3-minute demo, in person
-- Repo rule: public repo created AFTER Friday 5:30 PM kickoff only, no prior code
-
-## Current state
-
-| Item | Status |
+| Area | State |
 |---|---|
-| Research (6 parallel briefs: hackathon, Gemma 4, Hermes, voice, Obsidian, clinical) | DONE 2026-07-17 |
-| Track decision | Track 2 (pivoted from Track 1 on 7/17; Track 2 requires screen understanding + real actions; our answer is deterministic actions + vision verification) |
-| Implementation plan | DONE: IMPLEMENTATION_PLAN.md (LLM-ready, full architecture + timeline + demo script) |
-| **SI refusal test (was the #1 risk)** | **PASSED 2026-07-17**: `gemma-4-12b-it-qat`, thinking OFF, produced a quality SOAP note from an SI-containing transcript, no refusal, spontaneously reminded clinician to document risk level. Keep this exact model + settings. |
-| Code | The full Debrief agent: debrief/ package + root app.py server + static/index.html UI + eval/ harness. (An earlier voice-journal MVP in app/ was removed in the open source phase.) |
-| Full agent verification (2026-07-18 early AM) | 54 unit tests green. End-to-end live pipeline (say-synthesized voice -> STT -> extraction -> Calendar + Mail + vault note -> Gemma vision screen verification 3/3 confirmed): passed 2x. Exact HTTP demo path (webm upload -> /api/debrief -> /api/execute): passed 2x. Eval suite: 5/5 transcripts x 8 checks + 10/10 dates PASS. Two real bugs found by eval and fixed (duplicate booking extraction, date serialization crash). |
-| Models | LM Studio serving gemma-4-12b-it-qat on :1234 (reasoning_effort none via API). parakeet-mlx cached. |
-| Vault | DebriefVault/ is its own registered Obsidian vault (separate from personal vaults). |
-| LAUNCH COMMAND | `HF_HUB_OFFLINE=1 .venv/bin/python app.py` then open http://127.0.0.1:8377. Pre-warm with one throwaway debrief before demoing (first request loads parakeet, ~30s). Keep Calendar/Obsidian/Mail windows unobstructed during verification. |
+| Core loop | Voice debrief to filed note, calendar booking, Mail draft, on-screen vision verification |
+| In-app agent | `debrief/agent.py` plus `/api/assistant/*`: local tool-calling loop, stages proposals for approval. The external Hermes harness is retired. |
+| Records UI | Client records, session timeline, documents, library, trash with 30-day retention, global search, PDF export, Reveal in Finder |
+| Editable review | Every note section is click-to-edit before filing; edits are what gets written |
+| Note formats | DAP, SOAP, GROW, meeting memo, plus custom formats derived from an imported sample document |
+| Onboarding | Six-card first-run wizard: model check, vault, profession, note format, feature toggles, Mac permissions |
+| Settings | `_Settings` store in the vault: profession, active format, STT engine, personal dictionary, feature toggles |
+| STT | Parakeet default; mlx-whisper (large-v3-turbo) selectable. Cache-aware offline handling. |
+| Template import | Local Gemma compiler by default; optional one-time consented Gemini boost with the user's own key, never stored or logged |
+| Frontend | `static/index.html` plus `static/app.js` plus `static/style.css`. Vanilla JS, no build step. |
+| Package | `debrief/` has 22 modules; entry points `debrief` and `debrief-doctor` |
+
+## Open items
+
+1. **Phil has not hands-on tested** the records UI, settings, or wizard on his real vault yet. This is the highest-value next step before the launch video.
+2. **Activity log junk:** `DebriefVault/_Activity/2026-07-24.md` has 52 entries, 50 of which are test pollution from the (now fixed) audit path bug. Worth cleaning if the Activity log appears in the video.
+3. **Repo rename undecided:** still `fomoPhil/case-notes` while the product is Debrief. GitHub redirects old URLs if renamed.
+4. **`test_pipeline_live_runs_twice`** is coupled to the real vault's seeded C-0001 (expects an email on file), so it fails against a fresh scratch vault. The pipeline itself is verified working. Fix: have the test seed its own client fixture.
+5. **PDF export is an optional extra** (`uv sync --extra pdf`, plus `brew install pango`). Absent, it is a soft doctor warning, not a failure.
+6. **Ollama is detect-only.** The agent runs against LM Studio; Ollama tool-call support was deliberately deferred.
+7. **Packaged Mac app** (signed DMG, embedded model, no terminal) is the next big build if pursued. Business thinking lives in the gitignored `docs/business/`.
 
 ## Architecture in one line
 
-Voice → parakeet-mlx STT → Gemma 4 (glossary fix, then intent + DAP note as constrained JSON, thinking OFF) → approval checklist → deterministic actions (atomic vault write + `osascript` Calendar event + Mail draft, never auto-send) → `screencapture` → Gemma 4 VISION verifies on-screen results → agent reports what it saw. Principle: **deterministic hands, model brain, model eyes.**
+Voice to parakeet or whisper STT, to Gemma 4 (glossary correction, then intent and note as constrained JSON, thinking off), to an approval checklist, to deterministic actions (atomic vault write, `osascript` Calendar event, Mail draft, never auto-send), to `screencapture`, to Gemma 4 vision verifying the on-screen result. Principle: **deterministic hands, model brain, model eyes.**
 
-## Key decisions already made (do not relitigate without new evidence)
+## Key decisions (do not relitigate without new evidence)
 
-1. Gemma CANNOT ingest dictation audio directly: all audio-capable variants cap at 30 seconds. Two-stage pipeline is mandatory.
-2. Python + FastAPI + single-page web UI for the hackathon (fastest); SwiftUI is post-hackathon.
-3. Dates resolved by Python (dateutil), never by the LLM; approval checklist shows absolute datetime before any action runs.
-4. Email is ALWAYS a draft, never auto-sent. Calendar entries use client first name/initials only. Voice Journal never schedules or drafts email.
-5. DAP note default; risk block is schema-mandatory when SI/HI appears; the audit trio (named intervention, client response, progress-toward-goal) required in every note; framework vocabulary injected per modality (Appendix B of plan).
-6. Private notes folder is never LLM-touched (45 CFR 164.501 psychotherapy-notes separation).
-7. The external Hermes harness has been retired. Its second-brain behavior is now an in-app agent (`debrief/agent.py`, `/api/assistant/*`): a local tool-calling loop over the vault that stages proposals for the clinician to approve. No external agent framework is a dependency.
-8. Claims language: fictional demo and local processing only. Never claim "HIPAA compliant" or that a BAA is unnecessary. Suggestions are options; clinician decides.
-9. Vault: no iCloud folder, Sync off, new session notes are always new files.
-
-## Next actions (in order)
-
-1. Provision the demo Mac with the local Gemma 4 E4B runtime, STT runtime, Obsidian, and permissions for Calendar, Mail, and Screen Recording.
-2. Copy or clone the runnable app to the Mac and validate the spine: spoken request → Gemma JSON → local draft → Calendar/Mail draft → screenshot verification.
-3. Write five fictional debriefs and five Voice Journal prompts, including a negative verification case.
-4. Run the eval harness, record latency and failures, polish the screen flow, write the Kaggle submission, and rehearse three times.
+1. Gemma cannot ingest dictation audio directly (audio-capable variants cap at 30 seconds). The two-stage pipeline is mandatory.
+2. Dates are resolved by Python, never by the model. The approval checklist shows the absolute datetime before anything runs.
+3. Email is always a draft, never auto-sent. Calendar entries use client first name or initials only.
+4. Risk block is schema-mandatory for clinical formats when SI or HI appears. The audit trio (named intervention, client response, progress toward goal) is required in every note.
+5. Filed notes are never rewritten. Edits append a dated amendment.
+6. The private notes folder is never LLM-touched (45 CFR 164.501 psychotherapy-notes separation).
+7. Claims language: fictional demo data and local processing only. Never claim "HIPAA compliant" and never claim a BAA is unnecessary. Suggestions are options; the clinician decides.
+8. Obsidian is optional. Deep links fire only when Obsidian has this vault registered, so unregistered vaults never trigger error dialogs.
+9. The vault is plain markdown, scaffolded on first run, and gitignored. It is not committed to the public repo.
+10. Model settings that must not drift: `gemma-4-12b-it-qat` at 64k context, `reasoning_effort` none. If the model changes, re-run the suicidal-ideation refusal test first (it passed on this exact model and is the project's top historical risk).
 
 ## Context for the assistant
 
-- Phil is a non-coder (vibecoding); explain in plain terms, no walls of text, and NEVER use em dashes in anything written for this project (UI copy, README, writeup, chat).
-- Demo Mac: Apple Silicon; confirm RAM before choosing 12B vs e4b fallback (if switching models, re-run the SI test first).
-- Memory file exists at the Claude project memory dir: `casenotes-hackathon-project.md` (update it if decisions change).
-- Demo theater moment: turn Wi-Fi off on stage before the live run.
+- Phil is a non-coder (vibecoding). Explain in plain terms, no walls of text, and **never use em dashes** in anything written for this project (UI copy, README, docs, chat).
+- Project memory lives in the Claude project memory dir: `casenotes-hackathon-project.md`, `debrief-open-source-release.md`, `debrief-monetization-ideas.md`.
+- Build process that worked: Opus subagents implement each phase, a reviewer subagent audits the diff afterward. The review checkpoints caught real defects every time (XSS, cache poisoning, a trash-restore path that could destroy a filed note).
+- Verify with tests plus a real run, and never write to `DebriefVault/` during test or verification work; point `DEBRIEF_VAULT_DIR` at a scratch dir instead.
