@@ -73,17 +73,24 @@ function computeNudges(plan) {
   const acts = (plan && plan.actions) || [];
   const nudges = [];
   if (!acts.some(a => a.type === "schedule_followup")) {
-    nudges.push({ id: "no-followup", text: "No follow-up booked.", sub: "Dictate again or add one below." });
+    nudges.push({ id: "no-followup", text: "No next appointment in this debrief.", sub: "Add one here if you meant to." });
   }
   if (!acts.some(a => a.type === "draft_client_email")) {
-    nudges.push({ id: "no-email", text: "No client email requested." });
+    nudges.push({ id: "no-email", text: "No email to the client in this debrief." });
   }
   const unsupported = (plan && plan.unsupported_requests) || [];
   if (unsupported.length) {
-    nudges.push({ id: "unsupported", text: "Heard but can't do yet: " + unsupported.join("; ") });
+    nudges.push({ id: "unsupported", text: "Heard, but Debrief cannot do this yet: " + unsupported.join("; ") });
   }
+  // Risk is the one nudge that is not a housekeeping gap, so it is marked as
+  // its own kind and rendered with the only amber on the screen.
   if (plan && plan.note && plan.note.risk_present) {
-    nudges.push({ id: "risk", text: "Risk content documented.", sub: "Review the Risk section before executing." });
+    nudges.push({
+      id: "risk",
+      kind: "risk",
+      text: "This note documents risk.",
+      sub: "Read the risk section closely before you approve. The wording is yours to change, and nothing is filed until you do.",
+    });
   }
   return nudges;
 }
@@ -776,15 +783,22 @@ function renderReview() {
   if (feats.email === false) nudges = nudges.filter(n => n.id !== "no-email");
   if (nudges.length) {
     const box = h(`<div class="nudges"></div>`);
+    // Risk leads. Everything else is housekeeping and reads as such.
+    nudges = nudges.slice().sort((a, b) => (b.kind === "risk" ? 1 : 0) - (a.kind === "risk" ? 1 : 0));
     nudges.forEach(n => {
-      const card = h(`<div class="nudge"><span class="n-text">${esc(n.text)}</span>${n.sub ? `<div class="n-sub">${esc(n.sub)}</div>` : ""}</div>`);
+      const card = n.kind === "risk"
+        ? h(`<div class="nudge nudge-risk">
+              <div class="n-head"><span class="n-ic">${ALERT_SVG}</span><span class="n-text">${esc(n.text)}</span></div>
+              ${n.sub ? `<div class="n-sub">${esc(n.sub)}</div>` : ""}
+            </div>`)
+        : h(`<div class="nudge"><span class="n-text">${esc(n.text)}</span>${n.sub ? `<div class="n-sub">${esc(n.sub)}</div>` : ""}</div>`);
       if (n.id === "no-followup") {
         const addRow = h(`<div class="nudge-add">
           <input type="date" id="nfDate" aria-label="Follow-up date" />
           <input type="time" id="nfTime" value="15:00" aria-label="Follow-up time" />
           <input type="number" id="nfDur" value="50" min="5" step="5" aria-label="Duration in minutes" />
           <span class="unit">min</span>
-          <button class="btn-small" id="nfAdd">Add appointment</button>
+          <button class="btn-small" id="nfAdd">Add this appointment</button>
         </div>`);
         addRow.querySelector("#nfAdd").onclick = () => {
           const dv = addRow.querySelector("#nfDate").value;
@@ -794,7 +808,7 @@ function renderReview() {
         card.appendChild(addRow);
       }
       if (n.id === "no-email") {
-        const addRow = h(`<div class="nudge-add"><button class="btn-small" id="neAdd">Add worksheet email</button></div>`);
+        const addRow = h(`<div class="nudge-add"><button class="btn-small" id="neAdd">Draft an email with a worksheet</button></div>`);
         addRow.querySelector("#neAdd").onclick = addWorksheetEmail;
         card.appendChild(addRow);
       }

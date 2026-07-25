@@ -731,20 +731,44 @@
   .action .a-when { font-size: 13px; color: var(--accent-ink); margin-top: 3px; font-variant-numeric: tabular-nums; }
   .action .a-sub { font-size: 12.5px; color: var(--ink-faint); margin-top: 3px; text-wrap: pretty; }
 
-  /* Nudges: soft amber gap flags above the action checklist */
+  /* Nudges sit above the action checklist. Amber on this screen means one thing
+     only: risk. A missing follow-up is housekeeping, so it wears the same quiet
+     sage-on-cream as the rest of the app and never competes with the risk card. */
   .nudges { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
   .nudge {
     border: none;
-    box-shadow: var(--ring-amber), var(--lift-1);
-    background: var(--amber-soft);
+    box-shadow: var(--ring-sage), var(--lift-1);
+    background: var(--panel-2);
     border-radius: var(--radius);
     padding: 12px 15px;
     font-size: 13px;
     color: var(--ink);
     text-wrap: pretty;
   }
-  .nudge .n-text { color: var(--amber); font-weight: 560; }
+  .nudge .n-text { color: var(--ink); font-weight: 560; }
   .nudge .n-sub { color: var(--ink-soft); margin-top: 2px; font-size: 12.5px; text-wrap: pretty; }
+
+  /* The risk card. Heavier ring, amber wash, a rule down the leading edge and a
+     serif headline: the one thing on the review screen that must stop the eye. */
+  .nudge.nudge-risk {
+    box-shadow: 0 0 0 1.5px var(--amber-line), var(--lift-2);
+    background: var(--amber-soft);
+    border-left: 4px solid var(--amber-line);
+    border-radius: var(--radius);
+    padding: 15px 17px 15px 15px;
+  }
+  .nudge-risk .n-head { display: flex; align-items: center; gap: 9px; }
+  .nudge-risk .n-ic { display: grid; place-items: center; width: 20px; height: 20px; flex: none; color: var(--amber); }
+  .nudge-risk .n-ic svg { width: 17px; height: 17px; }
+  .nudge-risk .n-text {
+    font-family: var(--font-serif);
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    color: var(--amber);
+    text-wrap: balance;
+  }
+  .nudge-risk .n-sub { color: var(--ink); font-size: 13.5px; margin-top: 6px; line-height: 1.55; }
   .nudge-add {
     display: flex;
     flex-wrap: wrap;
