@@ -1058,7 +1058,24 @@
   .status-ok { background: var(--green); }
   .status-failed { background: var(--red); }
   .status-skipped { background: var(--ink-faint); }
+  /* Pass or fail said in a word beside the title. The dot stays, purely as
+     reinforcement, and is hidden from the accessibility tree. */
+  .result-action .r-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
   .result-action .r-title { font-size: 14.5px; font-weight: 540; text-wrap: balance; }
+  .r-status {
+    flex: none;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    border-radius: 999px;
+    padding: 2px 8px;
+    white-space: nowrap;
+  }
+  .r-status-ok { background: rgba(95,122,97,0.12); color: var(--accent-ink); }
+  .r-status-failed { background: var(--red-soft); color: var(--red); }
+  .r-status-skipped { background: var(--panel-2); color: var(--ink-soft); box-shadow: var(--ring-hair); }
+  .r-status-unknown { background: var(--amber-soft); color: var(--amber); }
   .result-action .r-detail { font-size: 13px; color: var(--ink-soft); margin-top: 2px; text-wrap: pretty; overflow-wrap: anywhere; }
   /* Where the file landed matters, but it is not what the clinician came for. */
   .result-action .r-path {
@@ -1238,9 +1255,10 @@
   transition-timing-function: var(--ease);
 }
 .search-hit:hover { background: var(--accent-soft); }
+.search-hit:focus-visible { box-shadow: var(--ring); }
 .search-hit:active { scale: 0.98; }
-.search-hit .sh-title { font-size: 13.5px; font-weight: 600; color: var(--ink); }
-.search-hit .sh-snip { font-size: 12px; color: var(--ink-soft); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-hit .sh-title { display: block; font-size: 13.5px; font-weight: 600; color: var(--ink); }
+.search-hit .sh-snip { display: block; font-size: 12px; color: var(--ink-soft); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .search-empty { padding: 12px 10px; text-wrap: pretty; }
 .search-empty .se-title { font-size: 13px; font-weight: 600; color: var(--ink-soft); }
 .search-empty .se-body { font-size: 12.5px; color: var(--ink-soft); margin-top: 3px; line-height: 1.45; }
@@ -1250,8 +1268,10 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  /* 9px vertical padding around a 22px line gives a 40px row. */
+  /* 9px vertical padding around a 22px line gives a 40px row; min-height holds
+     the floor for the smaller-type rows in the tail, which measured 37. */
   padding: 9px 10px;
+  min-height: 40px;
   border-radius: var(--radius-sm);
   font-size: 14.5px;
   font-weight: 500;
@@ -1301,6 +1321,9 @@
 }
 .navitem .mono.alt { background: var(--accent); color: #fff; }
 .navitem .mono.alt2 { background: #b99a7b; }
+/* The nav wrapper is a single flex item, so it has to reproduce the rail's
+   own column gap for the rows inside it. */
+.side nav { display: flex; flex-direction: column; gap: 2px; }
 .side-tail { margin-top: auto; padding-top: 8px; }
 .side-tail .navitem-setup { color: var(--ink-soft); font-size: 13.5px; }
 .side-foot { padding: 12px 10px 4px; font-size: 12px; color: var(--ink-soft); display: flex; align-items: center; gap: 7px; }
@@ -1330,8 +1353,13 @@
 .model-strip .ms-btn:hover { color: var(--amber); background: rgba(228,179,99,0.18); }
 .crumb { font-size: 13px; color: var(--ink-soft); margin-bottom: 16px; text-wrap: pretty; }
 .crumb b { color: var(--ink); font-weight: 600; }
-.crumb .link { cursor: pointer; border-radius: var(--radius-xs); transition-property: color; transition-duration: 150ms; transition-timing-function: var(--ease); }
+.crumb .link {
+  font: inherit; color: inherit; background: none; border: none; padding: 0;
+  cursor: pointer; border-radius: var(--radius-xs);
+  transition-property: color; transition-duration: 150ms; transition-timing-function: var(--ease);
+}
 .crumb .link:hover { color: var(--accent-ink); }
+.crumb .link:focus-visible { box-shadow: var(--ring); }
 
 /* ---------- client record header + tabs ---------- */
 .chead { display: flex; align-items: center; gap: 16px; margin-bottom: 4px; }
@@ -1486,27 +1514,36 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 
 /* ---------- document view ---------- */
 .docbar { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+/* The title is the page heading and the rename control at once. The button
+   resets keep it looking exactly like the heading it replaced. */
+.doc-title-h { margin: 0; display: contents; }
 .doc-title {
   font-family: var(--font-serif); font-size: 25px; font-weight: 600; text-wrap: balance;
-  border-bottom: 1.5px dashed transparent; cursor: text; padding-bottom: 2px;
+  border: none; border-bottom: 1.5px dashed transparent; background: none; color: inherit;
+  padding: 0 0 2px; text-align: left; cursor: text;
   transition-property: border-color;
   transition-duration: 150ms;
   transition-timing-function: var(--ease);
 }
 .doc-title:hover { border-bottom-color: var(--soft-sage); }
+.doc-title:focus-visible { box-shadow: var(--ring); border-radius: var(--radius-xs); }
 .doc-title-input { font-family: var(--font-serif); font-size: 25px; font-weight: 600; border: none; border-bottom: 1.5px dashed var(--soft-sage); background: none; color: var(--ink); outline: none; padding-bottom: 2px; }
 .docbar .pencil {
-  position: relative; font-size: 13px; color: var(--ink-soft); cursor: pointer; border-radius: var(--radius-xs);
+  position: relative; font: inherit; font-size: 13px; color: var(--ink-soft); cursor: pointer;
+  background: none; border: none; padding: 0; border-radius: var(--radius-xs);
   transition-property: color;
   transition-duration: 150ms;
   transition-timing-function: var(--ease);
 }
-.docbar .pencil:hover { color: var(--ink-soft); }
+.docbar .pencil:hover { color: var(--ink); }
+.docbar .pencil:focus-visible { box-shadow: var(--ring); }
 /* Text-sized affordance: grow the hit area to 40px tall behind it. */
 .docbar .pencil::after { content: ""; position: absolute; left: -4px; right: -4px; top: 50%; height: 40px; transform: translateY(-50%); }
 .docbar .spacer { flex: 1; }
 .rbtn {
   font-family: var(--font-sans); font-size: 14px; font-weight: 600; padding: 9px 15px;
+  /* Measured 38px against the project's own 40px minimum. */
+  min-height: 40px;
   border-radius: var(--radius-sm); border: none; box-shadow: var(--ring-hair-strong);
   background: var(--panel); color: var(--ink); cursor: pointer; display: inline-flex; gap: 7px; align-items: center;
   transition-property: background, box-shadow, color, scale, opacity;
@@ -1525,13 +1562,14 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 /* Concentric: 8px item radius + 6px menu padding = 14px on the menu. */
 .overflow-menu { position: absolute; right: 0; top: calc(100% + 6px); background: var(--panel); border: none; border-radius: var(--radius); box-shadow: var(--ring-hair), var(--shadow); z-index: 20; min-width: 180px; padding: 6px; }
 .overflow-menu button {
-  display: block; width: 100%; text-align: left; border: none; background: none; font: inherit; font-size: 13.5px;
-  padding: 9px 10px; border-radius: 8px; cursor: pointer; color: var(--ink);
+  display: flex; align-items: center; width: 100%; text-align: left; border: none; background: none; font: inherit; font-size: 13.5px;
+  padding: 9px 10px; min-height: 40px; border-radius: 8px; cursor: pointer; color: var(--ink);
   transition-property: background, color;
   transition-duration: 150ms;
   transition-timing-function: var(--ease);
 }
 .overflow-menu button:hover { background: var(--accent-soft); }
+.overflow-menu button:focus-visible { box-shadow: var(--ring); }
 .overflow-menu button.danger { color: var(--red); }
 
 .paper-wrap { display: flex; justify-content: center; }
@@ -1706,6 +1744,7 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 @keyframes toastIn { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 .toast-msg { flex: 1; text-wrap: pretty; overflow-wrap: anywhere; }
 .toast-action {
+  position: relative;
   flex: none; font: inherit; font-size: 13px; font-weight: 600;
   color: var(--accent-ink); background: var(--accent-soft); border: none;
   border-radius: var(--radius-sm); padding: 7px 13px; cursor: pointer;
@@ -1713,6 +1752,10 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 }
 .toast-action:hover { background: #e2ebe0; }
 .toast-action:active { scale: 0.96; }
+.toast-action:focus-visible { box-shadow: var(--ring); }
+/* Undo is the whole point of the toast and measured 34px tall. Same chip, same
+   40px floor the rest of the small controls use. */
+.toast-action::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 40px; transform: translateY(-50%); }
 
 .trash-list { max-width: 640px; }
 .trash-row { display: flex; align-items: center; gap: 12px; padding: 13px 16px; border: none; box-shadow: var(--row-shadow); border-radius: var(--radius-row); background: var(--panel); margin-bottom: 10px; }
@@ -1989,7 +2032,7 @@ select.set-select { appearance: none; -webkit-appearance: none; cursor: pointer;
 .set-textarea { resize: vertical; line-height: 1.5; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
 .set-field-actions { margin-top: 10px; display: flex; justify-content: flex-end; }
 .set-import-btn { margin-top: 14px; }
-.btn-compact { padding: 9px 14px; font-size: 13px; }
+.btn-compact { padding: 9px 14px; font-size: 13px; min-height: 40px; }
 
 /* Imported formats, with the way out beside each one. */
 .fmt-list { margin-top: 16px; }

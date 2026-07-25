@@ -491,24 +491,28 @@ function ensureShell() {
     <div id="a11yStatus" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
     <div id="a11yAlert" class="visually-hidden" role="alert" aria-live="assertive" aria-atomic="true"></div>
     <div class="app-shell">
-      <aside class="side">
+      <aside class="side" aria-label="Sidebar">
         <div class="brand">Debrief</div>
-        <div class="side-search">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
-          <input type="search" id="globalSearch" placeholder="Search records" autocomplete="off" />
+        <div class="side-search" role="search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+          <label class="visually-hidden" for="globalSearch">Search your clients, notes, and library</label>
+          <input type="search" id="globalSearch" placeholder="Search records" autocomplete="off"
+                 role="combobox" aria-expanded="false" aria-controls="searchResults" aria-autocomplete="list" aria-haspopup="listbox" />
           <div id="searchResults"></div>
         </div>
-        <button class="navitem" id="navNewDebrief"><span class="nav-ic">${IC.mic}</span> New debrief</button>
-        <button class="navitem" id="navAssistant"><span class="nav-ic">${IC.spark}</span> Ask the assistant</button>
-        <div class="nav-sec" id="navClientsLabel">Clients</div>
-        <div id="navClients"></div>
-        <div class="nav-sec">Library</div>
-        <button class="navitem" id="navWorksheets"><span class="nav-ic">${IC.page}</span> Worksheets</button>
-        <button class="navitem" id="navReference"><span class="nav-ic">${IC.books}</span> Reference</button>
-        <button class="navitem" id="navTrash"><span class="nav-ic">${IC.trash}</span> Trash</button>
+        <button type="button" class="navitem" id="navNewDebrief"><span class="nav-ic" aria-hidden="true">${IC.mic}</span> New debrief</button>
+        <button type="button" class="navitem" id="navAssistant"><span class="nav-ic" aria-hidden="true">${IC.spark}</span> Ask the assistant</button>
+        <nav aria-label="Clients and library">
+          <div class="nav-sec" id="navClientsLabel">Clients</div>
+          <div id="navClients"></div>
+          <div class="nav-sec">Library</div>
+          <button type="button" class="navitem" id="navWorksheets"><span class="nav-ic" aria-hidden="true">${IC.page}</span> Worksheets</button>
+          <button type="button" class="navitem" id="navReference"><span class="nav-ic" aria-hidden="true">${IC.books}</span> Reference</button>
+          <button type="button" class="navitem" id="navTrash"><span class="nav-ic" aria-hidden="true">${IC.trash}</span> Trash</button>
+        </nav>
         <div class="side-tail">
-          <button class="navitem navitem-setup" id="navSettings"><span class="nav-ic">${IC.sliders}</span> Settings</button>
-          <button class="navitem navitem-setup" id="navSetup"><span class="nav-ic">${IC.ready}</span> Setup</button>
+          <button type="button" class="navitem navitem-setup" id="navSettings"><span class="nav-ic" aria-hidden="true">${IC.sliders}</span> Settings</button>
+          <button type="button" class="navitem navitem-setup" id="navSetup"><span class="nav-ic" aria-hidden="true">${IC.ready}</span> Setup</button>
           <div class="side-foot">${LOCK_DOT} Everything stays on this Mac</div>
         </div>
       </aside>
@@ -523,7 +527,14 @@ function ensureShell() {
   shell.querySelector("#navSetup").onclick = () => openSetup();
   const search = shell.querySelector("#globalSearch");
   search.oninput = () => runSearch(search.value);
-  search.onkeydown = (e) => { if (e.key === "Escape") { search.value = ""; runSearch(""); } };
+  search.onkeydown = (e) => {
+    if (e.key === "Escape") { search.value = ""; runSearch(""); return; }
+    // Down from the field walks into the results, the way a combobox should.
+    if (e.key === "ArrowDown") {
+      const first = document.querySelector("#searchResults .search-hit");
+      if (first) { e.preventDefault(); first.focus(); }
+    }
+  };
   // Feature gate: hide the assistant entry when it is turned off in settings.
   if (!assistantEnabled()) {
     const a = shell.querySelector("#navAssistant");
@@ -803,7 +814,7 @@ function openAddClient() {
   const backdrop = h(`<div class="modal-backdrop"><div class="modal add-client-modal">
     <h4 id="${titleId}">Add a client</h4>
     <p class="ac-lead">This creates a folder for them in your records. Only a name is required.</p>
-    <div class="ac-error" hidden></div>
+    <div class="ac-error" role="alert" hidden></div>
     <div class="ac-fields"></div>
     <div class="confirm-actions">
       <button class="btn btn-ghost" id="acCancel">Cancel</button>
@@ -813,8 +824,9 @@ function openAddClient() {
   const fields = backdrop.querySelector(".ac-fields");
   const inputs = {};
   ADD_CLIENT_FIELDS.forEach(f => {
-    const row = h(`<div class="set-field"><label class="set-label">${esc(f.label)}${f.required ? "" : " <span class=\"ac-opt\">optional</span>"}</label></div>`);
-    const input = h(`<input class="set-select" type="${esc(f.type || "text")}" autocomplete="off" />`);
+    const fieldId = uid("ac");
+    const row = h(`<div class="set-field"><label class="set-label" for="${fieldId}">${esc(f.label)}${f.required ? "" : " <span class=\"ac-opt\">optional</span>"}</label></div>`);
+    const input = h(`<input class="set-select" id="${fieldId}" type="${esc(f.type || "text")}" autocomplete="off" />`);
     input.placeholder = f.placeholder;
     row.appendChild(input);
     fields.appendChild(row);
@@ -922,7 +934,7 @@ function renderClients() {
     }));
   } else {
     clients.forEach((c, i) => mini.appendChild(buildClientCard(c, i)));
-    const add = h(`<button class="home-mc home-mc-add">＋ Add client</button>`);
+    const add = h(`<button type="button" class="home-mc home-mc-add"><span aria-hidden="true">＋</span> Add client</button>`);
     add.onclick = openAddClient;
     mini.appendChild(add);
   }
@@ -992,7 +1004,7 @@ function buildClientCard(c, idx) {
 }
 
 function buildActivityRail(items, filed) {
-  const rail = h(`<aside class="home-rail ${ent(4)}"></aside>`);
+  const rail = h(`<aside class="home-rail ${ent(4)}" aria-label="Recent activity"></aside>`);
 
   const filedCard = h(`<div class="rail-card"><h2>Filed today</h2></div>`);
   filedCard.appendChild(filed
@@ -1479,6 +1491,18 @@ function resultsSummary(r) {
   return `${joinClauses(parts)}. Nothing was sent.`;
 }
 
+// Whether a run succeeded was a coloured dot and nothing else: no text, no
+// shape, no accessible name, and the detail line beside it never said pass or
+// fail. Red and green are the same dot to a colour-blind clinician.
+const RESULT_WORD = { ok: "Succeeded", failed: "Failed", skipped: "Skipped" };
+function statusChip(status) {
+  const key = String(status || "").toLowerCase();
+  // An unrecognised status gets the amber "unknown" chip rather than a class
+  // with no styling behind it.
+  const known = Object.prototype.hasOwnProperty.call(RESULT_WORD, key) ? key : "unknown";
+  return `<span class="r-status r-status-${known}">${esc(RESULT_WORD[key] || "Unknown")}</span>`;
+}
+
 function renderResults() {
   const r = App.result;
   const meta = (App.plan && App.plan.session_meta) || {};
@@ -1501,9 +1525,9 @@ function renderResults() {
   if (r.note_path) {
     const bits = [clientName, meta.session_number ? `Session ${meta.session_number}` : "", fmtDayMonth(meta.session_date)].filter(Boolean);
     panel.appendChild(h(`<div class="result-action">
-      <div class="status-dot status-ok"></div>
+      <div class="status-dot status-ok" aria-hidden="true"></div>
       <div>
-        <div class="r-title">Session note filed</div>
+        <div class="r-head"><span class="r-title">Session note filed</span>${statusChip("ok")}</div>
         <div class="r-detail">${esc(bits.join(", "))}</div>
         <div class="r-path">${esc(r.note_path)}</div>
       </div>
@@ -1513,8 +1537,8 @@ function renderResults() {
     const title = a.type === "schedule_followup" ? "Follow-up appointment"
                 : a.type === "draft_client_email" ? "Client email draft" : esc(a.type);
     panel.appendChild(h(`<div class="result-action">
-      <div class="status-dot status-${esc(a.status)}"></div>
-      <div><div class="r-title">${title}</div><div class="r-detail">${esc(a.detail || a.status)}</div></div>
+      <div class="status-dot status-${esc(a.status)}" aria-hidden="true"></div>
+      <div><div class="r-head"><span class="r-title">${title}</span>${statusChip(a.status)}</div><div class="r-detail">${esc(a.detail || a.status)}</div></div>
     </div>`));
   });
   el.appendChild(panel);
@@ -1552,7 +1576,7 @@ function renderAssistant() {
   el.appendChild(h(`<h1 class="step-title">Ask the assistant</h1>`));
   const panel = h(`<div class="panel ${ent(1)} asst-card">
     <div class="asst-lead">Ask for a worksheet, an email draft, or something to look up. Nothing is saved until you approve it.</div>
-    <textarea class="asst-textarea" id="asstText" rows="3" placeholder="For example: make a one page box breathing worksheet for before meetings"></textarea>
+    <textarea class="asst-textarea" id="asstText" rows="3" aria-label="What would you like the assistant to do?" placeholder="For example: make a one page box breathing worksheet for before meetings"></textarea>
     <div class="asst-actions">
       <button class="btn btn-ghost" id="asstMic"><span class="asst-mic-ic"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></span><span id="asstMicLabel">Speak instead</span></button>
       <div class="grow"></div>
@@ -1723,8 +1747,8 @@ function renderAssistantResults() {
     const title = r.type === "worksheet" ? "Worksheet filed" : r.type === "email" ? "Email draft" : esc(r.type);
     const detail = r.status === "ok" ? (r.path || r.detail || "done") : (r.error || r.status);
     panel.appendChild(h(`<div class="result-action">
-      <div class="status-dot status-${esc(r.status)}"></div>
-      <div><div class="r-title">${title}</div><div class="r-detail">${esc(detail)}</div></div>
+      <div class="status-dot status-${esc(r.status)}" aria-hidden="true"></div>
+      <div><div class="r-head"><span class="r-title">${title}</span>${statusChip(r.status)}</div><div class="r-detail">${esc(detail)}</div></div>
     </div>`));
   });
   if (!(a.results || []).length) panel.appendChild(h(`<div class="hint" style="margin:8px auto">Nothing was filed.</div>`));
@@ -1979,7 +2003,7 @@ function renderClientRecord() {
   const d = App.recordData;
   const c = App.client || {};
   const name = (d && d.profile && d.profile.name) || c.name || "Client";
-  el.appendChild(h(`<div class="crumb"><span class="link" id="crHome">Clients</span> / <b>${esc(name)}</b></div>`));
+  el.appendChild(h(`<nav class="crumb" aria-label="Breadcrumb"><button type="button" class="link" id="crHome">Clients</button> / <b>${esc(name)}</b></nav>`));
   el.querySelector("#crHome").onclick = () => { App.client = null; go("clients"); };
 
   // Mutually exclusive: a record that could not be opened is not still opening.
@@ -2043,8 +2067,8 @@ function renderSessionsTab(d) {
     const day = dd[2] || "";
     const mon = dd[1] ? ["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][+dd[1]] : "";
     const chip = s.risk_flag
-      ? `<span class="rchip risk">⚑ Risk flag noted</span>`
-      : `<span class="rchip ok">✓ Filed</span>`;
+      ? `<span class="rchip risk"><span aria-hidden="true">⚑</span> Risk flag noted</span>`
+      : `<span class="rchip ok"><span aria-hidden="true">✓</span> Filed</span>`;
     const preview = cleanPreview(s.preview);
     const row = h(`<button class="sesscard">
       <div class="sdate"><div class="d">${esc(day)}</div><div class="m">${esc(mon)}</div></div>
@@ -2100,7 +2124,7 @@ function renderDocumentsTab(d) {
 
   const hiddenInput = h(`<input type="file" style="display:none" accept=".pdf,.png,.jpg,.jpeg,.docx,.md" />`);
   hiddenInput.onchange = () => { if (hiddenInput.files.length) uploadFile(hiddenInput.files[0], d.client_id); };
-  const add = h(`<button class="doc add">＋ Add document</button>`);
+  const add = h(`<button type="button" class="doc add"><span aria-hidden="true">＋</span> Add document</button>`);
   add.onclick = () => hiddenInput.click();
   grid.appendChild(add);
   grid.appendChild(hiddenInput);
@@ -2291,7 +2315,7 @@ function renderDocument() {
   const crumb = App.docCrumb || {};
   const d = crumb.client;
   const clientName = (d && d.profile && d.profile.name) || (App.client && App.client.name) || "Client";
-  const bc = h(`<div class="crumb"><span class="link" id="dcClient">${esc(clientName)}</span> / ${esc(crumb.section || "Documents")} / <b>${esc((doc && frontTitle(doc)) || crumb.title || "Document")}</b></div>`);
+  const bc = h(`<nav class="crumb" aria-label="Breadcrumb"><button type="button" class="link" id="dcClient">${esc(clientName)}</button> / ${esc(crumb.section || "Documents")} / <b>${esc((doc && frontTitle(doc)) || crumb.title || "Document")}</b></nav>`);
   el.appendChild(bc);
   bc.querySelector("#dcClient").onclick = () => { if (d) openClient(App.client); else go("clients"); };
 
@@ -2316,14 +2340,17 @@ function renderDocument() {
   const isSession = doc.kind === "session-note";
   const title = frontTitle(doc);
 
+  // Every control here used to be a span with tabIndex -1, or a button whose
+  // whole accessible name was an emoji. The title is the page's h1 and also
+  // the rename control, so it is a button that looks like a heading.
   const bar = h(`<div class="docbar">
-    <span class="doc-title" title="Click to rename">${esc(title)}</span>
-    <span class="pencil">✎ rename</span>
+    <h1 class="doc-title-h"><button type="button" class="doc-title">${esc(title)}</button></h1>
+    <button type="button" class="pencil" aria-label="Rename ${esc(title)}"><span aria-hidden="true">✎</span> rename</button>
     <span class="spacer"></span>
-    <button class="rbtn" id="docEdit">✎ Edit</button>
-    <button class="rbtn" id="docDownload">⬇ Download PDF</button>
-    <button class="rbtn ${isSession ? "" : "primary"}" id="docEmail">✉ Email draft to ${esc(firstName(clientName))}</button>
-    <span class="overflow-wrap"><button class="rbtn" id="docMore">···</button></span>
+    <button type="button" class="rbtn" id="docEdit"><span aria-hidden="true">✎</span> Edit</button>
+    <button type="button" class="rbtn" id="docDownload"><span aria-hidden="true">⬇</span> Download PDF</button>
+    <button type="button" class="rbtn ${isSession ? "" : "primary"}" id="docEmail"><span aria-hidden="true">✉</span> Email draft to ${esc(firstName(clientName))}</button>
+    <span class="overflow-wrap"><button type="button" class="rbtn" id="docMore" aria-label="More actions for ${esc(title)}" aria-haspopup="menu" aria-expanded="false"><span aria-hidden="true">···</span></button></span>
   </div>`);
   el.appendChild(bar);
 
@@ -2344,7 +2371,7 @@ function renderDocument() {
   const chips = [];
   if (isSession) {
     const df = (fm.session_date || "").toString().slice(0, 10);
-    if (df) chips.push(`<span class="filedchip">✓ Filed ${esc(df)}</span>`);
+    if (df) chips.push(`<span class="filedchip"><span aria-hidden="true">✓</span> Filed ${esc(df)}</span>`);
     if ((fm.actions_taken || []).some(a => String(a).includes("verified"))) chips.push(`<span class="filedchip">verified on screen</span>`);
   }
   if (chips.length) paper.querySelector(".paper").appendChild(h(`<div class="paper-chips">${chips.join("")}</div>`));
@@ -2364,7 +2391,7 @@ function frontTitle(doc) {
 
 function beginTitleRename(titleEl, doc) {
   const current = titleEl.textContent;
-  const input = h(`<input class="doc-title-input" value="${esc(current)}" />`);
+  const input = h(`<input class="doc-title-input" aria-label="New name for ${esc(current)}" value="${esc(current)}" />`);
   titleEl.replaceWith(input);
   input.focus(); input.select();
   const commit = async () => {
@@ -2387,7 +2414,7 @@ function beginEdit(doc, isSession) {
     paper.appendChild(h(`<div class="amend-note">Filed notes keep their history; your change is added as a dated amendment.</div>`));
   }
   const bodyMd = stripFrontmatter(doc.markdown);
-  const area = h(`<textarea class="doc-edit-area">${esc(isSession ? "" : bodyMd)}</textarea>`);
+  const area = h(`<textarea class="doc-edit-area" aria-label="${isSession ? "Amendment text" : "Document text"}">${esc(isSession ? "" : bodyMd)}</textarea>`);
   if (isSession) area.placeholder = "Write an amendment. It will be appended with today's date.";
   paper.appendChild(area);
   const row = h(`<div class="actions-bar" style="margin-top:14px">
@@ -2434,19 +2461,24 @@ function emailDocumentFromView(doc) {
   else toast("Open this document from a client record to email it.");
 }
 
+// The overflow menu. It had no role, no aria-haspopup, no aria-expanded, its
+// trigger's whole accessible name was "···", Escape did not close it, and
+// tabbing past the last item left it hanging open over the page.
 function toggleOverflow(wrap, doc) {
+  const trigger = wrap.querySelector("#docMore");
   const existing = wrap.querySelector(".overflow-menu");
-  if (existing) { existing.remove(); return; }
-  const menu = h(`<div class="overflow-menu">
-    <button data-a="reveal">Reveal in Finder</button>
-    <button data-a="open">Open</button>
-    <button class="danger" data-a="trash">Move to Trash</button>
+  if (existing) { closeOverflow(wrap); return; }
+  const menu = h(`<div class="overflow-menu" role="menu" aria-label="Actions for ${esc(frontTitle(doc))}">
+    <button type="button" role="menuitem" data-a="reveal">Reveal in Finder</button>
+    <button type="button" role="menuitem" data-a="open">Open</button>
+    <button type="button" role="menuitem" class="danger" data-a="trash">Move to Trash</button>
   </div>`);
   wrap.appendChild(menu);
-  menu.querySelector('[data-a="reveal"]').onclick = () => { post("/api/reveal", { path: doc.path }); menu.remove(); };
-  menu.querySelector('[data-a="open"]').onclick = () => { post("/api/open", { path: doc.path }); menu.remove(); };
+  if (trigger) trigger.setAttribute("aria-expanded", "true");
+  menu.querySelector('[data-a="reveal"]').onclick = () => { post("/api/reveal", { path: doc.path }); closeOverflow(wrap, true); };
+  menu.querySelector('[data-a="open"]').onclick = () => { post("/api/open", { path: doc.path }); closeOverflow(wrap, true); };
   menu.querySelector('[data-a="trash"]').onclick = async () => {
-    menu.remove();
+    closeOverflow(wrap);
     const trashed = await post("/api/trash", { path: doc.path });
     toast("Moved to Trash.", trashed && trashed.token ? {
       label: "Undo",
@@ -2457,8 +2489,43 @@ function toggleOverflow(wrap, doc) {
     } : null);
     if (App.client) openClient(App.client); else go("clients");
   };
-  const closer = (e) => { if (!wrap.contains(e.target)) { menu.remove(); document.removeEventListener("click", closer); } };
+
+  const closer = (e) => { if (!wrap.contains(e.target)) closeOverflow(wrap); };
+  // Escape closes and hands focus back; Tab out of either end closes too, so
+  // the menu is never left open behind the cursor.
+  const onKey = (e) => {
+    if (e.key === "Escape") { e.preventDefault(); closeOverflow(wrap, true); return; }
+    if (e.key !== "Tab") return;
+    const items = Array.from(menu.querySelectorAll("button"));
+    const last = items[items.length - 1];
+    if (!e.shiftKey && document.activeElement === last) closeOverflow(wrap);
+    else if (e.shiftKey && document.activeElement === items[0]) closeOverflow(wrap);
+  };
+  const onFocusOut = () => setTimeout(() => {
+    if (wrap.isConnected && !wrap.contains(document.activeElement)) closeOverflow(wrap);
+  }, 0);
+  wrap._overflowTeardown = () => {
+    document.removeEventListener("click", closer);
+    document.removeEventListener("keydown", onKey, true);
+    wrap.removeEventListener("focusout", onFocusOut);
+  };
+  document.addEventListener("keydown", onKey, true);
+  wrap.addEventListener("focusout", onFocusOut);
   setTimeout(() => document.addEventListener("click", closer), 0);
+  // Straight into the menu, so the keyboard does not have to hunt for it.
+  menu.querySelector("button").focus();
+}
+
+function closeOverflow(wrap, refocus) {
+  const menu = wrap.querySelector(".overflow-menu");
+  if (!menu) return;
+  if (wrap._overflowTeardown) { wrap._overflowTeardown(); wrap._overflowTeardown = null; }
+  menu.remove();
+  const trigger = wrap.querySelector("#docMore");
+  if (trigger) {
+    trigger.setAttribute("aria-expanded", "false");
+    if (refocus) trigger.focus();
+  }
 }
 
 async function post(url, body) {
@@ -2516,7 +2583,7 @@ function renderLibrary() {
       <h1>${which === "reference" ? "Reference library" : "Worksheet library"}</h1>
       <div class="c-meta">${esc(librarySubtitle(which))}</div>
     </div>
-    ${assistantEnabled() ? '<button class="rbtn primary" id="libAsk">🎙 Ask for a worksheet</button>' : ""}
+    ${assistantEnabled() ? '<button type="button" class="rbtn primary" id="libAsk"><span aria-hidden="true">🎙</span> Ask for a worksheet</button>' : ""}
   </div>`));
   const libAsk = el.querySelector("#libAsk");
   if (libAsk) libAsk.onclick = () => { App.assistant = null; go("assistant"); };
@@ -2620,12 +2687,18 @@ function renderTrash() {
 // Global search
 // ---------------------------------------------------------------------------
 
+// The field is a combobox: aria-expanded has to say whether the list is there.
+function setSearchExpanded(on) {
+  const input = document.getElementById("globalSearch");
+  if (input) input.setAttribute("aria-expanded", on ? "true" : "false");
+}
+
 function runSearch(q) {
   clearTimeout(App.searchTimer);
   const box = document.getElementById("searchResults");
   if (!box) return;
   const query = (q || "").trim();
-  if (!query) { box.innerHTML = ""; box.className = ""; return; }
+  if (!query) { box.innerHTML = ""; box.className = ""; box.removeAttribute("role"); setSearchExpanded(false); return; }
   App.searchTimer = setTimeout(async () => {
     try {
       const r = await fetch("/api/search?q=" + encodeURIComponent(query));
@@ -2639,35 +2712,59 @@ function runSearch(q) {
 function renderSearchResults(box, data, query) {
   box.innerHTML = "";
   box.className = "search-results";
+  box.setAttribute("role", "listbox");
+  box.setAttribute("aria-label", "Search results");
   const groups = [
     ["Clients", data.clients || []],
     ["Notes", data.notes || []],
     ["Library", data.library || []],
   ];
-  let any = false;
+  let count = 0;
+  const options = [];
   groups.forEach(([label, hits]) => {
     if (!hits.length) return;
-    any = true;
-    box.appendChild(h(`<div class="search-group-label">${esc(label)}</div>`));
+    // A listbox's children are options, so a heading among them has to be a
+    // labelled group rather than a loose div.
+    const group = h(`<div role="group" aria-label="${esc(label)}"><div class="search-group-label">${esc(label)}</div></div>`);
     hits.forEach(hit => {
-      const item = h(`<button class="search-hit"><div class="sh-title">${esc(hit.title)}</div><div class="sh-snip">${esc(stripMarkup(hit.snippet))}</div></button>`);
+      count++;
+      const item = h(`<button type="button" role="option" aria-selected="false" class="search-hit"><span class="sh-title">${esc(hit.title)}</span><span class="sh-snip">${esc(stripMarkup(hit.snippet))}</span></button>`);
       item.onclick = () => { closeSearch(); openSearchHit(hit); };
-      box.appendChild(item);
+      options.push(item);
+      group.appendChild(item);
     });
+    box.appendChild(group);
   });
-  if (!any) {
+  if (!count) {
     box.appendChild(h(`<div class="search-empty">
       <div class="se-title">No matches for &ldquo;${esc(query)}&rdquo;</div>
       <div class="se-body">Search looks at client names, note text, and your library.</div>
     </div>`));
   }
+  // Up and down through the list, Escape back to the field.
+  options.forEach((item, i) => {
+    item.onkeydown = (e) => {
+      if (e.key === "ArrowDown" && options[i + 1]) { e.preventDefault(); options[i + 1].focus(); }
+      else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        (options[i - 1] || document.getElementById("globalSearch")).focus();
+      } else if (e.key === "Escape") { e.preventDefault(); closeSearch(true); }
+    };
+  });
+  setSearchExpanded(true);
+  announce(count
+    ? `${count} ${plural(count, "result")} for ${query}.`
+    : `No results for ${query}.`);
 }
 
-function closeSearch() {
+// refocus only when the field is where you came from (Escape), never when a
+// result was chosen and a whole screen just opened behind it.
+function closeSearch(refocus) {
   const s = document.getElementById("globalSearch");
   const box = document.getElementById("searchResults");
-  if (s) s.value = "";
-  if (box) { box.innerHTML = ""; box.className = ""; }
+  if (s) { s.value = ""; if (refocus) s.focus(); }
+  if (box) { box.innerHTML = ""; box.className = ""; box.removeAttribute("role"); }
+  setSearchExpanded(false);
 }
 
 function openSearchHit(hit) {
@@ -2796,7 +2893,7 @@ function renderSettings() {
     <div class="setup-step-head"><h2>Profession and note format</h2><span class="set-saved" id="savedA"></span></div>
     <p class="setup-note">This shapes the vocabulary Debrief expects and the note structure it writes.</p>
   </div>`);
-  const profField = h(`<div class="set-field"><label class="set-label">Profession</label></div>`);
+  const profField = h(`<div class="set-field"><label class="set-label" for="setProf">Profession</label></div>`);
   const profSel = h(`<select class="set-select" id="setProf"></select>`);
   professions.forEach(pf => {
     const o = h(`<option value="${esc(pf.id)}">${esc(pf.name)}</option>`);
@@ -2810,7 +2907,7 @@ function renderSettings() {
   profField.appendChild(profSel);
   cardA.appendChild(profField);
 
-  const fmtField = h(`<div class="set-field"><label class="set-label">Active note format</label></div>`);
+  const fmtField = h(`<div class="set-field"><label class="set-label" for="setFmt">Active note format</label></div>`);
   const fmtSel = h(`<select class="set-select" id="setFmt"></select>`);
   // Grouped, so an imported format is visibly yours and not something Debrief
   // shipped with.
@@ -2894,10 +2991,11 @@ function renderSettings() {
 
   // ---- Card C: personal dictionary ----
   const cardC = h(`<div class="panel setup-card ${ent(4)}">
-    <div class="setup-step-head"><h2>Personal dictionary</h2><span class="set-saved" id="savedC"></span></div>
-    <p class="setup-note">One name or phrase per line. Debrief will get these right when you say them: client names, medication names, the terms you use.</p>
+    <div class="setup-step-head"><h2 id="dictHead">Personal dictionary</h2><span class="set-saved" id="savedC"></span></div>
+    <p class="setup-note" id="dictNote">One name or phrase per line. Debrief will get these right when you say them: client names, medication names, the terms you use.</p>
+    <label class="visually-hidden" for="setDict">Personal dictionary, one name or phrase per line</label>
   </div>`);
-  const area = h(`<textarea class="set-textarea" id="setDict" rows="6" spellcheck="false" placeholder="Priya Raghunathan&#10;sertraline&#10;EMDR"></textarea>`);
+  const area = h(`<textarea class="set-textarea" id="setDict" rows="6" spellcheck="false" aria-describedby="dictNote" placeholder="Priya Raghunathan&#10;sertraline&#10;EMDR"></textarea>`);
   area.value = dictText;
   // Every other setting on this screen saves itself and says "Saved". The
   // dictionary used to be the one place you could lose work by navigating away,
@@ -3020,7 +3118,7 @@ function renderImportStage(flow, body, ctx) {
 function importStageSource(flow, body, ctx) {
   body.appendChild(importHeader(flow, ctx.close, "Import a note template"));
   body.appendChild(h(`<p class="import-lead">Upload a blank or example template, or paste its text. Debrief reads only the structure to build a matching note format.</p>`));
-  if (flow.error) body.appendChild(h(`<div class="import-error">${esc(flow.error)}</div>`));
+  if (flow.error) body.appendChild(h(`<div class="import-error" role="alert">${esc(flow.error)}</div>`));
 
   const hidden = h(`<input type="file" style="display:none" accept=".md,.txt,.docx,.pdf" />`);
   hidden.onchange = () => { if (hidden.files.length) doUpload(flow, hidden.files[0], ctx); };
@@ -3031,7 +3129,7 @@ function importStageSource(flow, body, ctx) {
   body.appendChild(hidden);
 
   body.appendChild(h(`<div class="import-or">or paste the template text</div>`));
-  const area = h(`<textarea class="set-textarea" rows="6" placeholder="Paste your template here"></textarea>`);
+  const area = h(`<textarea class="set-textarea" rows="6" aria-label="Template text" placeholder="Paste your template here"></textarea>`);
   area.value = flow.docText || "";
   body.appendChild(area);
 
@@ -3077,7 +3175,7 @@ function importStageMode(flow, body, ctx) {
   const meta = flow.docText ? "Template read." : "";
   const trunc = flow.truncated ? " It was long, so only the first part was used." : "";
   if (meta) body.appendChild(h(`<p class="import-lead">${esc(meta + trunc)}</p>`));
-  if (flow.error) body.appendChild(h(`<div class="import-error">${esc(flow.error)}</div>`));
+  if (flow.error) body.appendChild(h(`<div class="import-error" role="alert">${esc(flow.error)}</div>`));
 
   const radios = h(`<div class="set-radios"></div>`);
   const local = h(`<label class="set-radio">
@@ -3104,8 +3202,9 @@ function importStageMode(flow, body, ctx) {
     </label>`);
     consentRow.querySelector("input").onchange = (e) => { flow.consent = e.target.checked; };
     box.appendChild(consentRow);
-    const keyField = h(`<div class="set-field"><label class="set-label">Gemini API key</label></div>`);
-    const key = h(`<input type="password" class="set-select" autocomplete="off" placeholder="Pasted here, kept in memory, cleared after the call" />`);
+    const keyId = uid("impkey");
+    const keyField = h(`<div class="set-field"><label class="set-label" for="${keyId}">Gemini API key</label></div>`);
+    const key = h(`<input type="password" id="${keyId}" class="set-select" autocomplete="off" placeholder="Pasted here, kept in memory, cleared after the call" />`);
     key.value = flow.apiKey || "";
     key.oninput = () => { flow.apiKey = key.value; };
     keyField.appendChild(key);
@@ -3159,10 +3258,11 @@ async function doCompile(flow, ctx) {
 function importStageSpec(flow, body, ctx) {
   body.appendChild(importHeader(flow, ctx.close, "Check the format Debrief built"));
   body.appendChild(h(`<p class="import-lead">Edit the name and sections. This is the structure every note in this format will follow.</p>`));
-  if (flow.error) body.appendChild(h(`<div class="import-error">${esc(flow.error)}</div>`));
+  if (flow.error) body.appendChild(h(`<div class="import-error" role="alert">${esc(flow.error)}</div>`));
 
-  const nameField = h(`<div class="set-field"><label class="set-label">Format name</label></div>`);
-  const nameInput = h(`<input type="text" class="set-select" />`);
+  const nameId = uid("impname");
+  const nameField = h(`<div class="set-field"><label class="set-label" for="${nameId}">Format name</label></div>`);
+  const nameInput = h(`<input type="text" id="${nameId}" class="set-select" />`);
   nameInput.value = flow.spec.name || "";
   nameInput.oninput = () => { flow.spec.name = nameInput.value; };
   nameField.appendChild(nameInput);
@@ -3174,10 +3274,10 @@ function importStageSpec(flow, body, ctx) {
     flow.spec.sections.forEach((sec, i) => {
       const row = h(`<div class="import-sec-row">
         <div class="import-sec-fields">
-          <input type="text" class="set-select import-sec-heading" placeholder="Heading" />
-          <input type="text" class="set-select import-sec-desc" placeholder="What goes in this section" />
+          <input type="text" class="set-select import-sec-heading" aria-label="Section ${i + 1} heading" placeholder="Heading" />
+          <input type="text" class="set-select import-sec-desc" aria-label="Section ${i + 1}, what goes in it" placeholder="What goes in this section" />
         </div>
-        <button class="import-sec-del" aria-label="Remove section" ${flow.spec.sections.length <= 1 ? "disabled" : ""}>✕</button>
+        <button type="button" class="import-sec-del" aria-label="Remove section ${i + 1}" ${flow.spec.sections.length <= 1 ? "disabled" : ""}>✕</button>
       </div>`);
       const heading = row.querySelector(".import-sec-heading");
       const desc = row.querySelector(".import-sec-desc");
@@ -3195,7 +3295,7 @@ function importStageSpec(flow, body, ctx) {
   renderRows();
   body.appendChild(list);
 
-  const addRow = h(`<button class="btn btn-ghost btn-compact import-add">＋ Add section</button>`);
+  const addRow = h(`<button type="button" class="btn btn-ghost btn-compact import-add"><span aria-hidden="true">＋</span> Add section</button>`);
   addRow.onclick = () => {
     if (flow.spec.sections.length >= 12) { flow.error = "A format can have at most 12 sections."; ctx.repaint(); return; }
     flow.spec.sections.push({ heading: "", description: "" }); renderRows();
@@ -3499,6 +3599,7 @@ function renderWizardProfession() {
     <div class="setup-step-head"><span class="setup-num">3</span><h2>Your profession</h2></div>
     <p class="setup-note">This sets the vocabulary Debrief expects and picks a sensible default note format.</p>
   </div>`);
+  card.appendChild(h(`<label class="visually-hidden" for="wizProf">Your profession</label>`));
   const sel = h(`<select class="set-select" id="wizProf"></select>`);
   professions.forEach(pf => {
     const o = h(`<option value="${esc(pf.id)}">${esc(pf.name)}</option>`);
@@ -3524,6 +3625,7 @@ function renderWizardFormat() {
     <div class="setup-step-head"><span class="setup-num">4</span><h2>Your note format</h2></div>
     <p class="setup-note">Pick the structure your notes should follow, or import a sample of your own.</p>
   </div>`);
+  card.appendChild(h(`<label class="visually-hidden" for="wizFmt">Your note format</label>`));
   const sel = h(`<select class="set-select" id="wizFmt"></select>`);
   formats.forEach(f => {
     const o = h(`<option value="${esc(f.id)}">${esc(f.name)}</option>`);
