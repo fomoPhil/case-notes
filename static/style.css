@@ -172,6 +172,29 @@
   }
   .step-title::after { content: ""; height: 1px; flex: 1; background: rgba(95,122,97,0.18); }
 
+  /* A screen that opens by speaking to the clinician rather than labelling a
+     step: serif headline, one plain sentence under it. Used where the words are
+     a sentence ("Read it over.", "That's handled.") and an uppercase eyebrow
+     would shout them. */
+  .flow-head { margin: 8px 0 18px; }
+  .flow-head h2 {
+    font-family: var(--font-serif);
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    margin: 0;
+    color: var(--ink);
+    text-wrap: balance;
+  }
+  .flow-head p {
+    margin: 6px 0 0;
+    font-size: 15px;
+    line-height: 1.55;
+    color: var(--ink-soft);
+    max-width: 62ch;
+    text-wrap: pretty;
+  }
+
   .panel {
     background: rgba(255,255,255,0.94);
     border-radius: var(--radius-lg);
@@ -838,8 +861,24 @@
   .btn-primary:disabled { background: var(--ink-faint); box-shadow: none; cursor: default; opacity: 0.7; }
   .btn-ghost { background: transparent; color: var(--ink-soft); }
   .btn-ghost:hover { color: var(--ink); background: rgba(95,122,97,0.06); }
+  .btn-danger { background: var(--red); color: #fff; box-shadow: 0 3px 10px rgba(179,82,74,0.26); }
+  .btn-danger:hover { background: #9c463f; box-shadow: 0 5px 16px rgba(179,82,74,0.32); }
+  .btn-danger:focus-visible { box-shadow: var(--ring), 0 3px 10px rgba(179,82,74,0.26); }
   .actions-bar { display: flex; align-items: center; gap: 12px; margin-top: 26px; }
   .actions-bar .grow { flex: 1; }
+
+  /* The consequence of the approve button, in words, directly under it. Right
+     aligned so it hangs off the button it describes. */
+  .approve-consequence {
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--ink-soft);
+    margin: 10px 0 0;
+    text-align: right;
+    margin-left: auto;
+    max-width: 58ch;
+    text-wrap: pretty;
+  }
 
   /* Assistant cards (the home screen's own invitation lives with .home-*) */
   .asst-card { display: flex; flex-direction: column; gap: 14px; }
@@ -1335,6 +1374,12 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 }
 .modal .pick:hover { box-shadow: var(--ring-sage); background: var(--accent-soft); }
 .modal .pick:active { scale: 0.98; }
+
+/* Confirm sheet: used only where an action cannot be undone. */
+.confirm-modal { max-width: 400px; }
+.confirm-modal .confirm-body { font-size: 14px; line-height: 1.55; color: var(--ink-soft); margin: 0; text-wrap: pretty; }
+.confirm-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.confirm-actions .btn { font-size: 14px; padding: 11px 18px; }
 
 .trash-list { max-width: 640px; }
 .trash-row { display: flex; align-items: center; gap: 12px; padding: 13px 16px; border: none; box-shadow: var(--row-shadow); border-radius: var(--radius-row); background: var(--panel); margin-bottom: 10px; }

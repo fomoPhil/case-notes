@@ -724,9 +724,63 @@ function buildRiskRow(label, key, riskObj) {
   return row;
 }
 
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MONTHS_LONG = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+// "Thursday 31 July at 3:00 PM" from a local wall-clock ISO string. Read by
+// regex rather than Date(iso) so a timezone can never slide the appointment.
+function fmtWhenShort(iso) {
+  const m = String(iso == null ? "" : iso).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (!m) return "";
+  const day = new Date(+m[1], +m[2] - 1, +m[3]);
+  if (isNaN(day.getTime())) return "";
+  const hh = +m[4];
+  return `${WEEKDAYS[day.getDay()]} ${+m[3]} ${MONTHS_LONG[+m[2] - 1]} at ${hh % 12 || 12}:${m[5]} ${hh >= 12 ? "PM" : "AM"}`;
+}
+
+function joinClauses(parts) {
+  if (parts.length === 1) return parts[0];
+  if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
+  return `${parts.slice(0, -1).join(", ")}, and ${parts[parts.length - 1]}`;
+}
+
+// One sentence naming exactly what the approve button will do, built from the
+// actions that are actually ticked. The clinician should never have to infer
+// the consequence of the only irreversible button on the screen.
+function approveConsequence(plan, enabled) {
+  const name = (plan.client && plan.client.name) || "this client";
+  const acts = (plan.actions || []).filter((a, i) => enabled[i]);
+  const parts = [`Files the note under ${name}`];
+  const appt = acts.find(a => a.type === "schedule_followup");
+  if (appt) {
+    const when = fmtWhenShort(appt.resolved_datetime) || appt.datetime_display || "";
+    parts.push(when ? `books ${when}` : "books the appointment");
+  }
+  if (acts.some(a => a.type === "draft_client_email")) {
+    parts.push("opens an email draft in Mail for you to read");
+  }
+  return parts.length === 1
+    ? `${parts[0]}. Nothing else happens, and nothing is sent.`
+    : `${joinClauses(parts)}. Nothing is sent.`;
+}
+window.approveConsequence = approveConsequence;
+
+// Kept in sync with the checklist: unticking the email has to change the promise
+// under the button, not leave a stale one.
+function refreshApproveConsequence() {
+  const node = document.getElementById("approveConsequence");
+  if (!node || !App.plan) return;
+  const enabled = {};
+  document.querySelectorAll(".actions-list .action input[type=checkbox]").forEach(b => { enabled[+b.dataset.i] = b.checked; });
+  node.textContent = approveConsequence(App.plan, enabled);
+}
+
 function renderReview() {
   const p = App.plan, note = p.note || {};
-  el.appendChild(h(`<div class="step-title ${ent(1)}">Review before anything runs</div>`));
+  el.appendChild(h(`<div class="flow-head ${ent(1)}">
+    <h2>Read it over.</h2>
+    <p>Nothing is filed or sent yet.</p>
+  </div>`));
 
   const risk = note.risk_present && note.risk ? note.risk : null;
   const notePanel = h(`<div class="panel doc ${ent(1)}"></div>`);
@@ -771,7 +825,7 @@ function renderReview() {
   notePanel.appendChild(h(`<details class="transcript"><summary>corrected transcript</summary><p>${esc(p.corrected_transcript || p.transcript || "")}</p></details>`));
   el.appendChild(notePanel);
 
-  el.appendChild(h(`<div class="step-title ${ent(2)}">Actions to run</div>`));
+  el.appendChild(h(`<div class="step-title ${ent(2)}">What happens when you approve</div>`));
   const actPanel = h(`<div class="panel ${ent(2)}"></div>`);
 
   // Deterministic gap nudges above the checklist. Nudges that add a disabled
@@ -818,7 +872,7 @@ function renderReview() {
   }
 
   const list = h(`<div class="actions-list"></div>`);
-  if (!p.actions.length) list.appendChild(h(`<div class="a-sub" style="color:var(--ink-faint)">No admin actions were requested in this debrief.</div>`));
+  if (!p.actions.length) list.appendChild(h(`<div class="a-sub" style="color:var(--ink-faint)">Nothing to book or send in this debrief. The note is the only thing that gets filed.</div>`));
   p.actions.forEach((a, i) => {
     const when = a.datetime_display ? `<div class="a-when">${esc(a.datetime_display)}</div>` : "";
     const title = a.type === "schedule_followup" ? "Book follow-up appointment"
@@ -830,7 +884,11 @@ function renderReview() {
       <div class="body"><div class="a-title">${title}</div>${when}${sub}</div>
     </label>`);
     const cb = row.querySelector("input");
-    cb.onchange = () => { row.classList.toggle("on", cb.checked); row.classList.toggle("off", !cb.checked); };
+    cb.onchange = () => {
+      row.classList.toggle("on", cb.checked);
+      row.classList.toggle("off", !cb.checked);
+      refreshApproveConsequence();
+    };
     list.appendChild(row);
   });
   actPanel.appendChild(list);
@@ -851,13 +909,50 @@ function renderReview() {
   el.appendChild(h(`<div class="edit-microcopy ${ent(3)}">Click any section to edit. Your edits are what gets filed.</div>`));
 
   const bar = h(`<div class="actions-bar ${ent(3)}">
-    <button class="btn btn-ghost" id="redo">Discard</button>
+    <button class="btn btn-ghost" id="redo">Discard and record again</button>
     <div class="grow"></div>
-    <button class="btn btn-primary" id="approve">Approve and run</button>
+    <button class="btn btn-primary" id="approve">Approve and file</button>
   </div>`);
-  bar.querySelector("#redo").onclick = () => go("record");
+  bar.querySelector("#redo").onclick = confirmDiscard;
   bar.querySelector("#approve").onclick = executePlan;
   el.appendChild(bar);
+
+  // The consequence of the only irreversible button on the screen, in words,
+  // directly beneath it.
+  el.appendChild(h(`<div class="approve-consequence ${ent(3)}" id="approveConsequence"></div>`));
+  refreshApproveConsequence();
+}
+
+// A small, keyboard-dismissable confirm. Used for the one action on the review
+// screen that cannot be undone.
+function confirmModal({ title, body, cancelLabel, confirmLabel, danger, onConfirm }) {
+  const backdrop = h(`<div class="modal-backdrop"><div class="modal confirm-modal" role="dialog" aria-modal="true">
+    <h4>${esc(title)}</h4>
+    <p class="confirm-body">${esc(body)}</p>
+    <div class="confirm-actions">
+      <button class="btn btn-ghost" id="cfCancel">${esc(cancelLabel)}</button>
+      <button class="btn ${danger ? "btn-danger" : "btn-primary"}" id="cfGo">${esc(confirmLabel)}</button>
+    </div>
+  </div>`);
+  const close = () => { document.removeEventListener("keydown", onKey); backdrop.remove(); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  backdrop.querySelector("#cfCancel").onclick = close;
+  backdrop.querySelector("#cfGo").onclick = () => { close(); onConfirm(); };
+  backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
+  document.addEventListener("keydown", onKey);
+  document.body.appendChild(backdrop);
+  backdrop.querySelector("#cfCancel").focus();
+}
+
+function confirmDiscard() {
+  confirmModal({
+    title: "Discard this draft?",
+    body: "The note, your edits, and the recording go away. Nothing has been filed, so there is nothing to undo afterwards.",
+    cancelLabel: "Keep editing",
+    confirmLabel: "Discard",
+    danger: true,
+    onConfirm: () => { App.plan = null; go("record"); },
+  });
 }
 
 function renderExecuting() {
