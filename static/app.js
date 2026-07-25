@@ -638,11 +638,36 @@ const ALERT_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" st
 // rather than making a blanket claim the app cannot keep.
 const PRIVACY_PROMISE = "Your recordings, notes, and client records never leave this Mac. The one exception is the optional template importer, which asks first.";
 
+// The active note format's display name ("DAP note", "GROW model", or whatever
+// an imported format was named). Never an id: a coach on GROW must not be told
+// Debrief is writing a DAP note.
+function formatDisplayName(id) {
+  const fid = id
+    || (App.plan && App.plan.session_meta && App.plan.session_meta.format)
+    || (App.settings && App.settings.note_format)
+    || SETTINGS_DEFAULTS.note_format;
+  const list = (App.settingsPayload && App.settingsPayload.formats) || FORMATS_FALLBACK;
+  const hit = list.find(f => f.id === fid);
+  return String((hit && hit.name) || fid || "note");
+}
+
+// "your DAP note", "your Meeting memo": only add the word "note" when the
+// format's own name does not already end in a document noun.
+function noteLabel(id) {
+  const name = formatDisplayName(id).trim();
+  return /(note|notes|memo|summary|report|record|minutes)$/i.test(name) ? name : name + " note";
+}
+
 function renderProcessing() {
-  const steps = ["Transcribe the recording", "Tidy clinical terms", "Draft the DAP note", "Plan admin actions"];
+  const steps = [
+    "Listening back",
+    "Checking clinical terms",
+    `Writing your ${noteLabel()}`,
+    "Working out the follow-ups",
+  ];
   const panel = h(`<div class="panel proc-steps ${ent(1)}">
-    ${steps.map((t, i) => `<div class="pstep ${i === 0 ? "active" : "todo"}"><span class="ic">${CHECK_SVG}</span><span class="t">${t}</span></div>`).join("")}
-    <div class="local-note">${LOCK_SVG}Everything runs on this Mac. Nothing leaves it.</div>
+    ${steps.map((t, i) => `<div class="pstep ${i === 0 ? "active" : "todo"}"><span class="ic">${CHECK_SVG}</span><span class="t">${esc(t)}</span></div>`).join("")}
+    <div class="local-note">${LOCK_SVG}Everything runs on this Mac. Nothing is filed or sent until you have read it and approved it.</div>
   </div>`);
   el.appendChild(panel);
   // Optimistic pacing only; the real work finishes whenever the server replies.

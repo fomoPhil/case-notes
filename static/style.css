@@ -598,7 +598,7 @@
   }
   .processing .label { color: var(--ink-soft); font-size: 14px; text-align: center; text-wrap: pretty; }
 
-  .proc-steps { max-width: 380px; margin: 24px auto 0; padding: 20px 24px 16px; }
+  .proc-steps { max-width: 420px; margin: 24px auto 0; padding: 20px 24px 16px; }
   .pstep { display: flex; align-items: center; gap: 12px; padding: 9px 0; }
   .pstep .ic { flex: none; width: 22px; height: 22px; border-radius: 999px; display: grid; place-items: center; }
   .pstep .ic svg { width: 12px; height: 12px; opacity: 0; transform: scale(0.25); filter: blur(4px); transition-property: opacity, transform, filter; transition-duration: 300ms; transition-timing-function: var(--ease); }
@@ -610,8 +610,10 @@
   .pstep.done .t { color: var(--ink-soft); }
   .pstep.active .t { font-weight: 600; color: var(--ink); }
   .pstep.todo .t { color: var(--ink-faint); }
-  .local-note { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; color: var(--ink-faint); margin: 14px 0 0; text-align: center; }
-  .local-note svg { width: 11px; height: 11px; color: var(--accent-ink); flex: none; }
+  /* Block, not flex: the reassurance now runs to a full sentence, and the lock
+     has to ride the first line of centred text rather than float beside it. */
+  .local-note { font-size: 12px; line-height: 1.55; color: var(--ink-faint); margin: 14px auto 0; text-align: center; text-wrap: pretty; max-width: 44ch; }
+  .local-note svg { width: 11px; height: 11px; color: var(--accent-ink); vertical-align: -1px; margin-right: 5px; }
 
   .panel.doc {
     /* Explicit block: the review paper shares the .doc class name with the
