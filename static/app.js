@@ -598,8 +598,11 @@ function render() {
     el = pane;
   }
   // Unconditional. An allowlist of screens allowed to show an error is an
-  // allowlist of screens that silently swallow one.
-  if (App.error) el.appendChild(errorBanner(App.error));
+  // allowlist of screens that silently swallow one. The one exception is the
+  // recorder holding a failed recording: that screen states the same failure in
+  // full, with the audio and a Try again beside it, so a banner above it would
+  // just say the bad news twice.
+  if (App.error && !(App.state === "record" && App.lastRecording)) el.appendChild(errorBanner(App.error));
   (DISPATCH[App.state] || renderClients)();
 }
 
@@ -966,12 +969,17 @@ function renderRecord() {
   if (App.lastRecording) {
     const retry = h(`<div class="retry-card">
       <h4>That note did not save.</h4>
-      <p>Debrief could not finish processing your recording, so nothing was written. Your recording is still here.</p>
+      <p>Debrief could not finish processing your recording, so nothing was written and nothing was sent. Your recording is still here.</p>
+      <p class="retry-fix">Try it again, or open Setup to check that Debrief's tools are running.</p>
       <div class="retry-actions">
         <button class="btn btn-primary btn-compact" id="retryRec">Try again</button>
         <button class="btn btn-ghost btn-compact" id="dropRec">Discard recording</button>
       </div>
     </div>`);
+    // The reason it failed, folded away, so the card stays calm but nothing is
+    // hidden from whoever is helping them.
+    const tech = toErr(App.error).technical;
+    if (tech) retry.appendChild(technicalDetails(tech));
     retry.querySelector("#retryRec").onclick = () => { if (App.lastRecording) processRecording(App.lastRecording); };
     retry.querySelector("#dropRec").onclick = () => { App.lastRecording = null; App.error = null; render(); };
     stage.insertBefore(retry, stage.querySelector(".record-client").nextSibling);
@@ -2523,6 +2531,29 @@ function settingsSaved(node) {
   }, 1500);
 }
 
+// Builtin ids come from the server so a new builtin can never go stale here.
+// The fallback list covers a payload fetched before the flag existed.
+const BUILTIN_FORMAT_IDS = new Set(FORMATS_FALLBACK.map(f => f.id));
+function isBuiltinFormat(f) {
+  return typeof f.builtin === "boolean" ? f.builtin : BUILTIN_FORMAT_IDS.has(f.id);
+}
+
+// Remove an imported format. The server refuses builtins and falls the active
+// format back to DAP, so the message says what actually happened.
+async function removeFormat(f) {
+  const wasActive = App.settings && App.settings.note_format === f.id;
+  try {
+    const r = await fetch("/api/settings/formats/" + encodeURIComponent(f.id), { method: "DELETE" });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(apiErr(data, r.status));
+    await refreshSettings();
+    if (App.state === "settings") render();
+    toast(wasActive ? "Removed. Debrief is back to DAP notes." : `Removed ${f.name}.`);
+  } catch (e) {
+    toast(errText(e));
+  }
+}
+
 async function openSettings() {
   App.state = "settings";
   App.nav = "settings";
@@ -2571,17 +2602,55 @@ function renderSettings() {
 
   const fmtField = h(`<div class="set-field"><label class="set-label">Active note format</label></div>`);
   const fmtSel = h(`<select class="set-select" id="setFmt"></select>`);
-  formats.forEach(f => {
+  // Grouped, so an imported format is visibly yours and not something Debrief
+  // shipped with.
+  const builtins = formats.filter(isBuiltinFormat);
+  const customs = formats.filter(f => !isBuiltinFormat(f));
+  const addOptions = (parent, list) => list.forEach(f => {
     const o = h(`<option value="${esc(f.id)}">${esc(f.name)}</option>`);
     if (f.id === s.note_format) o.selected = true;
-    fmtSel.appendChild(o);
+    parent.appendChild(o);
   });
+  if (customs.length) {
+    const gb = h(`<optgroup label="Built in"></optgroup>`);
+    addOptions(gb, builtins);
+    fmtSel.appendChild(gb);
+    const gc = h(`<optgroup label="Your imports"></optgroup>`);
+    addOptions(gc, customs);
+    fmtSel.appendChild(gc);
+  } else {
+    addOptions(fmtSel, formats);
+  }
   fmtSel.onchange = async () => {
     try { await postSettings({ note_format: fmtSel.value }); settingsSaved(cardA.querySelector("#savedA")); }
     catch (e) { toast(errText(e)); }
   };
   fmtField.appendChild(fmtSel);
   cardA.appendChild(fmtField);
+
+  // Anything you can add, you must be able to remove. Imported formats used to
+  // pile up in the picker with no way out.
+  if (customs.length) {
+    const box = h(`<div class="fmt-list"><div class="fmt-list-label">Your imported formats</div></div>`);
+    customs.forEach(f => {
+      const count = Number(f.sections);
+      const meta = Number.isFinite(count) && count > 0 ? `${count} ${plural(count, "section")}` : "Imported format";
+      const row = h(`<div class="fmt-row">
+        <div class="fmt-body"><div class="fmt-name">${esc(f.name)}</div><div class="fmt-meta">${esc(meta)}</div></div>
+        <button class="btn btn-ghost btn-compact fmt-del">Remove</button>
+      </div>`);
+      row.querySelector(".fmt-del").onclick = () => confirmModal({
+        title: "Remove this format?",
+        body: `${f.name} is deleted from this Mac. Notes already filed in it keep their text and are not touched.`,
+        cancelLabel: "Keep it",
+        confirmLabel: "Remove",
+        danger: true,
+        onConfirm: () => removeFormat(f),
+      });
+      box.appendChild(row);
+    });
+    cardA.appendChild(box);
+  }
 
   const importBtn = h(`<button class="btn btn-ghost set-import-btn" id="setImport">Import a note template</button>`);
   importBtn.onclick = () => launchImportFlow({
