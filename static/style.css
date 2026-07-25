@@ -448,8 +448,9 @@
   }
   .note-section p { margin: 0; font-family: var(--font-serif); font-size: 16.5px; line-height: 1.62; color: var(--ink); text-wrap: pretty; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 18px; }
-  .chip { font-size: 12px; color: var(--accent-ink); border: 1px solid rgba(95,122,97,0.25); background: rgba(236,241,234,0.5); border-radius: 999px; padding: 3px 11px; }
-  .chip.theme { color: var(--ink-soft); border-color: var(--line); background: rgba(251,250,247,0.8); }
+  /* Chips match the borderless pill language used by .rchip and .filedchip. */
+  .chip { font-size: 12px; color: var(--accent-ink); border: none; box-shadow: 0 0 0 1px rgba(95,122,97,0.22); background: rgba(236,241,234,0.5); border-radius: 999px; padding: 4px 11px; }
+  .chip.theme { color: var(--ink-soft); box-shadow: var(--ring-hair); background: rgba(251,250,247,0.8); }
 
   /* The risk panel. The :not() guards matter: "risk" is also a modifier on the
      letterhead stamp and on the session-list chip, and without them those tiny

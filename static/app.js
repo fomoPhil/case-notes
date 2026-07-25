@@ -387,7 +387,7 @@ function renderClients() {
     const risk = (c.risk_flags && c.risk_flags.length) ? `<span class="tag-risk">risk history on file</span>` : "";
     const concerns = (c.presenting_concerns || []).join(", ");
     const initials = (c.name || "?").trim().split(/\s+/).map(w => w[0]).slice(0, 2).join("").toUpperCase();
-    const card = h(`<button class="client-card ${ent(i + 1)}">
+    const card = h(`<button class="client-card ${ent(i + 2)}">
       <span class="mono">${esc(initials)}</span>
       <span>
         <div class="name">${esc(c.name)}</div>
