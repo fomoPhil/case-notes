@@ -105,6 +105,7 @@ async function failure(r) {
   return e;
 }
 function errOf(e) { return (e && e.debrief) || (e && e.message) || "Something went wrong."; }
+function errText(e) { return toErr(errOf(e)).text; }
 
 function toErr(e) {
   if (!e) return null;
@@ -1554,7 +1555,7 @@ function renderClientRecord() {
   el.appendChild(h(`<div class="crumb"><span class="link" id="crHome">Clients</span> / <b>${esc(name)}</b></div>`));
   el.querySelector("#crHome").onclick = () => { App.client = null; go("clients"); };
 
-  if (!d) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Opening record...</div></div>`)); return; }
+  if (!d) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Opening the record...</div></div>`)); return; }
   const pf = d.profile || {};
   const framework = pf.framework || c.framework || "";
   const concerns = (pf.presenting_concerns || []).join(", ");
@@ -1727,13 +1728,18 @@ async function emailDocument(clientId, path, subject, body) {
     const r = await fetch("/api/documents/email", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     if (!r.ok) throw await failure(r);
     toast("Mail draft opened for review. Nothing was sent.");
-  } catch (e) { toast(toErr(errOf(e)).text); }
+  } catch (e) { toast(errText(e)); }
 }
 
-function toast(msg) {
-  const t = h(`<div class="banner" style="position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:60;background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow);color:var(--ink)">${esc(msg)}</div>`);
+function toast(msg, action) {
+  const t = h(`<div class="toast"><span class="toast-msg">${esc(msg)}</span></div>`);
+  if (action && action.label) {
+    const btn = h(`<button class="toast-action">${esc(action.label)}</button>`);
+    btn.onclick = () => { t.remove(); action.onClick(); };
+    t.appendChild(btn);
+  }
   document.body.appendChild(t);
-  setTimeout(() => t.remove(), 3200);
+  setTimeout(() => t.remove(), action ? 6000 : 3200);
 }
 
 // ---------------------------------------------------------------------------
@@ -1764,7 +1770,7 @@ function renderDocument() {
   bc.querySelector("#dcClient").onclick = () => { if (d) openClient(App.client); else go("clients"); };
 
   if (App.error) el.appendChild(errorBanner(App.error));
-  if (!doc) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Opening document...</div></div>`)); return; }
+  if (!doc) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Opening the document...</div></div>`)); return; }
 
   const fm = doc.frontmatter || {};
   const isSession = doc.kind === "session-note";
@@ -1776,7 +1782,7 @@ function renderDocument() {
     <span class="spacer"></span>
     <button class="rbtn" id="docEdit">✎ Edit</button>
     <button class="rbtn" id="docDownload">⬇ Download PDF</button>
-    <button class="rbtn primary" id="docEmail">✉ Email draft to ${esc(firstName(clientName))}</button>
+    <button class="rbtn ${isSession ? "" : "primary"}" id="docEmail">✉ Email draft to ${esc(firstName(clientName))}</button>
     <span class="overflow-wrap"><button class="rbtn" id="docMore">···</button></span>
   </div>`);
   el.appendChild(bar);
@@ -1872,14 +1878,14 @@ async function amendNote(path, text) {
   try {
     const r = await fetch("/api/notes/amend", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, text }) });
     if (!r.ok) throw await failure(r);
-  } catch (e) { toast(toErr(errOf(e)).text); }
+  } catch (e) { toast(errText(e)); }
 }
 
 async function saveDocument(path, markdown) {
   try {
     const r = await fetch("/api/documents/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, markdown }) });
     if (!r.ok) throw await failure(r);
-  } catch (e) { toast(toErr(errOf(e)).text); }
+  } catch (e) { toast(errText(e)); }
 }
 
 function emailDocumentFromView(doc) {
@@ -1901,8 +1907,14 @@ function toggleOverflow(wrap, doc) {
   menu.querySelector('[data-a="open"]').onclick = () => { post("/api/open", { path: doc.path }); menu.remove(); };
   menu.querySelector('[data-a="trash"]').onclick = async () => {
     menu.remove();
-    await post("/api/trash", { path: doc.path });
-    toast("Moved to Trash. Restore it from the Trash view.");
+    const trashed = await post("/api/trash", { path: doc.path });
+    toast("Moved to Trash.", trashed && trashed.token ? {
+      label: "Undo",
+      onClick: async () => {
+        await post("/api/trash/restore", { token: trashed.token });
+        if (App.client) openClient(App.client); else go("clients");
+      },
+    } : null);
     if (App.client) openClient(App.client); else go("clients");
   };
   const closer = (e) => { if (!wrap.contains(e.target)) { menu.remove(); document.removeEventListener("click", closer); } };
@@ -1914,7 +1926,7 @@ async function post(url, body) {
     const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     if (!r.ok) throw await failure(r);
     return await r.json();
-  } catch (e) { toast(toErr(errOf(e)).text); }
+  } catch (e) { toast(errText(e)); }
 }
 
 // ---------------------------------------------------------------------------
@@ -1943,20 +1955,33 @@ async function openLibrary(which) {
   if (App.state === "library") render();
 }
 
+// Two libraries, two jobs. Reference used to borrow the worksheet line, which
+// told a clinician nothing about what belongs in it.
+function librarySubtitle(which) {
+  if (which === "reference") {
+    return assistantEnabled()
+      ? "Things you look up rather than hand out: protocols, criteria, your own notes to self. Ask the assistant to write one, or add your own."
+      : "Things you look up rather than hand out: protocols, criteria, your own notes to self. Add your own from a client's Documents tab.";
+  }
+  return assistantEnabled()
+    ? "Handouts you give to clients. Ask the assistant for a new one by voice, or add your own."
+    : "Handouts you give to clients. Add your own from a client's Documents tab.";
+}
+
 function renderLibrary() {
   const which = App.libWhich || "worksheets";
   const lib = App.library;
   el.appendChild(h(`<div class="lib-head">
     <div class="grow">
       <h1>${which === "reference" ? "Reference library" : "Worksheet library"}</h1>
-      <div class="c-meta">${assistantEnabled() ? "Reusable client resources. Ask the assistant for a new one by voice, or add your own." : "Reusable client resources. Add your own from a client's Documents tab."}</div>
+      <div class="c-meta">${esc(librarySubtitle(which))}</div>
     </div>
     ${assistantEnabled() ? '<button class="rbtn primary" id="libAsk">🎙 Ask for a worksheet</button>' : ""}
   </div>`));
   const libAsk = el.querySelector("#libAsk");
   if (libAsk) libAsk.onclick = () => { App.assistant = null; go("assistant"); };
   if (App.error) el.appendChild(errorBanner(App.error));
-  if (!lib) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Loading library...</div></div>`)); return; }
+  if (!lib) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Opening the library...</div></div>`)); return; }
 
   const items = which === "reference" ? (lib.reference || []) : (lib.worksheets || []);
   const grid = h(`<div class="libgrid"></div>`);
@@ -1966,7 +1991,6 @@ function renderLibrary() {
     const card = h(`<div class="libcard">
       <div class="thumb">${libThumb(it.title)}</div>
       <h5>${esc(it.title)}</h5>
-      <p>${esc(it.kind === "worksheet-pdf" || it.kind === "markdown" ? "Reusable client resource." : "")}</p>
       <div class="lib-row">
         <span class="rchip ${isAgent ? "agent" : "ok"}">${isAgent ? "✦ Assistant" : "Template"}</span>
         <span class="lib-send">Email to client…</span>
@@ -2013,7 +2037,7 @@ async function openTrash() {
 function renderTrash() {
   el.appendChild(h(`<h1 style="font-family:var(--font-serif);font-size:26px;font-weight:600;margin-bottom:16px">Trash</h1>`));
   if (App.error) el.appendChild(errorBanner(App.error));
-  if (App.trash === null) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Loading...</div></div>`)); return; }
+  if (App.trash === null) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Opening the Trash...</div></div>`)); return; }
   const list = h(`<div class="trash-list"></div>`);
   if (!App.trash.length) list.appendChild(h(`<div class="hint">Trash is empty.</div>`));
   App.trash.forEach(item => {
@@ -2025,7 +2049,7 @@ function renderTrash() {
     list.appendChild(row);
   });
   el.appendChild(list);
-  el.appendChild(h(`<div class="trash-note">Items are removed after 30 days.</div>`));
+  el.appendChild(h(`<div class="trash-note">Debrief deletes these for good 30 days after you trash them.</div>`));
 }
 
 // ---------------------------------------------------------------------------
@@ -2188,7 +2212,7 @@ function renderSettings() {
   });
   profSel.onchange = async () => {
     try { await postSettings({ profession: profSel.value }); settingsSaved(cardA.querySelector("#savedA")); }
-    catch (e) { toast(e.message); }
+    catch (e) { toast(errText(e)); }
   };
   profField.appendChild(profSel);
   cardA.appendChild(profField);
@@ -2202,7 +2226,7 @@ function renderSettings() {
   });
   fmtSel.onchange = async () => {
     try { await postSettings({ note_format: fmtSel.value }); settingsSaved(cardA.querySelector("#savedA")); }
-    catch (e) { toast(e.message); }
+    catch (e) { toast(errText(e)); }
   };
   fmtField.appendChild(fmtSel);
   cardA.appendChild(fmtField);
@@ -2218,7 +2242,7 @@ function renderSettings() {
 
   // ---- Card B: speech to text ----
   const cardB = h(`<div class="panel setup-card ${ent(3)}">
-    <div class="setup-step-head"><h2>Speech to text</h2><span class="set-saved" id="savedB"></span></div>
+    <div class="setup-step-head"><h2>How Debrief hears you</h2><span class="set-saved" id="savedB"></span></div>
     <p class="setup-note">Choose the transcription model that fits your voice and language.</p>
   </div>`);
   const engBox = h(`<div class="set-radios"></div>`);
@@ -2229,7 +2253,7 @@ function renderSettings() {
     </label>`);
     row.querySelector("input").onchange = async () => {
       try { await postSettings({ stt_engine: eng.id }); settingsSaved(cardB.querySelector("#savedB")); }
-      catch (e) { toast(e.message); }
+      catch (e) { toast(errText(e)); }
     };
     engBox.appendChild(row);
   });
@@ -2240,17 +2264,23 @@ function renderSettings() {
   // ---- Card C: personal dictionary ----
   const cardC = h(`<div class="panel setup-card ${ent(4)}">
     <div class="setup-step-head"><h2>Personal dictionary</h2><span class="set-saved" id="savedC"></span></div>
-    <p class="setup-note">One term or correction per line. These teach the transcriber your names and jargon.</p>
+    <p class="setup-note">One name or phrase per line. Debrief will get these right when you say them: client names, medication names, the terms you use.</p>
   </div>`);
   const area = h(`<textarea class="set-textarea" id="setDict" rows="6" spellcheck="false"></textarea>`);
   area.value = dictText;
-  const dictSave = h(`<div class="set-field-actions"><button class="btn btn-primary btn-compact" id="setDictSave">Save dictionary</button></div>`);
-  dictSave.querySelector("#setDictSave").onclick = async () => {
-    try { await postSettings(null, area.value); settingsSaved(cardC.querySelector("#savedC")); }
-    catch (e) { toast(e.message); }
+  // Every other setting on this screen saves itself and says "Saved". The
+  // dictionary used to be the one place you could lose work by navigating away,
+  // so it now commits on blur with the same quiet confirmation.
+  let lastSaved = dictText;
+  area.onblur = async () => {
+    if (area.value === lastSaved) return;
+    try {
+      await postSettings(null, area.value);
+      lastSaved = area.value;
+      settingsSaved(cardC.querySelector("#savedC"));
+    } catch (e) { toast(errText(e)); }
   };
   cardC.appendChild(area);
-  cardC.appendChild(dictSave);
   el.appendChild(cardC);
 
   // ---- Card D: features ----
@@ -2274,7 +2304,7 @@ function renderSettings() {
         feats[fr.key] = cb.checked;
         settingsSaved(cardD.querySelector("#savedD"));
         if (fr.key === "assistant") { rebuildShell(); }
-      } catch (e) { cb.checked = !cb.checked; toast(e.message); }
+      } catch (e) { cb.checked = !cb.checked; toast(errText(e)); }
     };
     togBox.appendChild(row);
   });

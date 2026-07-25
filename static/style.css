@@ -1027,7 +1027,7 @@
   .backlink::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 40px; transform: translateY(-50%); }
 
   @media (prefers-reduced-motion: reduce) {
-    .rec-btn, .rec-wrap.recording .ring, .enter, .setup-check.changed, .modal-backdrop, .modal, .import-body.stage-in, .done-mark { animation: none !important; }
+    .rec-btn, .rec-wrap.recording .ring, .enter, .setup-check.changed, .modal-backdrop, .modal, .import-body.stage-in, .done-mark, .toast { animation: none !important; }
     .home-row, .home-row:hover, .home-mc, .home-mc:hover { transform: none; }
   }
 
@@ -1391,8 +1391,9 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .libcard:hover { box-shadow: var(--ring-sage), var(--lift-1), var(--lift-2); }
 .libcard:active { scale: 0.99; }
 .libcard .thumb { height: 82px; border-radius: var(--radius-sm); background: linear-gradient(135deg, rgba(168, 188, 161, 0.25), rgba(95, 122, 97, 0.12)); display: flex; align-items: center; justify-content: center; font-size: 30px; }
-.libcard h5 { font-family: var(--font-serif); font-size: 16.5px; font-weight: 600; margin: 0; text-wrap: balance; }
-.libcard p { font-size: 13px; color: var(--ink-faint); line-height: 1.45; flex: 1; margin: 0; text-wrap: pretty; }
+/* The title is the card's content now that the repeated blurb is gone, so it
+   takes the slack the paragraph used to hold. */
+.libcard h5 { font-family: var(--font-serif); font-size: 16.5px; font-weight: 600; margin: 0; flex: 1; text-wrap: balance; }
 .libcard .lib-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .libcard .lib-send {
   position: relative; font-size: 13px; font-weight: 700; color: var(--accent-ink); cursor: pointer; border-radius: var(--radius-xs);
@@ -1435,6 +1436,28 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .confirm-modal .confirm-body { font-size: 14px; line-height: 1.55; color: var(--ink-soft); margin: 0; text-wrap: pretty; }
 .confirm-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 .confirm-actions .btn { font-size: 14px; padding: 11px 18px; }
+
+/* Toast. Carries an optional action, because "Moved to Trash" is only calm if
+   the way back is right there. */
+.toast {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 60;
+  display: flex; align-items: center; gap: 14px;
+  background: var(--panel); color: var(--ink);
+  box-shadow: var(--ring-hair-strong), var(--shadow);
+  border-radius: var(--radius); padding: 12px 15px;
+  font-size: 13.5px; max-width: min(560px, calc(100vw - 40px));
+  animation: toastIn 220ms var(--ease) both;
+}
+@keyframes toastIn { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+.toast-msg { flex: 1; text-wrap: pretty; overflow-wrap: anywhere; }
+.toast-action {
+  flex: none; font: inherit; font-size: 13px; font-weight: 600;
+  color: var(--accent-ink); background: var(--accent-soft); border: none;
+  border-radius: var(--radius-sm); padding: 7px 13px; cursor: pointer;
+  transition-property: background, scale; transition-duration: 150ms; transition-timing-function: var(--ease);
+}
+.toast-action:hover { background: #e2ebe0; }
+.toast-action:active { scale: 0.96; }
 
 .trash-list { max-width: 640px; }
 .trash-row { display: flex; align-items: center; gap: 12px; padding: 13px 16px; border: none; box-shadow: var(--row-shadow); border-radius: var(--radius-row); background: var(--panel); margin-bottom: 10px; }
