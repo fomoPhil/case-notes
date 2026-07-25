@@ -366,8 +366,51 @@
     vertical-align: middle;
   }
 
+  /* Seeded demo records, labelled quietly. Sage, not amber: this is a fact
+     about the record, not a warning about it. */
+  .pill-sample {
+    display: inline-flex;
+    align-items: center;
+    font-family: var(--font-sans);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--accent-ink);
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 1px rgba(168,188,161,0.7);
+    border-radius: 999px;
+    padding: 1px 7px;
+    margin-left: 8px;
+    vertical-align: middle;
+  }
+  .home-sample-note {
+    font-size: 12.5px;
+    color: var(--ink-faint);
+    margin: -4px 0 10px;
+    text-wrap: pretty;
+  }
+
   /* ---- the rest of the caseload ---- */
   .home-mini { display: grid; grid-template-columns: repeat(auto-fill, minmax(228px, 1fr)); gap: 8px; }
+  /* Same dashed invitation as "+ Add document", so adding a client reads as
+     the same kind of gesture wherever you meet it. */
+  .home-mc-add {
+    justify-content: center;
+    background: transparent;
+    box-shadow: none;
+    border: 1px dashed var(--line);
+    color: var(--ink-faint);
+    font-size: 14px;
+    font-weight: 600;
+    min-height: 56px;
+  }
+  .home-mc-add:hover {
+    box-shadow: none;
+    border-color: var(--soft-sage);
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+  }
   .home-mc {
     display: flex;
     align-items: center;
@@ -1483,6 +1526,43 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .confirm-modal .confirm-body { font-size: 14px; line-height: 1.55; color: var(--ink-soft); margin: 0; text-wrap: pretty; }
 .confirm-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 .confirm-actions .btn { font-size: 14px; padding: 11px 18px; }
+
+/* Add a client. Wider than a confirm sheet because it holds four fields. */
+.add-client-modal { max-width: 420px; }
+.add-client-modal h4 { margin-bottom: 4px; }
+.ac-lead { margin: 0 0 14px; font-size: 13px; color: var(--ink-soft); text-wrap: pretty; }
+.ac-fields { display: flex; flex-direction: column; gap: 12px; }
+.ac-opt { font-weight: 400; color: var(--ink-faint); text-transform: none; letter-spacing: 0; }
+.ac-hint { font-size: 12px; color: var(--ink-faint); margin-top: -4px; }
+/* Validation belongs beside the form the clinician is looking at. */
+.ac-error {
+  background: var(--red-soft); color: var(--red);
+  box-shadow: 0 0 0 1px rgba(179,82,74,0.28);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px; margin-bottom: 12px;
+  font-size: 13px; line-height: 1.45; text-wrap: pretty;
+}
+
+/* ---------- empty states ---------- */
+/* Each one names what is missing, orients in a sentence, and offers the next
+   step where there is one. */
+.empty-state {
+  display: flex; flex-direction: column; align-items: center;
+  text-align: center;
+  padding: 46px 24px 50px;
+  max-width: 44ch; margin: 0 auto;
+}
+.empty-state-wide { grid-column: 1 / -1; }
+.es-title {
+  font-family: var(--font-serif); font-size: 19px; font-weight: 600;
+  color: var(--ink); text-wrap: balance;
+}
+.es-body {
+  margin-top: 7px;
+  font-size: 13.5px; line-height: 1.6; color: var(--ink-soft); text-wrap: pretty;
+}
+.es-btn { margin-top: 16px; }
+.es-note { margin-top: 12px; font-size: 12px; color: var(--ink-faint); text-wrap: pretty; }
 
 /* Toast. Carries an optional action, because "Moved to Trash" is only calm if
    the way back is right there. */

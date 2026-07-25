@@ -655,6 +655,117 @@ function homeStatus(todayCount, filedCount) {
 }
 window.homeStatus = homeStatus;
 
+// ---------------------------------------------------------------------------
+// Empty states.
+//
+// An empty screen is a teaching moment, not a status report. Each one names
+// what is missing, says in one sentence how it gets filled, and where there is
+// a next step, offers the button for it.
+// ---------------------------------------------------------------------------
+
+function emptyState({ title, body, note, buttonLabel, onClick, wide }) {
+  const box = h(`<div class="empty-state${wide ? " empty-state-wide" : ""}">
+    <div class="es-title">${esc(title)}</div>
+    <div class="es-body">${esc(body)}</div>
+  </div>`);
+  if (buttonLabel && onClick) {
+    const btn = h(`<button class="btn btn-primary btn-compact es-btn">${esc(buttonLabel)}</button>`);
+    btn.onclick = onClick;
+    box.appendChild(btn);
+  }
+  if (note) box.appendChild(h(`<div class="es-note">${esc(note)}</div>`));
+  return box;
+}
+
+// ---------------------------------------------------------------------------
+// Add a client by hand.
+//
+// Until now the only clients that existed were the ones the scaffold seeded,
+// which made the app unusable for a real caseload on day one.
+// ---------------------------------------------------------------------------
+
+const ADD_CLIENT_FIELDS = [
+  { key: "name", label: "Name", placeholder: "Jordan Ellis", required: true },
+  { key: "email", label: "Email", placeholder: "jordan@example.com", type: "email" },
+  { key: "framework", label: "Framework", placeholder: "CBT" },
+  { key: "presenting_concerns", label: "Presenting concerns", placeholder: "anxiety, sleep" },
+];
+
+function openAddClient() {
+  const backdrop = h(`<div class="modal-backdrop"><div class="modal add-client-modal" role="dialog" aria-modal="true">
+    <h4>Add a client</h4>
+    <p class="ac-lead">This creates a folder for them in your records. Only a name is required.</p>
+    <div class="ac-error" hidden></div>
+    <div class="ac-fields"></div>
+    <div class="confirm-actions">
+      <button class="btn btn-ghost" id="acCancel">Cancel</button>
+      <button class="btn btn-primary" id="acSave">Add client</button>
+    </div>
+  </div></div>`);
+  const fields = backdrop.querySelector(".ac-fields");
+  const inputs = {};
+  ADD_CLIENT_FIELDS.forEach(f => {
+    const row = h(`<div class="set-field"><label class="set-label">${esc(f.label)}${f.required ? "" : " <span class=\"ac-opt\">optional</span>"}</label></div>`);
+    const input = h(`<input class="set-select" type="${esc(f.type || "text")}" autocomplete="off" />`);
+    input.placeholder = f.placeholder;
+    row.appendChild(input);
+    fields.appendChild(row);
+    inputs[f.key] = input;
+  });
+  if (ADD_CLIENT_FIELDS.some(f => f.key === "presenting_concerns")) {
+    fields.appendChild(h(`<div class="ac-hint">Separate concerns with commas.</div>`));
+  }
+
+  const errBox = backdrop.querySelector(".ac-error");
+  const showError = (msg) => { errBox.textContent = String(msg || ""); errBox.hidden = !msg; };
+  const close = () => { document.removeEventListener("keydown", onKey); backdrop.remove(); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  const save = backdrop.querySelector("#acSave");
+
+  const submit = async () => {
+    const name = inputs.name.value.trim();
+    if (!name) { showError("Give the client a name."); inputs.name.focus(); return; }
+    showError("");
+    save.disabled = true;
+    const original = save.textContent;
+    save.textContent = "Adding...";
+    try {
+      const r = await fetch("/api/clients", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          email: inputs.email.value.trim(),
+          framework: inputs.framework.value.trim(),
+          presenting_concerns: inputs.presenting_concerns.value.trim(),
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        // A 400 is something the clinician typed, so it belongs beside the
+        // form, not in a banner on a screen they are about to leave.
+        showError(apiErr(data, r.status));
+        save.disabled = false; save.textContent = original;
+        return;
+      }
+      close();
+      await refreshClients();
+      openClient(data);
+    } catch (e) {
+      showError("Debrief could not reach its own server. " + SERVER_ERROR_FIX);
+      save.disabled = false; save.textContent = original;
+    }
+  };
+
+  backdrop.querySelector("#acCancel").onclick = close;
+  save.onclick = submit;
+  Object.values(inputs).forEach(i => { i.onkeydown = (e) => { if (e.key === "Enter") submit(); }; });
+  backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
+  document.addEventListener("keydown", onKey);
+  document.body.appendChild(backdrop);
+  inputs.name.focus();
+}
+
 function renderClients() {
   const clients = App.clients || [];
   const activity = App.activity || { items: [], filed_today: 0 };
@@ -683,10 +794,28 @@ function renderClients() {
     col.appendChild(blk);
   }
 
-  const allBlk = h(`<div class="home-blk ${ent(3)}"><h3>All clients</h3><div class="home-mini"></div></div>`);
-  const mini = allBlk.querySelector(".home-mini");
-  if (!clients.length) mini.appendChild(h(`<div class="home-empty">No clients found in your records folder.</div>`));
-  clients.forEach((c, i) => mini.appendChild(buildClientCard(c, i)));
+  const allBlk = h(`<div class="home-blk ${ent(3)}"><h3>All clients</h3></div>`);
+  // The seeded demo records are labelled, and said out loud once, so nobody
+  // mistakes Bob for a person they are treating.
+  if (clients.some(c => c.sample)) {
+    allBlk.appendChild(h(`<div class="home-sample-note">Bob, Jane, and Maya are samples so you can try a debrief. Remove them when you add your own.</div>`));
+  }
+  const mini = h(`<div class="home-mini"></div>`);
+  allBlk.appendChild(mini);
+  if (!clients.length) {
+    mini.appendChild(emptyState({
+      title: "No clients yet.",
+      body: "Add your first client, then record a debrief after your next session. Everything stays in your records folder on this Mac.",
+      buttonLabel: "Add client",
+      onClick: openAddClient,
+      wide: true,
+    }));
+  } else {
+    clients.forEach((c, i) => mini.appendChild(buildClientCard(c, i)));
+    const add = h(`<button class="home-mc home-mc-add">＋ Add client</button>`);
+    add.onclick = openAddClient;
+    mini.appendChild(add);
+  }
   col.appendChild(allBlk);
 
   if (assistantEnabled()) {
@@ -720,7 +849,7 @@ function buildTodayRow(c, idx) {
   const row = h(`<button class="home-row">
     <span class="hmono ${MONO_STYLES[idx % 3]}">${esc(initials(c.name))}</span>
     <span class="hr-who">
-      <span class="hr-name">${esc(c.name)}${risk}</span>
+      <span class="hr-name">${esc(c.name)}${samplePill(c)}${risk}</span>
       <span class="hr-meta">${bits.join(" &middot; ")}</span>
     </span>
     <span class="hr-when">
@@ -733,6 +862,9 @@ function buildTodayRow(c, idx) {
   return row;
 }
 
+// Static markup. The three seeded demo records carry sample:true from the API.
+function samplePill(c) { return c && c.sample ? `<span class="pill-sample">Sample</span>` : ""; }
+
 function buildClientCard(c, idx) {
   const n = Number(c.session_count) || 0;
   const bits = [];
@@ -741,7 +873,7 @@ function buildClientCard(c, idx) {
   const card = h(`<button class="home-mc">
     <span class="hmono ${MONO_STYLES[idx % 3]}">${esc(initials(c.name))}</span>
     <span class="hmc-body">
-      <span class="hr-name">${esc(c.name)}</span>
+      <span class="hr-name">${esc(c.name)}${samplePill(c)}</span>
       <span class="hmc-meta">${bits.join(" &middot; ")}</span>
     </span>
   </button>`);
@@ -1660,14 +1792,29 @@ function sessionCardTitle(s) {
   return t;
 }
 
+// Is this appointment behind us? Compared as plain wall-clock date strings so
+// no timezone can slide a day either way.
+function isPastSession(iso) {
+  const day = isoDatePart(iso);
+  return !!day && day < todayISO();
+}
+window.isPastSession = isPastSession;
+
+// "Thu, Jul 30 · 3:00 PM", or the same with "(past)" on the end. A seeded date
+// that has gone by must not be presented as an upcoming appointment.
+// Returns plain text; the caller escapes it (avoids double-escape).
 function fmtNextSession(iso) {
   if (!iso) return "Not scheduled";
-  const d = new Date(iso);
-  // Return plain text; the sole caller escapes the result (avoids double-escape).
-  if (isNaN(d.getTime())) return String(iso);
-  const day = d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
-  return `${day} · ${fmtClock(d)}`;
+  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/);
+  if (!m) return String(iso);
+  const day = new Date(+m[1], +m[2] - 1, +m[3]);
+  if (isNaN(day.getTime())) return String(iso);
+  const label = day.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  const hh = m[4] == null ? null : +m[4];
+  const time = hh == null ? "" : ` · ${hh % 12 || 12}:${m[5]} ${hh >= 12 ? "PM" : "AM"}`;
+  return `${label}${time}${isPastSession(iso) ? " (past)" : ""}`;
 }
+window.fmtNextSession = fmtNextSession;
 
 async function openClient(c) {
   App.client = c;
@@ -1714,7 +1861,7 @@ function renderClientRecord() {
       <h1>${esc(name)}</h1>
       <div class="c-meta">${esc(pf.client_id || c.client_id || "")}${framework ? " · " + esc(framework) : ""}${concerns ? " · " + esc(concerns) : ""}</div>
     </div>
-    <div class="c-next">Next session<b>${esc(fmtNextSession(d.next_session))}</b></div>
+    <div class="c-next">${isPastSession(d.next_session) ? "Last scheduled" : "Next session"}<b>${esc(fmtNextSession(d.next_session))}</b></div>
   </div>`);
   el.appendChild(head);
 
@@ -1869,8 +2016,43 @@ async function renameDocument(path, newTitle) {
   } catch (e) { App.error = errOf(e); render(); }
 }
 
-function downloadPdf(path) {
-  window.open("/api/documents/pdf?path=" + encodeURIComponent(path), "_blank");
+// The filename the server chose, so the download is not called "pdf".
+// FileResponse writes filename="x.pdf" and, for non-ASCII names, filename*=.
+function filenameFromDisposition(header) {
+  const h = String(header || "");
+  const star = h.match(/filename\*\s*=\s*[^']*'[^']*'([^;]+)/i);
+  if (star) { try { return decodeURIComponent(star[1].trim()); } catch (e) { /* fall through */ } }
+  const quoted = h.match(/filename\s*=\s*"([^"]+)"/i) || h.match(/filename\s*=\s*([^;]+)/i);
+  return quoted ? quoted[1].trim() : "";
+}
+
+// A download, not a new tab. window.open handed a failure straight to the
+// browser's JSON viewer, so a missing PDF library showed the clinician a raw
+// dlopen error on a black page and the server's plain-English fix never
+// arrived. Fetching lets the failure land in the banner where it belongs.
+async function downloadPdf(path) {
+  try {
+    const r = await fetch("/api/documents/pdf?path=" + encodeURIComponent(path));
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      App.error = apiErr(data, r.status);
+      render();
+      return;
+    }
+    const blob = await r.blob();
+    const name = filenameFromDisposition(r.headers.get("content-disposition")) || "document.pdf";
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 20000);
+  } catch (e) {
+    App.error = { text: "Debrief could not prepare that PDF.", sub: SERVER_ERROR_FIX, technical: String((e && e.message) || e) };
+    render();
+  }
 }
 
 async function emailDocument(clientId, path, subject, body) {
@@ -2436,7 +2618,7 @@ function renderSettings() {
     <div class="setup-step-head"><h2>Personal dictionary</h2><span class="set-saved" id="savedC"></span></div>
     <p class="setup-note">One name or phrase per line. Debrief will get these right when you say them: client names, medication names, the terms you use.</p>
   </div>`);
-  const area = h(`<textarea class="set-textarea" id="setDict" rows="6" spellcheck="false"></textarea>`);
+  const area = h(`<textarea class="set-textarea" id="setDict" rows="6" spellcheck="false" placeholder="Priya Raghunathan&#10;sertraline&#10;EMDR"></textarea>`);
   area.value = dictText;
   // Every other setting on this screen saves itself and says "Saved". The
   // dictionary used to be the one place you could lose work by navigating away,
