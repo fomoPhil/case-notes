@@ -594,7 +594,7 @@ function renderClients() {
 
   const allBlk = h(`<div class="home-blk ${ent(3)}"><h3>All clients</h3><div class="home-mini"></div></div>`);
   const mini = allBlk.querySelector(".home-mini");
-  if (!clients.length) mini.appendChild(h(`<div class="home-empty">No clients found in the vault.</div>`));
+  if (!clients.length) mini.appendChild(h(`<div class="home-empty">No clients found in your records folder.</div>`));
   clients.forEach((c, i) => mini.appendChild(buildClientCard(c, i)));
   col.appendChild(allBlk);
 
@@ -702,9 +702,9 @@ function renderRecord() {
     </div>
     <div class="timer idle" id="timer">00:00</div>
     <div class="wave" id="wave" aria-hidden="true">${bars}</div>
-    <div class="hint" id="recHint">Tap to record. Speak your note, the follow-up time, and any email you want drafted.</div>
+    <div class="hint" id="recHint">Press to start. Say what happened, when you want to see them next, and anything you want emailed.</div>
     <div class="dictate-guide">
-      <div class="dg-title">While you dictate</div>
+      <div class="dg-title">Worth mentioning</div>
       <ul>
         <li>What happened this session and how the client responded</li>
         <li>A risk check, if it came up</li>
@@ -712,6 +712,7 @@ function renderRecord() {
         <li>Any email to send, with resources or reminders</li>
         <li>Homework you assigned</li>
       </ul>
+      <p class="dg-foot">When you stop, Debrief writes a draft and shows it to you. Nothing is filed until you approve it.</p>
     </div>
   </div>`);
   stage.querySelector(".backlink").onclick = () => { stopStream(); go("clients"); };
@@ -719,6 +720,7 @@ function renderRecord() {
   el.appendChild(stage);
 }
 
+const MIC_BLOCKED = "macOS is blocking the microphone. Allow it in System Settings, Privacy and Security, Microphone, then try again.";
 const CHECK_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12l5 5L20 6"/></svg>`;
 const LOCK_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>`;
 const ALERT_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 4.5 2.8 20h18.4z"/><path d="M12 10v4.4M12 17.2v.1"/></svg>`;
@@ -883,6 +885,9 @@ function renderReview() {
     </span>
   </div>`));
   notePanel.appendChild(h(`<div class="dblrule"></div>`));
+  // The invitation to edit belongs where the editing starts, not at the foot of
+  // the screen after they have already scrolled past every section.
+  notePanel.appendChild(h(`<div class="edit-microcopy edit-microcopy-top">Click any section to edit. Your edits are what gets filed.</div>`));
 
   // Sections come from the active format (session_meta.sections); legacy plans
   // without them fall back to the DAP trio. Every section is click-to-edit.
@@ -906,7 +911,7 @@ function renderReview() {
   (note.interventions || []).forEach(x => chips.push(`<span class="chip">${esc(x)}</span>`));
   (note.themes || []).forEach(x => chips.push(`<span class="chip theme">${esc(x)}</span>`));
   if (chips.length) notePanel.appendChild(h(`<div class="chips">${chips.join("")}</div>`));
-  notePanel.appendChild(h(`<details class="transcript"><summary>corrected transcript</summary><p>${esc(p.corrected_transcript || p.transcript || "")}</p></details>`));
+  notePanel.appendChild(h(`<details class="transcript"><summary>what you said</summary><div class="transcript-note">Your dictation, with clinical terms and names spelled correctly. Nothing else was changed.</div><p>${esc(p.corrected_transcript || p.transcript || "")}</p></details>`));
   el.appendChild(notePanel);
 
   el.appendChild(h(`<div class="step-title ${ent(2)}">What happens when you approve</div>`));
@@ -982,15 +987,13 @@ function renderReview() {
     const ul = sugg.querySelector("ul");
     p.next_session_suggestions.forEach(s => ul.appendChild(h(`<li>${esc(s)}</li>`)));
     actPanel.appendChild(sugg);
-    actPanel.appendChild(h(`<div class="disclaimer">Clinical judgment and final session planning remain the therapist's responsibility.</div>`));
+    actPanel.appendChild(h(`<div class="disclaimer">Suggestions only. What happens next session is your call.</div>`));
   }
   el.appendChild(actPanel);
 
   if ((p.errors || []).length) {
     el.appendChild(stageErrorBanner(p.errors, "Some of this had trouble"));
   }
-
-  el.appendChild(h(`<div class="edit-microcopy ${ent(3)}">Click any section to edit. Your edits are what gets filed.</div>`));
 
   const bar = h(`<div class="actions-bar ${ent(3)}">
     <button class="btn btn-ghost" id="redo">Discard and record again</button>
@@ -1155,7 +1158,7 @@ function renderAssistant() {
     <div class="asst-actions">
       <button class="btn btn-ghost" id="asstMic"><span class="asst-mic-ic"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></span><span id="asstMicLabel">Speak instead</span></button>
       <div class="grow"></div>
-      <button class="btn btn-primary" id="asstSubmit">Ask the assistant</button>
+      <button class="btn btn-primary" id="asstSubmit">Ask</button>
     </div>
     <div class="local-note">${LOCK_SVG}Runs on this Mac. Your question and what comes back stay here.</div>
   </div>`);
@@ -1182,7 +1185,7 @@ async function toggleAssistantRecord() {
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) {
-    App.error = "Microphone access was blocked. Allow the mic and try again."; render(); return;
+    App.error = MIC_BLOCKED; render(); return;
   }
   App.chunks = [];
   const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
@@ -1226,7 +1229,7 @@ async function submitAssistant({ text, blob }) {
 function renderAssistantThinking() {
   el.appendChild(h(`<div class="panel processing ${ent(1)}">
     <div class="spinner"></div>
-    <div class="label">Reading the vault and drafting your request...</div>
+    <div class="label">Reading your records and putting something together...</div>
   </div>`));
 }
 
@@ -1309,7 +1312,7 @@ function renderAssistantResults() {
     el.appendChild(bar);
     return;
   }
-  el.appendChild(h(`<div class="step-title">Done</div>`));
+  el.appendChild(h(`<div class="step-title">Saved to your library</div>`));
   const panel = h(`<div class="panel ${ent(1)}"></div>`);
   (a.results || []).forEach(r => {
     const title = r.type === "worksheet" ? "Worksheet filed" : r.type === "email" ? "Email draft" : esc(r.type);
@@ -1334,7 +1337,7 @@ async function toggleRecord() {
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) {
-    App.error = "Microphone access was blocked. Allow the mic and try again."; render(); return;
+    App.error = MIC_BLOCKED; render(); return;
   }
   App.chunks = [];
   const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
@@ -1353,7 +1356,7 @@ async function toggleRecord() {
   if (wave) wave.classList.add("on");
   startMeter();
   const hint = document.getElementById("recHint");
-  if (hint) hint.textContent = "Recording. Tap again when you are done.";
+  if (hint) hint.textContent = "Listening. Press again when you are finished.";
   App.timerId = setInterval(() => {
     App.seconds++;
     const t = document.getElementById("timer");

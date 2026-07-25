@@ -586,6 +586,16 @@
     margin-bottom: 8px;
   }
   .dictate-guide ul { list-style: none; margin: 0; padding: 0; }
+  /* What happens after they stop, said before they start. */
+  .dictate-guide .dg-foot {
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--ink-faint);
+    margin: 11px 0 0;
+    padding-top: 10px;
+    border-top: 1px solid var(--divider);
+    text-wrap: pretty;
+  }
   .dictate-guide li {
     font-size: 13px;
     color: var(--ink-soft);
@@ -739,6 +749,9 @@
   details.transcript summary::before { content: "Show "; }
   details.transcript[open] summary::before { content: "Hide "; }
   details.transcript p { font-size: 13.5px; color: var(--ink-soft); text-wrap: pretty; padding-bottom: 14px; margin: 0; }
+  /* Says what the clinician is looking at before they read it: their own words,
+     with the spelling fixed and nothing else touched. */
+  .transcript-note { font-size: 12.5px; color: var(--ink-faint); margin: 0 0 8px; text-wrap: pretty; }
 
   .actions-list { display: flex; flex-direction: column; gap: 12px; }
   .action {
@@ -1634,7 +1647,7 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
   transition-duration: 180ms;
   transition-timing-function: var(--ease);
 }
-.risk .risk-edit:empty::before { content: "add"; color: var(--ink-faint); }
+.risk .risk-edit:empty::before { content: "Click to add"; color: var(--ink-faint); }
 .risk .risk-edit:hover { background: rgba(95,122,97,0.06); }
 .risk .risk-edit:focus,
 .risk .risk-edit:focus-visible {
@@ -1642,6 +1655,9 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
   box-shadow: 0 0 0 3px rgba(228,179,99,0.45), 0 1px 2px rgba(43,46,42,0.05);
 }
 .edit-microcopy { font-size: 12.5px; color: var(--ink-faint); text-align: center; margin: 16px 0 4px; text-wrap: pretty; }
+/* On the review paper the invitation sits just under the letterhead, where the
+   first editable section begins, so it is read before anything is scrolled. */
+.edit-microcopy-top { text-align: left; margin: 10px 0 0; }
 
 /* ==========================================================================
    Settings screen: cards reuse the wizard look; selects, radios, toggles
