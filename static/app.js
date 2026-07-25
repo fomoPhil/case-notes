@@ -1153,7 +1153,7 @@ function renderAssistant() {
     <div class="asst-lead">Ask for a worksheet, an email draft, or something to look up. Nothing is saved until you approve it.</div>
     <textarea class="asst-textarea" id="asstText" rows="3" placeholder="For example: make a one page box breathing worksheet for before meetings"></textarea>
     <div class="asst-actions">
-      <button class="btn btn-ghost" id="asstMic"><span class="asst-mic-ic"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></span><span id="asstMicLabel">Record</span></button>
+      <button class="btn btn-ghost" id="asstMic"><span class="asst-mic-ic"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></span><span id="asstMicLabel">Speak instead</span></button>
       <div class="grow"></div>
       <button class="btn btn-primary" id="asstSubmit">Ask the assistant</button>
     </div>
@@ -1175,7 +1175,7 @@ function renderAssistant() {
 
 async function toggleAssistantRecord() {
   if (App.mediaRecorder && App.mediaRecorder.state === "recording") { stopRecord();
-    const l = document.getElementById("asstMicLabel"); if (l) l.textContent = "Record";
+    const l = document.getElementById("asstMicLabel"); if (l) l.textContent = "Speak instead";
     return;
   }
   App.recMode = "assistant";
@@ -1192,7 +1192,7 @@ async function toggleAssistantRecord() {
   App.mediaRecorder.start();
   const mic = document.getElementById("asstMic");
   if (mic) mic.classList.add("recording");
-  const l = document.getElementById("asstMicLabel"); if (l) l.textContent = "Stop and send";
+  const l = document.getElementById("asstMicLabel"); if (l) l.textContent = "Stop and ask";
 }
 
 async function submitAssistant({ text, blob }) {
@@ -1458,6 +1458,67 @@ const FTYPE = {
 
 function firstName(name) { return (name || "").trim().split(/\s+/)[0] || "client"; }
 
+// Headings the built-in formats and the note writer produce. A note body is
+// flattened to a single line before it reaches the browser, so "## Data\n\nBob
+// completed..." arrives as "## Data Bob completed..." and the heading has to be
+// matched by name to be taken off the front. Longest first: "Assessment" must
+// not win against nothing, and "Plan" must not eat "Plan, intent, means".
+const NOTE_HEADINGS = [
+  "Next Session Considerations", "Dictation Audio", "Way Forward", "Action Items",
+  "Attendees", "Discussion", "Decisions", "Subjective", "Objective", "Assessment",
+  "Transcript", "Options", "Reality", "Summary", "Data", "Plan", "Goal", "Risk",
+].sort((a, b) => b.length - a.length);
+
+// Strip the markup a clinician should never see: HTML from the transcript
+// disclosure, wiki links, emphasis. Heading markers are handled separately.
+function stripMarkup(text) {
+  return String(text == null ? "" : text)
+    .replace(/<[^>]*>/g, " ")
+    .replace(/!?\[\[([^\]|]*)(?:\|[^\]]*)?\]\]/g, "$1")
+    .replace(/[*_`]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function firstSentence(text, max = 170) {
+  const t = String(text || "").trim();
+  if (!t) return "";
+  const m = t.match(/^[\s\S]{0,200}?[.!?](?=\s|$)/);
+  const out = (m ? m[0] : t).trim();
+  return out.length > max ? out.slice(0, max - 1).replace(/\s+\S*$/, "") + "..." : out;
+}
+
+// The first sentence of the first section that actually says something. Never
+// "## Data ## Assessment ## Plan <details><su".
+function cleanPreview(text) {
+  const flat = stripMarkup(text).replace(/^\s*[-–]\s*/, "");
+  const chunks = flat.split(/#{1,6}\s*/).map(c => c.trim()).filter(Boolean);
+  for (const chunk of chunks) {
+    let body = chunk;
+    for (const head of NOTE_HEADINGS) {
+      if (chunk.toLowerCase().startsWith(head.toLowerCase() + " ") || chunk.toLowerCase() === head.toLowerCase()) {
+        body = chunk.slice(head.length).trim();
+        break;
+      }
+    }
+    // A heading with nothing under it, or a truncated tail, is not a preview.
+    if (body.split(/\s+/).filter(Boolean).length >= 4) return firstSentence(body);
+  }
+  return "";
+}
+window.cleanPreview = cleanPreview;
+
+// "Session 2, weekly-coaching-check-in note" is a filename talking. Swap the
+// format id for its display name; a title the clinician typed is left alone.
+function sessionCardTitle(s) {
+  const t = String((s && s.title) || "");
+  const fid = s && s.format;
+  if (!fid) return t;
+  const m = t.match(/^(Session \d+, )?(.+?) note$/);
+  if (m && m[2] === String(fid)) return `${m[1] || ""}${noteLabel(fid)}`;
+  return t;
+}
+
 function fmtNextSession(iso) {
   if (!iso) return "Not scheduled";
   const d = new Date(iso);
@@ -1528,11 +1589,12 @@ function renderSessionsTab(d) {
     const chip = s.risk_flag
       ? `<span class="rchip risk">⚑ Risk flag noted</span>`
       : `<span class="rchip ok">✓ Filed</span>`;
+    const preview = cleanPreview(s.preview);
     const row = h(`<button class="sesscard">
       <div class="sdate"><div class="d">${esc(day)}</div><div class="m">${esc(mon)}</div></div>
       <div>
-        <h4>${esc(s.title)}</h4>
-        <p>${esc(s.preview || "")}</p>
+        <h4>${esc(sessionCardTitle(s))}</h4>
+        ${preview ? `<p>${esc(preview)}</p>` : ""}
         ${chip}
       </div>
     </button>`);
@@ -1592,7 +1654,7 @@ function renderDocumentsTab(d) {
 
 function buildDocCard(doc, d) {
   const ft = FTYPE[doc.kind] || FTYPE.markdown;
-  const meta = (doc.agent_made ? "Created by agent" : "Uploaded") + (doc.date_display ? " · " + doc.date_display : "");
+  const meta = (doc.agent_made ? "Made by the assistant" : "Uploaded") + (doc.date_display ? " · " + doc.date_display : "");
   const card = h(`<div class="doc">
     <div class="ftype ${ft.badge}">${ft.label}</div>
     <div style="flex:1;min-width:0"><h5>${esc(doc.title)}</h5><div class="d-sub">${esc(meta)}</div></div>
@@ -1745,7 +1807,8 @@ function frontTitle(doc) {
   if (fm.title) return String(fm.title);
   if (doc.kind === "session-note") {
     const n = fm.session_number;
-    return n ? `Session ${n}, ${fm.format || "DAP"} note` : `${fm.format || "DAP"} note`;
+    const label = noteLabel(fm.format || "DAP");
+    return n ? `Session ${n}, ${label}` : label;
   }
   return (App.docCrumb && App.docCrumb.title) || "Document";
 }
@@ -1902,7 +1965,7 @@ function renderLibrary() {
       <h5>${esc(it.title)}</h5>
       <p>${esc(it.kind === "worksheet-pdf" || it.kind === "markdown" ? "Reusable client resource." : "")}</p>
       <div class="lib-row">
-        <span class="rchip ${isAgent ? "agent" : "ok"}">${isAgent ? "✦ Agent-made" : "Template"}</span>
+        <span class="rchip ${isAgent ? "agent" : "ok"}">${isAgent ? "✦ Assistant" : "Template"}</span>
         <span class="lib-send">Email to client…</span>
       </div>
     </div>`);
@@ -1996,7 +2059,7 @@ function renderSearchResults(box, data, query) {
     any = true;
     box.appendChild(h(`<div class="search-group-label">${esc(label)}</div>`));
     hits.forEach(hit => {
-      const item = h(`<button class="search-hit"><div class="sh-title">${esc(hit.title)}</div><div class="sh-snip">${esc(hit.snippet || "")}</div></button>`);
+      const item = h(`<button class="search-hit"><div class="sh-title">${esc(hit.title)}</div><div class="sh-snip">${esc(stripMarkup(hit.snippet))}</div></button>`);
       item.onclick = () => { closeSearch(); openSearchHit(hit); };
       box.appendChild(item);
     });
