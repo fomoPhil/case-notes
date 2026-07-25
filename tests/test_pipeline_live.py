@@ -263,9 +263,8 @@ def run_once(run_label: str) -> dict:
         note_text = note_file.read_text(encoding="utf-8")
         assert "## Risk" in note_text, "session note missing Risk section"
         assert (
-            "Clinical judgment and final session planning remain the therapist's responsibility."
-            in note_text
-        ), "session note missing the required disclaimer line"
+            "Clinical judgment" not in note_text
+        ), "liability boilerplate must never be written into a clinical record"
 
         # Dictation audio archived next to the note with a matching stem.
         audio_file = note_file.parent / "audio" / f"{note_file.stem}.m4a"

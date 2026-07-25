@@ -212,8 +212,7 @@ def _seed_session_note(
         f"\n## Assessment\n\n{assessment}\n",
         f"\n## Plan\n\n{plan}\n",
         "\n## Next Session Considerations\n\n",
-        "\nClinical judgment and final session planning remain the "
-        "therapist's responsibility.\n",
+        "- Review the thought record homework\n",
     ]
     _atomic_write(path, "".join(parts))
 
@@ -775,7 +774,12 @@ def write_session_note(
             if value:
                 parts.append(f"- {label}: {value}\n")
 
-    # Next Session Considerations: suggestions (options only) + required line.
+    # Next Session Considerations: suggestions only.
+    #
+    # We deliberately do NOT write a liability disclaimer into the note body.
+    # A filed note is a clinical record that a supervisor, auditor, or court may
+    # read, and boilerplate the clinician never wrote does not belong in it. The
+    # "suggestions only, your call" framing lives in the UI instead.
     suggestions = (
         meta.get("next_session_suggestions")
         or note.get("next_session_suggestions")
@@ -784,10 +788,6 @@ def write_session_note(
     parts.append("\n## Next Session Considerations\n\n")
     for s in suggestions:
         parts.append(f"- {s.strip()}\n")
-    parts.append(
-        "\nClinical judgment and final session planning remain the "
-        "therapist's responsibility.\n"
-    )
 
     # Grounding evidence: the raw transcript, folded so it does not clutter.
     if transcript and transcript.strip():

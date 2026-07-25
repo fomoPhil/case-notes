@@ -156,7 +156,11 @@ def test_write_session_note_valid_yaml_and_headings(vault):
     text = path.read_text(encoding="utf-8")
     for heading in ("## Data", "## Assessment", "## Plan", "## Risk", "## Next Session Considerations"):
         assert heading in text, f"missing {heading}"
-    assert "Clinical judgment and final session planning remain the therapist's responsibility." in text
+    # A filed note is a clinical record. Debrief must never inject liability
+    # boilerplate the clinician did not write into it; that framing lives in
+    # the UI only.
+    assert "Clinical judgment" not in text, "no disclaimer boilerplate in the record"
+    assert "responsibility" not in text, "no disclaimer boilerplate in the record"
     assert "This is the transcript." in text
     assert "—" not in text, "no em dashes allowed"
 
