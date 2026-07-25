@@ -305,7 +305,7 @@ function ensureShell() {
         <div class="side-tail">
           <button class="navitem navitem-setup" id="navSettings"><span class="nav-ic">${IC.sliders}</span> Settings</button>
           <button class="navitem navitem-setup" id="navSetup"><span class="nav-ic">${IC.ready}</span> Setup</button>
-          <div class="side-foot">${LOCK_DOT} Data secure on this Mac</div>
+          <div class="side-foot">${LOCK_DOT} Everything stays on this Mac</div>
         </div>
       </aside>
       <main class="main-pane" id="main-pane"></main>
@@ -630,6 +630,13 @@ function renderRecord() {
 
 const CHECK_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12l5 5L20 6"/></svg>`;
 const LOCK_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>`;
+const ALERT_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 4.5 2.8 20h18.4z"/><path d="M12 10v4.4M12 17.2v.1"/></svg>`;
+
+// The one place the privacy promise is stated in full. It is deliberately
+// qualified: the core loop never leaves this Mac, but the optional template
+// importer can send one document to Google, so the promise names that exception
+// rather than making a blanket claim the app cannot keep.
+const PRIVACY_PROMISE = "Your recordings, notes, and client records never leave this Mac. The one exception is the optional template importer, which asks first.";
 
 function renderProcessing() {
   const steps = ["Transcribe the recording", "Tidy clinical terms", "Draft the DAP note", "Plan admin actions"];
@@ -886,7 +893,7 @@ function renderAssistant() {
       <div class="grow"></div>
       <button class="btn btn-primary" id="asstSubmit">Ask the assistant</button>
     </div>
-    <div class="local-note">${LOCK_SVG}Runs on this Mac. Nothing leaves it.</div>
+    <div class="local-note">${LOCK_SVG}Runs on this Mac. Your question and what comes back stay here.</div>
   </div>`);
   panel.querySelector("#asstMic").onclick = toggleAssistantRecord;
   panel.querySelector("#asstSubmit").onclick = () => {
@@ -2328,7 +2335,8 @@ function renderSetupWizard() {
   const s = App.status;
   el.appendChild(h(`<div class="setup-head ${ent(1)}">
     <h1>Welcome to Debrief</h1>
-    <p class="setup-lead">A couple of quick checks so everything runs smoothly on this Mac. Nothing here leaves your computer.</p>
+    <p class="setup-lead">A couple of quick checks so everything runs smoothly on this Mac.</p>
+    <p class="setup-privacy">${LOCK_SVG}<span>${PRIVACY_PROMISE}</span></p>
   </div>`));
   if (!s) {
     el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Checking your setup...</div></div>`));
@@ -2394,7 +2402,7 @@ function renderSetupStep1(s) {
       <h2>Your local AI</h2>
       <span class="setup-badge ${ready ? "ok" : ""}">${ready ? "Ready" : "Needs attention"}</span>
     </div>
-    <p class="setup-note">Debrief runs a private AI model on this Mac with LM Studio. Nothing is sent to the cloud.</p>
+    <p class="setup-note">Debrief runs a private AI model on this Mac with LM Studio. Your sessions are written up here, not in the cloud.</p>
   </div>`);
   const checks = h(`<div class="setup-checks"></div>`);
   (s.checks || []).forEach(c => checks.appendChild(setupCheckRow(c)));

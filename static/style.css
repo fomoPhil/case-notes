@@ -1339,6 +1339,24 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
   text-wrap: balance;
 }
 .setup-lead { font-size: 15px; color: var(--ink-soft); margin: 0; line-height: 1.55; max-width: 52ch; text-wrap: pretty; }
+/* The full privacy promise, stated once at the top of setup. Sage on a soft
+   sage tint so it reads as a commitment rather than a warning. */
+.setup-privacy {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px rgba(95,122,97,0.18);
+  border-radius: var(--radius-sm);
+  padding: 11px 14px;
+  margin: 12px 0 0;
+  max-width: 62ch;
+  text-wrap: pretty;
+}
+.setup-privacy svg { width: 13px; height: 13px; flex: none; margin-top: 3px; }
 
 .setup-card { margin-bottom: 18px; }
 .setup-step-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
