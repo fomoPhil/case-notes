@@ -84,5 +84,5 @@ Roughly thirty commits. The ones that change how the app behaves, rather than ho
 
 - **Packaged Mac app (the no-terminal DMG).** Not started. It needs the signing-team decision above, and it is a substantial build rather than a polish task. The path is documented in `docs/business/debrief-pro-offer.md`.
 - **Extra profession vocabulary packs.** SLP, coaching, and legal packs exist but are thin compared to the therapy pack, which was migrated from real clinical vocabulary. They work; they are not yet rich.
-- **`test_pipeline_live_runs_twice`.** Still coupled to the real vault's seeded client data, so it fails against a scratch vault. The pipeline itself is verified. The fix is to have the test seed its own fixture.
+- ~~**`test_pipeline_live_runs_twice`**~~ **Fixed overnight.** It now seeds its own client and passes twice through on a clean scratch vault: recording, transcription, note, calendar event, and Mail draft with the worksheet attached. It no longer asserts that the vision pass *confirmed* what it saw, because that depends on which window is frontmost on the operator's screen rather than on the code; it does assert the model looked at the right surfaces and described them.
 - **Ollama support for the assistant.** Detection works; the tool-calling dialect differs, so the agent still requires LM Studio.
