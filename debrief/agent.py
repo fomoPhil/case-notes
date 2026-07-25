@@ -33,10 +33,14 @@ _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "agent_syste
 
 _MAX_ARG_RETRIES = 2
 
+# Clinician-facing. The exact command lives in _DOCTOR_HINT_COMMAND so the UI
+# can offer it behind a details disclosure instead of putting shell syntax in
+# front of a therapist.
 _DOCTOR_HINT = (
-    "The local model did not respond. Open LM Studio and load the gemma model "
-    "(lms load gemma-4-12b-it-qat --context-length 64000 -y), then try again."
+    "Debrief's local AI is not responding. Open LM Studio, load the Gemma "
+    "model, then try again."
 )
+_DOCTOR_HINT_COMMAND = "lms load gemma-4-12b-it-qat --context-length 64000 -y"
 
 
 class AgentUnavailable(RuntimeError):
