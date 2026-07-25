@@ -1491,6 +1491,25 @@ function resultsSummary(r) {
   return `${joinClauses(parts)}. Nothing was sent.`;
 }
 
+// What a partly successful run failed to do.
+//
+// The summary sentence lists only what worked, so a run where the note filed
+// but Mail refused read as "That's handled." above a row marked FAILED. The
+// headline must never claim more than the rows below it.
+const FAILED_ACTION_PHRASE = {
+  schedule_followup: "the appointment did not make it into Calendar",
+  draft_client_email: "the email draft did not open in Mail",
+};
+function resultsShortfall(r) {
+  if (!r) return "";
+  const failed = (r.actions || []).filter(a => a.status === "failed");
+  if (!failed.length) return "";
+  const phrases = failed.map(
+    a => FAILED_ACTION_PHRASE[a.type] || "one step did not finish"
+  );
+  return `${joinClauses([...new Set(phrases)])}, so check that yourself.`;
+}
+
 // Whether a run succeeded was a coloured dot and nothing else: no text, no
 // shape, no accessible name, and the detail line beside it never said pass or
 // fail. Red and green are the same dot to a colour-blind clinician.
@@ -1509,11 +1528,13 @@ function renderResults() {
   const clientName = (App.plan && App.plan.client && App.plan.client.name) || "";
   const summary = resultsSummary(r);
 
+  const shortfall = resultsShortfall(r);
+
   el.appendChild(summary
     ? h(`<div class="flow-head flow-head-done ${ent(1)}">
           <div class="done-mark" aria-hidden="true">${CHECK_SVG}</div>
-          <h1>That's handled.</h1>
-          <p>${esc(summary)}</p>
+          <h1>${shortfall ? "Mostly handled." : "That's handled."}</h1>
+          <p>${esc(summary)}${shortfall ? " " + esc(shortfall) : ""}</p>
         </div>`)
     : h(`<div class="flow-head ${ent(1)}">
           <h1>That did not go through.</h1>
