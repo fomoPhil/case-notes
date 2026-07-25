@@ -194,6 +194,21 @@
     max-width: 62ch;
     text-wrap: pretty;
   }
+  /* The payoff. A single sage tick settles in above the headline: the one
+     moment in the app that is allowed to feel like an exhale. */
+  .flow-head-done { margin-top: 14px; }
+  .flow-head-done h2 { font-size: 32px; }
+  .flow-head-done p { font-size: 16px; color: var(--ink); }
+  .done-mark {
+    width: 40px; height: 40px; border-radius: 50%;
+    background: var(--accent); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 14px;
+    box-shadow: 0 2px 8px rgba(95,122,97,0.32), inset 0 1px 0 rgba(255,255,255,0.22);
+    animation: markIn 420ms var(--ease) both;
+    animation-delay: 160ms;
+  }
+  .done-mark svg { width: 19px; height: 19px; }
 
   .panel {
     background: rgba(255,255,255,0.94);
@@ -914,6 +929,12 @@
   .status-skipped { background: var(--ink-faint); }
   .result-action .r-title { font-size: 14.5px; font-weight: 540; text-wrap: balance; }
   .result-action .r-detail { font-size: 13px; color: var(--ink-soft); margin-top: 2px; text-wrap: pretty; overflow-wrap: anywhere; }
+  /* Where the file landed matters, but it is not what the clinician came for. */
+  .result-action .r-path {
+    font-size: 11.5px; color: var(--ink-faint); margin-top: 3px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    overflow-wrap: anywhere;
+  }
 
   .verify-card {
     border: none;
@@ -931,7 +952,7 @@
   .verify-quote::before { content: "\201C"; }
   .verify-quote::after { content: "\201D"; }
 
-  .timings { font-size: 12px; color: var(--ink-faint); margin-top: 18px; font-variant-numeric: tabular-nums; }
+  .verify-advice { font-size: 13px; color: var(--amber); margin-top: 8px; font-weight: 560; text-wrap: pretty; }
 
   .banner {
     border-radius: var(--radius);
@@ -942,6 +963,27 @@
     overflow-wrap: anywhere;
   }
   .banner-error { background: var(--red-soft); color: var(--red); border: none; box-shadow: 0 0 0 1px rgba(179,82,74,0.28), var(--lift-1); }
+  .banner-sub { margin-top: 5px; font-size: 13px; color: var(--ink-soft); }
+
+  /* Server output, folded away. Present for whoever is helping, absent for the
+     clinician who just wants to know nothing was filed. */
+  details.tech { margin-top: 9px; }
+  details.tech summary {
+    cursor: pointer; list-style: none;
+    font-size: 12.5px; font-weight: 600; color: var(--ink-faint);
+    padding: 4px 0; border-radius: var(--radius-xs);
+  }
+  details.tech summary::-webkit-details-marker { display: none; }
+  details.tech summary:hover { color: var(--ink-soft); }
+  details.tech summary:focus-visible { box-shadow: var(--ring); }
+  details.tech pre {
+    margin: 6px 0 2px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px; line-height: 1.5; color: var(--ink-soft);
+    background: rgba(255,255,255,0.6); box-shadow: var(--ring-hair);
+    border-radius: var(--radius-sm); padding: 9px 11px;
+    white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto;
+  }
 
   /* Screen entrances are split into semantic chunks (header, cards, action bar)
      and staggered ~70ms apart so a screen arrives in sequence rather than as one
@@ -972,7 +1014,7 @@
   .backlink::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 40px; transform: translateY(-50%); }
 
   @media (prefers-reduced-motion: reduce) {
-    .rec-btn, .rec-wrap.recording .ring, .enter, .setup-check.changed, .modal-backdrop, .modal, .import-body.stage-in { animation: none !important; }
+    .rec-btn, .rec-wrap.recording .ring, .enter, .setup-check.changed, .modal-backdrop, .modal, .import-body.stage-in, .done-mark { animation: none !important; }
     .home-row, .home-row:hover, .home-mc, .home-mc:hover { transform: none; }
   }
 

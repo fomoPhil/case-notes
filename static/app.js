@@ -55,6 +55,90 @@ const FLOW_STATES = new Set([
 
 function h(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstChild; }
 function esc(s) { return (s == null ? "" : String(s)).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c])); }
+
+// ---------------------------------------------------------------------------
+// Errors the clinician can act on.
+//
+// A stack trace or an HTTP status is never the message. Anything 500-class is
+// the app's fault, so it gets one plain sentence, one thing to try, and keeps
+// the technical text folded away for whoever is helping them.
+// ---------------------------------------------------------------------------
+
+const SERVER_ERROR_TEXT = "Something went wrong on this Mac. Nothing was filed and nothing was sent.";
+const SERVER_ERROR_FIX = "Try again, or open Setup to check that Debrief's tools are running.";
+
+// Pipeline stage names, said the way a person would say them.
+const STAGE_LABEL = {
+  transcribe: "turning your recording into text",
+  context: "reading this client's record",
+  correct: "checking clinical terms",
+  extract: "writing the note",
+  calendar: "booking the appointment",
+  mail: "preparing the email draft",
+  note: "filing the note",
+  verify: "checking the screen",
+  audio: "saving the recording",
+  obsidian: "opening your notes folder",
+  profile: "updating the client record",
+};
+function stageLabel(stage) { return STAGE_LABEL[String(stage || "").toLowerCase()] || "one step"; }
+
+// The server hands back either a plain string detail or a {error, fix} pair it
+// wrote for the clinician. The pair is kept as-is; a bare 500 is not.
+function httpError(status, data) {
+  const d = data && data.detail;
+  if (d && typeof d === "object" && (d.error || d.fix)) {
+    return { text: String(d.error || "Debrief could not do that."), sub: String(d.fix || ""), technical: "" };
+  }
+  const raw = (typeof d === "string" && d) || (data && data.error) || ("Server error " + status);
+  if (status >= 500) return { text: SERVER_ERROR_TEXT, sub: SERVER_ERROR_FIX, technical: String(raw) };
+  return { text: String(raw), sub: "", technical: "" };
+}
+
+// Build the Error a failed fetch should throw, carrying the clinician-facing
+// version on the side so callers can show it verbatim.
+async function failure(r) {
+  const data = await r.json().catch(() => ({}));
+  const err = httpError(r.status, data);
+  const e = new Error(err.text);
+  e.debrief = err;
+  return e;
+}
+function errOf(e) { return (e && e.debrief) || (e && e.message) || "Something went wrong."; }
+
+function toErr(e) {
+  if (!e) return null;
+  if (typeof e === "string") return { text: e, sub: "", technical: "" };
+  return { text: e.text || "Something went wrong.", sub: e.sub || "", technical: e.technical || "" };
+}
+
+// The technical text, folded away. textContent only: this is server output.
+function technicalDetails(text) {
+  const box = h(`<details class="tech"><summary>Technical details</summary><pre></pre></details>`);
+  box.querySelector("pre").textContent = String(text || "");
+  return box;
+}
+
+function errorBanner(e) {
+  const err = toErr(e);
+  const banner = h(`<div class="banner banner-error"></div>`);
+  banner.appendChild(h(`<div>${esc(err.text)}</div>`));
+  if (err.sub) banner.appendChild(h(`<div class="banner-sub">${esc(err.sub)}</div>`));
+  if (err.technical) banner.appendChild(technicalDetails(err.technical));
+  return banner;
+}
+
+// Errors that name a pipeline stage: say which part struggled, in plain words.
+function stageErrorBanner(errors, lead) {
+  const list = errors || [];
+  const stages = [];
+  list.forEach(e => { const s = stageLabel(e.stage); if (!stages.includes(s)) stages.push(s); });
+  const text = (lead || "Some of this had trouble") + (stages.length ? ": " + joinClauses(stages) + "." : ".");
+  const banner = h(`<div class="banner banner-error"></div>`);
+  banner.appendChild(h(`<div>${esc(text)}</div>`));
+  banner.appendChild(technicalDetails(list.map(e => `${e.stage}: ${e.error}`).join("\n")));
+  return banner;
+}
 function fmtSecs(n) { const m = Math.floor(n/60), s = n%60; return `${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`; }
 
 function fmtClock(d) {
@@ -198,9 +282,9 @@ async function loadClients() {
   const activityReady = refreshActivity();
   try {
     const r = await fetch("/api/clients");
-    if (!r.ok) throw new Error("Could not load clients (" + r.status + ")");
+    if (!r.ok) throw await failure(r);
     App.clients = await r.json();
-  } catch (e) { App.error = e.message; }
+  } catch (e) { App.error = errOf(e); }
   await settingsReady;
   await activityReady;
   // First run: if the setup marker is absent and we were opened at the root
@@ -423,7 +507,7 @@ function render() {
     el = pane;
   }
   if (App.error && (App.state === "clients" || App.state === "record")) {
-    el.appendChild(h(`<div class="banner banner-error">${esc(App.error)}</div>`));
+    el.appendChild(errorBanner(App.error));
   }
   (DISPATCH[App.state] || renderClients)();
 }
@@ -903,7 +987,7 @@ function renderReview() {
   el.appendChild(actPanel);
 
   if ((p.errors || []).length) {
-    el.appendChild(h(`<div class="banner banner-error">Some steps had trouble: ${esc(p.errors.map(e => e.stage + " (" + e.error + ")").join("; "))}</div>`));
+    el.appendChild(stageErrorBanner(p.errors, "Some of this had trouble"));
   }
 
   el.appendChild(h(`<div class="edit-microcopy ${ent(3)}">Click any section to edit. Your edits are what gets filed.</div>`));
@@ -962,11 +1046,68 @@ function renderExecuting() {
   </div>`));
 }
 
+// What Debrief looked at after the fact, in the clinician's words. Never the
+// internal surface key.
+const SURFACE_LABEL = { calendar: "Calendar", mail: "Mail", obsidian: "Your notes folder" };
+function surfaceLabel(s) { return SURFACE_LABEL[String(s || "").toLowerCase()] || "Your Mac"; }
+
+// "25 July" from a plain wall-clock date string.
+function fmtDayMonth(iso) {
+  const m = String(iso == null ? "" : iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${+m[3]} ${MONTHS_LONG[+m[2] - 1]}` : "";
+}
+
+// The relief beat: one sentence naming what actually happened, ending in the
+// promise the whole product rests on. Built from the run, never a template.
+function resultsSummary(r) {
+  const client = (App.plan && App.plan.client) || {};
+  const name = client.name || "";
+  const first = client.first_name || firstName(name) || "That";
+  const acts = (r.actions || []).filter(a => a.status === "ok");
+  const parts = [];
+  if (r.note_path) parts.push(`${first}'s note is filed`);
+  const appt = acts.find(a => a.type === "schedule_followup");
+  if (appt) {
+    const when = fmtWhenShort(appt.resolved_datetime);
+    // Weekday and time only: the full date sits in the list right below.
+    const short = when ? when.replace(/^(\w+) \d+ \w+ at /, "$1 ") : "";
+    parts.push(short ? `${short} is on your calendar` : "the appointment is on your calendar");
+  }
+  if (acts.some(a => a.type === "draft_client_email")) parts.push("the email is waiting in Mail");
+  if (!parts.length) return "";
+  return `${joinClauses(parts)}. Nothing was sent.`;
+}
+
 function renderResults() {
   const r = App.result;
-  el.appendChild(h(`<div class="step-title">Done</div>`));
+  const meta = (App.plan && App.plan.session_meta) || {};
+  const clientName = (App.plan && App.plan.client && App.plan.client.name) || "";
+  const summary = resultsSummary(r);
+
+  el.appendChild(summary
+    ? h(`<div class="flow-head flow-head-done ${ent(1)}">
+          <div class="done-mark" aria-hidden="true">${CHECK_SVG}</div>
+          <h2>That's handled.</h2>
+          <p>${esc(summary)}</p>
+        </div>`)
+    : h(`<div class="flow-head ${ent(1)}">
+          <h2>That did not go through.</h2>
+          <p>Nothing was filed and nothing was sent. Your note is still on the review screen if you go back.</p>
+        </div>`));
+
+  el.appendChild(h(`<div class="step-title ${ent(1)}">What Debrief did</div>`));
   const panel = h(`<div class="panel ${ent(1)}"></div>`);
-  panel.appendChild(h(`<div class="note-head"><h3>What ran</h3></div>`));
+  if (r.note_path) {
+    const bits = [clientName, meta.session_number ? `Session ${meta.session_number}` : "", fmtDayMonth(meta.session_date)].filter(Boolean);
+    panel.appendChild(h(`<div class="result-action">
+      <div class="status-dot status-ok"></div>
+      <div>
+        <div class="r-title">Session note filed</div>
+        <div class="r-detail">${esc(bits.join(", "))}</div>
+        <div class="r-path">${esc(r.note_path)}</div>
+      </div>
+    </div>`));
+  }
   (r.actions || []).forEach(a => {
     const title = a.type === "schedule_followup" ? "Follow-up appointment"
                 : a.type === "draft_client_email" ? "Client email draft" : esc(a.type);
@@ -975,35 +1116,24 @@ function renderResults() {
       <div><div class="r-title">${title}</div><div class="r-detail">${esc(a.detail || a.status)}</div></div>
     </div>`));
   });
-  if (r.note_path) {
-    panel.appendChild(h(`<div class="result-action">
-      <div class="status-dot status-ok"></div>
-      <div><div class="r-title">Session note filed</div><div class="r-detail">${esc(r.note_path)}</div></div>
-    </div>`));
-  }
   el.appendChild(panel);
 
   if ((r.verification || []).length) {
-    el.appendChild(h(`<div class="step-title ${ent(2)}">Verified on screen</div>`));
+    el.appendChild(h(`<div class="step-title ${ent(2)}">Debrief checked the screen</div>`));
     const vpanel = h(`<div class="${ent(2)}"></div>`);
     r.verification.forEach(v => {
       const ok = v.confirmed;
+      const label = surfaceLabel(v.surface);
       vpanel.appendChild(h(`<div class="verify-card ${ok ? "" : "unconfirmed"}">
-        <div class="verify-head"><span class="verify-surface">${esc(v.surface)}</span> &middot; ${ok ? "confirmed" : "not confirmed"}</div>
+        <div class="verify-head"><span class="verify-surface">${esc(label)}</span> &middot; ${ok ? "looks right" : "could not confirm"}</div>
         <div class="verify-quote">${esc(v.what_i_see || "")}</div>
+        ${ok ? "" : `<div class="verify-advice">Open ${esc(label)} and check before you rely on it.</div>`}
       </div>`));
     });
     el.appendChild(vpanel);
   }
 
-  if ((r.errors || []).length) {
-    el.appendChild(h(`<div class="banner banner-error">${esc(r.errors.map(e => e.stage + ": " + e.error).join("; "))}</div>`));
-  }
-
-  if (r.timings) {
-    const t = Object.entries(r.timings).map(([k,v]) => `${k} ${v}s`).join("  &middot;  ");
-    el.appendChild(h(`<div class="timings">${t}</div>`));
-  }
+  if ((r.errors || []).length) el.appendChild(stageErrorBanner(r.errors));
 
   const bar = h(`<div class="actions-bar ${ent(3)}">
     <div class="grow"></div>
@@ -1079,7 +1209,7 @@ async function submitAssistant({ text, blob }) {
       if (App.client && App.client.client_id) payload.client_id = App.client.client_id;
       r = await fetch("/api/assistant/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     }
-    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error((t.detail && (t.detail.fix || t.detail.error || t.detail)) || ("Server error " + r.status)); }
+    if (!r.ok) throw await failure(r);
     const data = await r.json();
     if (data.route === "session_debrief") {
       App.assistant = { sessionDebrief: true };
@@ -1089,7 +1219,7 @@ async function submitAssistant({ text, blob }) {
     App.assistant = { finalText: data.final_text, proposals: (data.proposals || []).map(p => ({ ...p, include: true })), rawTranscript: data.raw_transcript };
     go("assistantReview");
   } catch (e) {
-    App.error = e.message; go("assistant");
+    App.error = errOf(e); go("assistant");
   }
 }
 
@@ -1159,13 +1289,13 @@ async function executeAssistant() {
   go("assistantThinking");
   try {
     const r = await fetch("/api/assistant/execute", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error((t.detail && (t.detail.fix || t.detail.error || t.detail)) || ("Server error " + r.status)); }
+    if (!r.ok) throw await failure(r);
     const data = await r.json();
     App.assistant = { ...a, results: data.results || [] };
     go("assistantResults");
   } catch (e) {
-    App.error = e.message; App.state = "assistantReview"; render();
-    el.insertBefore(h(`<div class="banner banner-error">${esc(e.message)}</div>`), el.firstChild);
+    App.error = errOf(e); App.state = "assistantReview"; render();
+    el.insertBefore(errorBanner(App.error), el.firstChild);
   }
 }
 
@@ -1280,11 +1410,19 @@ async function onRecordingStopped() {
   fd.append("client_id", App.client.client_id);
   try {
     const r = await fetch("/api/debrief", { method: "POST", body: fd });
-    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Server error " + r.status)); }
+    if (!r.ok) throw await failure(r);
     App.plan = await r.json();
     go("review");
   } catch (e) {
-    App.error = e.message; go("record");
+    // The recorder is about to reset to empty. Say plainly that the audio is
+    // gone, rather than letting them wonder where it went.
+    const err = toErr(errOf(e));
+    App.error = {
+      text: "Debrief could not process that recording, and the recording was not kept. You will need to record it again. Sorry.",
+      sub: "Nothing was filed and nothing was sent. " + SERVER_ERROR_FIX,
+      technical: err.technical || (err.text === SERVER_ERROR_TEXT ? "" : err.text),
+    };
+    go("record");
   }
 }
 
@@ -1296,12 +1434,12 @@ async function executePlan() {
   go("executing");
   try {
     const r = await fetch("/api/execute", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(plan) });
-    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Server error " + r.status)); }
+    if (!r.ok) throw await failure(r);
     App.result = await r.json();
     go("results");
   } catch (e) {
     App.state = "review"; render();
-    el.insertBefore(h(`<div class="banner banner-error">${esc(e.message)}</div>`), el.firstChild);
+    el.insertBefore(errorBanner(errOf(e)), el.firstChild);
   }
 }
 
@@ -1339,9 +1477,9 @@ async function openClient(c) {
   render();
   try {
     const r = await fetch("/api/clients/" + encodeURIComponent(c.client_id));
-    if (!r.ok) throw new Error("Could not load record (" + r.status + ")");
+    if (!r.ok) throw await failure(r);
     App.recordData = await r.json();
-  } catch (e) { App.error = e.message; }
+  } catch (e) { App.error = errOf(e); }
   if (App.state === "clientRecord") render();
 }
 
@@ -1499,17 +1637,17 @@ async function uploadFile(file, clientId) {
   fd.append("file", file, file.name);
   try {
     const r = await fetch("/api/documents/upload", { method: "POST", body: fd });
-    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Upload failed " + r.status)); }
+    if (!r.ok) throw await failure(r);
     openClient(App.client);
-  } catch (e) { App.error = e.message; render(); }
+  } catch (e) { App.error = errOf(e); render(); }
 }
 
 async function renameDocument(path, newTitle) {
   try {
     const r = await fetch("/api/documents/rename", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, new_title: newTitle }) });
-    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Rename failed " + r.status)); }
+    if (!r.ok) throw await failure(r);
     return (await r.json()).path;
-  } catch (e) { App.error = e.message; render(); }
+  } catch (e) { App.error = errOf(e); render(); }
 }
 
 function downloadPdf(path) {
@@ -1522,9 +1660,9 @@ async function emailDocument(clientId, path, subject, body) {
     if (subject) payload.subject = subject;
     if (body) payload.body = body;
     const r = await fetch("/api/documents/email", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Could not draft email " + r.status)); }
+    if (!r.ok) throw await failure(r);
     toast("Mail draft opened for review. Nothing was sent.");
-  } catch (e) { toast(e.message); }
+  } catch (e) { toast(toErr(errOf(e)).text); }
 }
 
 function toast(msg) {
@@ -1545,9 +1683,9 @@ async function openDocument(path, crumb) {
   render();
   try {
     const r = await fetch("/api/notes?path=" + encodeURIComponent(path));
-    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Could not open note " + r.status)); }
+    if (!r.ok) throw await failure(r);
     App.doc = await r.json();
-  } catch (e) { App.error = e.message; }
+  } catch (e) { App.error = errOf(e); }
   if (App.state === "document") render();
 }
 
@@ -1560,7 +1698,7 @@ function renderDocument() {
   el.appendChild(bc);
   bc.querySelector("#dcClient").onclick = () => { if (d) openClient(App.client); else go("clients"); };
 
-  if (App.error) el.appendChild(h(`<div class="banner banner-error">${esc(App.error)}</div>`));
+  if (App.error) el.appendChild(errorBanner(App.error));
   if (!doc) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Opening document...</div></div>`)); return; }
 
   const fm = doc.frontmatter || {};
@@ -1667,15 +1805,15 @@ function stripFrontmatter(md) {
 async function amendNote(path, text) {
   try {
     const r = await fetch("/api/notes/amend", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, text }) });
-    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Amend failed " + r.status)); }
-  } catch (e) { toast(e.message); }
+    if (!r.ok) throw await failure(r);
+  } catch (e) { toast(toErr(errOf(e)).text); }
 }
 
 async function saveDocument(path, markdown) {
   try {
     const r = await fetch("/api/documents/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, markdown }) });
-    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Save failed " + r.status)); }
-  } catch (e) { toast(e.message); }
+    if (!r.ok) throw await failure(r);
+  } catch (e) { toast(toErr(errOf(e)).text); }
 }
 
 function emailDocumentFromView(doc) {
@@ -1708,9 +1846,9 @@ function toggleOverflow(wrap, doc) {
 async function post(url, body) {
   try {
     const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    if (!r.ok) { const t = await r.json().catch(() => ({})); throw new Error(t.detail || ("Error " + r.status)); }
+    if (!r.ok) throw await failure(r);
     return await r.json();
-  } catch (e) { toast(e.message); }
+  } catch (e) { toast(toErr(errOf(e)).text); }
 }
 
 // ---------------------------------------------------------------------------
@@ -1733,9 +1871,9 @@ async function openLibrary(which) {
   render();
   try {
     const r = await fetch("/api/library");
-    if (!r.ok) throw new Error("Could not load library (" + r.status + ")");
+    if (!r.ok) throw await failure(r);
     App.library = await r.json();
-  } catch (e) { App.error = e.message; }
+  } catch (e) { App.error = errOf(e); }
   if (App.state === "library") render();
 }
 
@@ -1751,7 +1889,7 @@ function renderLibrary() {
   </div>`));
   const libAsk = el.querySelector("#libAsk");
   if (libAsk) libAsk.onclick = () => { App.assistant = null; go("assistant"); };
-  if (App.error) el.appendChild(h(`<div class="banner banner-error">${esc(App.error)}</div>`));
+  if (App.error) el.appendChild(errorBanner(App.error));
   if (!lib) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Loading library...</div></div>`)); return; }
 
   const items = which === "reference" ? (lib.reference || []) : (lib.worksheets || []);
@@ -1800,15 +1938,15 @@ async function openTrash() {
   render();
   try {
     const r = await fetch("/api/trash");
-    if (!r.ok) throw new Error("Could not load trash (" + r.status + ")");
+    if (!r.ok) throw await failure(r);
     App.trash = (await r.json()).items || [];
-  } catch (e) { App.error = e.message; }
+  } catch (e) { App.error = errOf(e); }
   if (App.state === "trash") render();
 }
 
 function renderTrash() {
   el.appendChild(h(`<h1 style="font-family:var(--font-serif);font-size:26px;font-weight:600;margin-bottom:16px">Trash</h1>`));
-  if (App.error) el.appendChild(h(`<div class="banner banner-error">${esc(App.error)}</div>`));
+  if (App.error) el.appendChild(errorBanner(App.error));
   if (App.trash === null) { el.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Loading...</div></div>`)); return; }
   const list = h(`<div class="trash-list"></div>`);
   if (!App.trash.length) list.appendChild(h(`<div class="hint">Trash is empty.</div>`));
@@ -1908,12 +2046,11 @@ const FEATURE_ROWS = [
 
 const STT_DOWNLOAD_HINT = "First transcription after switching may take a minute while the model downloads.";
 
-// Turn an /api/settings error body into a readable line.
+// Turn an error body into one readable line for a toast or a modal, using the
+// same rules as the banners: a bare 500 never reaches the clinician verbatim.
 function apiErr(data, status) {
-  const d = data && data.detail;
-  if (d) return (d.fix || d.error || (typeof d === "string" ? d : null)) || ("Error " + status);
-  if (data && data.error) return data.error;
-  return "Error " + status;
+  const e = httpError(status, data);
+  return [e.text, e.sub].filter(Boolean).join(" ");
 }
 
 async function postSettings(patch, dictionary) {
