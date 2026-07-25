@@ -1767,6 +1767,10 @@ function renderSettings() {
 // with esc(), never innerHTML.
 // ===========================================================================
 
+// Busy buttons in the import subflow show the same spinner the processing
+// screens use, at label size. Static markup, never user text.
+const SPINNER = '<span class="btn-spinner" aria-hidden="true"></span>';
+
 function launchImportFlow({ profession, fromWizard, onSaved }) {
   const flow = {
     stage: "source",
@@ -1817,7 +1821,7 @@ function importStageSource(flow, body, ctx) {
 
   const hidden = h(`<input type="file" style="display:none" accept=".md,.txt,.docx,.pdf" />`);
   hidden.onchange = () => { if (hidden.files.length) doUpload(flow, hidden.files[0], ctx); };
-  const pick = h(`<button class="btn btn-ghost import-file-btn">${flow.busy ? "Reading..." : "Choose a file (.md, .txt, .docx)"}</button>`);
+  const pick = h(`<button class="btn btn-ghost import-file-btn">${flow.busy ? SPINNER + "Reading..." : "Choose a file (.md, .txt, .docx)"}</button>`);
   pick.disabled = flow.busy;
   pick.onclick = () => hidden.click();
   body.appendChild(pick);
@@ -1914,7 +1918,7 @@ function importStageMode(flow, body, ctx) {
     tryLocal.onclick = () => { flow.mode = "local"; flow.offerLocalFallback = false; doCompile(flow, ctx); };
     bar.appendChild(tryLocal);
   }
-  const compile = h(`<button class="btn btn-primary" ${flow.busy ? "disabled" : ""}>${flow.busy ? "Compiling..." : "Compile"}</button>`);
+  const compile = h(`<button class="btn btn-primary" ${flow.busy ? "disabled" : ""}>${flow.busy ? SPINNER + "Compiling..." : "Compile"}</button>`);
   compile.onclick = () => doCompile(flow, ctx);
   bar.appendChild(compile);
   body.appendChild(bar);
@@ -2007,10 +2011,10 @@ function importStageSpec(flow, body, ctx) {
   back.onclick = () => { flow.stage = "mode"; flow.error = null; ctx.repaint(); };
   bar.appendChild(back);
   bar.appendChild(h(`<div class="grow"></div>`));
-  const preview = h(`<button class="btn btn-ghost" ${flow.busy ? "disabled" : ""}>${flow.busy && flow._act === "preview" ? "Rendering..." : "Preview"}</button>`);
+  const preview = h(`<button class="btn btn-ghost" ${flow.busy ? "disabled" : ""}>${flow.busy && flow._act === "preview" ? SPINNER + "Rendering..." : "Preview"}</button>`);
   preview.onclick = () => doPreview(flow, ctx);
   bar.appendChild(preview);
-  const save = h(`<button class="btn btn-primary" ${flow.busy ? "disabled" : ""}>${flow.busy && flow._act === "save" ? "Saving..." : "Save format"}</button>`);
+  const save = h(`<button class="btn btn-primary" ${flow.busy ? "disabled" : ""}>${flow.busy && flow._act === "save" ? SPINNER + "Saving..." : "Save format"}</button>`);
   save.onclick = () => doSave(flow, ctx);
   bar.appendChild(save);
   body.appendChild(bar);
@@ -2070,7 +2074,7 @@ function importStagePreview(flow, body, ctx) {
   back.onclick = () => { flow.stage = "spec"; ctx.repaint(); };
   bar.appendChild(back);
   bar.appendChild(h(`<div class="grow"></div>`));
-  const save = h(`<button class="btn btn-primary" ${flow.busy ? "disabled" : ""}>${flow.busy ? "Saving..." : "Save format"}</button>`);
+  const save = h(`<button class="btn btn-primary" ${flow.busy ? "disabled" : ""}>${flow.busy ? SPINNER + "Saving..." : "Save format"}</button>`);
   save.onclick = () => doSave(flow, ctx);
   bar.appendChild(save);
   body.appendChild(bar);
