@@ -2192,7 +2192,11 @@ function inlineRenameCard(card, doc, d) {
   card.replaceWith(box);
   input.focus();
   input.select();
+  // Escape has to mean cancel. Without the flag, render() tears the field out,
+  // that fires blur, and blur commits the very edit Escape just abandoned.
+  let cancelled = false;
   const commit = async () => {
+    if (cancelled) return;
     const v = input.value.trim();
     if (v && v !== doc.title) {
       // Only reload on success: reopening the record would clear the banner
@@ -2201,7 +2205,10 @@ function inlineRenameCard(card, doc, d) {
       if (newPath) openClient(App.client); else render();
     } else render();
   };
-  input.onkeydown = (e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") render(); };
+  input.onkeydown = (e) => {
+    if (e.key === "Enter") commit();
+    if (e.key === "Escape") { cancelled = true; render(); }
+  };
   input.onblur = commit;
 }
 
@@ -2394,7 +2401,11 @@ function beginTitleRename(titleEl, doc) {
   const input = h(`<input class="doc-title-input" aria-label="New name for ${esc(current)}" value="${esc(current)}" />`);
   titleEl.replaceWith(input);
   input.focus(); input.select();
+  // As on the document card: without the flag, the render() Escape triggers
+  // fires blur, and blur commits the edit Escape just abandoned.
+  let cancelled = false;
   const commit = async () => {
+    if (cancelled) return;
     const v = input.value.trim();
     if (v && v !== current) {
       const newPath = await renameDocument(doc.path, v);
@@ -2402,7 +2413,10 @@ function beginTitleRename(titleEl, doc) {
     }
     render();
   };
-  input.onkeydown = (e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") render(); };
+  input.onkeydown = (e) => {
+    if (e.key === "Enter") commit();
+    if (e.key === "Escape") { cancelled = true; render(); }
+  };
   input.onblur = commit;
 }
 
