@@ -2,12 +2,27 @@
 
 Session-to-session state of the project. Read this first. Update it whenever meaningful state changes.
 
+## Overnight design and hardening pass (2026-07-25)
+
+Three parallel audits (empty and edge states, copy and emotional design, accessibility) followed by roughly forty commits of fixes. Start at `SHIP_BLOCKERS.md`, which lists what only Phil can do and every decision made on his behalf.
+
+Behaviour changes worth knowing about:
+
+- **Failures were silent.** `go()` cleared `App.error` one line after every caller set it, so a failed debrief, failed assistant request, rejected upload, and denied microphone all failed with no message, and the recording was discarded. Errors now survive navigation, the audio is kept and offered back, and the app warns before recording when the model is unreachable.
+- **Escape during a rename committed the rename** instead of abandoning it (Escape triggered a re-render, which blurred the input, which saved).
+- **Filed notes no longer carry app-injected liability boilerplate.** A clinical record should contain only what the clinician wrote.
+- **Clients can be created in the app** (`POST /api/clients`). Before this, the only way was hand-authoring `_Profile.md` in Finder.
+- **Accessibility**: document and library cards are real buttons (their actions were mouse-only and absent from the accessibility tree), all four sheets are proper dialogs with focus traps and Escape, every text colour clears AA, and live regions announce async changes.
+- **The live pipeline test is vault-independent** and passes twice through on a scratch vault. It no longer asserts the vision pass *confirmed* what it saw, since that depends on which window is frontmost.
+
+Test counts: 413 non-live. Live extract, agent, and full pipeline all pass; `eval/run_eval.py` OVERALL PASS.
+
 ## Where things stand (2026-07-24)
 
 The hackathon is over (2nd place, Build with Gemma: JustBuild, Track 2). That build is frozen at the `v0.1-hackathon` tag with a GitHub Release. Everything since is the public open source phase, and it is complete: two full plans shipped (open source release, then launch readiness), plus a design polish pass.
 
 - **HEAD:** `87890ba`. Branch `main`, pushed.
-- **Tests:** 320 non-live passing, 4 deselected (`.venv/bin/pytest -m "not live"`). Live suite passes except one known-stale test (see open items).
+- **Tests:** 413 non-live passing, 4 deselected (`.venv/bin/pytest -m "not live"`). Live suite passes except one known-stale test (see open items).
 - **Launch command:** `uv run debrief`, then open http://127.0.0.1:8377. First run downloads Parakeet (a few hundred MB) and opens the setup wizard.
 - **Diagnostics:** `uv run debrief-doctor` prints the same environment checks the wizard shows.
 
