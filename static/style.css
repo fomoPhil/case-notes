@@ -220,7 +220,7 @@
      a sentence ("Read it over.", "That's handled.") and an uppercase eyebrow
      would shout them. */
   .flow-head { margin: 8px 0 18px; }
-  .flow-head h2 {
+  .flow-head h1 {
     font-family: var(--font-serif);
     font-size: 28px;
     font-weight: 600;
@@ -240,7 +240,7 @@
   /* The payoff. A single sage tick settles in above the headline: the one
      moment in the app that is allowed to feel like an exhale. */
   .flow-head-done { margin-top: 14px; }
-  .flow-head-done h2 { font-size: 32px; }
+  .flow-head-done h1 { font-size: 32px; }
   .flow-head-done p { font-size: 16px; color: var(--ink); }
   .done-mark {
     width: 40px; height: 40px; border-radius: 50%;
@@ -287,7 +287,7 @@
     border-bottom: 1px solid var(--divider);
   }
   .home-greet { min-width: 0; }
-  .home-hello h2 {
+  .home-hello h1 {
     font-family: var(--font-serif);
     font-size: 27px;
     font-weight: 600;
@@ -310,7 +310,7 @@
   .home-col { min-width: 0; }
   .home-blk { margin-top: 22px; }
   .home-blk:first-child { margin-top: 0; }
-  .home-blk h3 {
+  .home-blk h2 {
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.11em;
@@ -544,7 +544,7 @@
     box-shadow: var(--card-ring), var(--shadow-sm);
     padding: 16px;
   }
-  .rail-card h4 {
+  .rail-card h2 {
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.11em;
@@ -594,7 +594,7 @@
     gap: 14px;
     padding: 36px 24px 36px;
   }
-  .record-client { font-family: var(--font-serif); font-size: 17px; color: var(--ink-soft); }
+  .record-client { margin: 0; font-family: var(--font-serif); font-size: 17px; font-weight: 400; color: var(--ink-soft); }
   .record-client b { color: var(--ink); font-weight: 600; }
 
   /* A recording the server could not process. Offered back before a fresh
@@ -605,7 +605,7 @@
     box-shadow: 0 0 0 1px rgba(168,188,161,0.85), var(--lift-1);
     padding: 16px 18px; text-align: left;
   }
-  .retry-card h4 { margin: 0; font-family: var(--font-serif); font-size: 17px; font-weight: 600; color: var(--ink); }
+  .retry-card h2 { margin: 0; font-family: var(--font-serif); font-size: 17px; font-weight: 600; color: var(--ink); }
   .retry-card p { margin: 6px 0 0; font-size: 13.5px; line-height: 1.55; color: var(--ink-soft); text-wrap: pretty; }
   /* What actually went wrong, in the server's own words, above the remedy. */
   .retry-card .retry-why { color: var(--ink); font-weight: 560; }
@@ -698,11 +698,12 @@
     margin-top: 6px;
   }
   .dictate-guide .dg-title {
+    margin: 0 0 8px;
+    font-weight: 600;
     font-size: 11.5px;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--ink-soft);
-    margin-bottom: 8px;
   }
   .dictate-guide ul { list-style: none; margin: 0; padding: 0; }
   /* What happens after they stop, said before they start. */
@@ -794,7 +795,7 @@
   .note-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; flex-wrap: wrap; }
   .note-head h3 { margin: 0; font-family: var(--font-serif); font-size: 20px; font-weight: 600; letter-spacing: -0.005em; text-wrap: balance; }
   .letterhead { display: flex; align-items: baseline; gap: 12px; row-gap: 8px; flex-wrap: wrap; }
-  .letterhead .who { font-family: var(--font-serif); font-size: 21px; font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; }
+  .letterhead .who { margin: 0; font-family: var(--font-serif); font-size: 21px; font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; }
   .letterhead .date { font-size: 12.5px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
   .letterhead .stamps { margin-left: auto; display: inline-flex; align-items: center; align-self: center; gap: 6px; }
   .stamp {
@@ -813,7 +814,7 @@
   .dblrule { margin: 14px 0 4px; border-top: 1.5px solid rgba(43,46,42,0.35); border-bottom: 1px solid rgba(43,46,42,0.12); height: 3px; }
   .pill { font-size: 11px; border-radius: 999px; padding: 2px 9px; background: var(--accent-soft); color: var(--accent-ink); }
   .note-section { margin-top: 16px; padding-left: 16px; border-left: 2px solid rgba(95,122,97,0.35); }
-  .note-section h4 {
+  .note-section h3 {
     margin: 0 0 3px;
     font-size: 11.5px;
     text-transform: uppercase;
@@ -838,7 +839,7 @@
     border-radius: var(--radius);
     padding: 15px 17px;
   }
-  .risk h4 { color: var(--amber); margin: 0 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; }
+  .risk h3 { color: var(--amber); margin: 0 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; }
   .risk .row { font-size: 13.5px; margin-top: 6px; text-wrap: pretty; }
   .risk .row b { color: var(--ink); font-weight: 600; }
 
@@ -983,7 +984,7 @@
   .btn-small:disabled { opacity: 0.5; cursor: default; }
 
   .suggestions { margin-top: 18px; }
-  .suggestions h4 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-soft); margin: 0 0 6px; }
+  .suggestions h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-soft); margin: 0 0 6px; }
   .suggestions ul { margin: 0; padding-left: 18px; }
   .suggestions li { font-size: 13.5px; color: var(--ink-soft); margin-bottom: 5px; text-wrap: pretty; }
   .disclaimer { font-size: 12px; color: var(--ink-soft); margin-top: 10px; font-style: italic; text-wrap: pretty; }
@@ -1403,7 +1404,7 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .sesscard .sdate { width: 46px; flex: none; text-align: center; padding-top: 2px; }
 .sesscard .sdate .d { font-family: var(--font-serif); font-size: 19px; font-weight: 600; color: var(--accent-ink); font-variant-numeric: tabular-nums; }
 .sesscard .sdate .m { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft); }
-.sesscard h4 { font-size: 15px; font-weight: 600; margin: 0 0 3px; text-wrap: balance; }
+.sesscard h3 { font-size: 15px; font-weight: 600; margin: 0 0 3px; text-wrap: balance; }
 .sesscard p { font-size: 13.5px; color: var(--ink-soft); line-height: 1.45; margin: 0; text-wrap: pretty; }
 .rchip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 700; padding: 2.5px 9px; border-radius: 99px; margin-top: 8px; }
 .rchip.risk { background: var(--amber-soft); color: var(--amber); }
@@ -1911,7 +1912,7 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
    Editable review: sections become click-to-edit without losing the paper feel
    ========================================================================== */
 .note-sections { display: flex; flex-direction: column; }
-.note-section.editable h4 { display: flex; align-items: center; gap: 6px; }
+.note-section.editable h3 { display: flex; align-items: center; gap: 6px; }
 .note-section.editable .edit-pencil {
   font-size: 11px; color: var(--ink-soft); opacity: 0;
   text-transform: none; letter-spacing: 0;

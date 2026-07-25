@@ -888,7 +888,7 @@ function renderClients() {
   const home = h(`<div class="home"></div>`);
   home.appendChild(h(`<div class="home-hello ${ent(1)}">
     <div class="home-greet">
-      <h2>${esc(greetingFor(now))}</h2>
+      <h1>${esc(greetingFor(now))}</h1>
       <div class="home-sub">${esc(homeStatus(scheduled.length, filed))}</div>
     </div>
     <div class="home-date">${esc(dateLabel)}</div>
@@ -898,13 +898,13 @@ function renderClients() {
 
   // Today first. Nobody scheduled means no block at all, never an empty one.
   if (scheduled.length) {
-    const blk = h(`<div class="home-blk ${ent(2)}"><h3>On your calendar today</h3><div class="home-rows"></div></div>`);
+    const blk = h(`<div class="home-blk ${ent(2)}"><h2>On your calendar today</h2><div class="home-rows"></div></div>`);
     const rows = blk.querySelector(".home-rows");
     scheduled.forEach(c => rows.appendChild(buildTodayRow(c, clients.indexOf(c))));
     col.appendChild(blk);
   }
 
-  const allBlk = h(`<div class="home-blk ${ent(3)}"><h3>All clients</h3></div>`);
+  const allBlk = h(`<div class="home-blk ${ent(3)}"><h2>All clients</h2></div>`);
   // The seeded demo records are labelled, and said out loud once, so nobody
   // mistakes Bob for a person they are treating.
   if (clients.some(c => c.sample)) {
@@ -994,13 +994,13 @@ function buildClientCard(c, idx) {
 function buildActivityRail(items, filed) {
   const rail = h(`<aside class="home-rail ${ent(4)}"></aside>`);
 
-  const filedCard = h(`<div class="rail-card"><h4>Filed today</h4></div>`);
+  const filedCard = h(`<div class="rail-card"><h2>Filed today</h2></div>`);
   filedCard.appendChild(filed
     ? h(`<div class="rail-count">${esc(countWord(filed))} ${plural(filed, "note")} filed today.</div>`)
     : h(`<div class="rail-empty">Nothing yet. After a session, pick a client above and talk for a minute.</div>`));
   rail.appendChild(filedCard);
 
-  const recentCard = h(`<div class="rail-card"><h4>Recently</h4></div>`);
+  const recentCard = h(`<div class="rail-card"><h2>Recently</h2></div>`);
   if (!items.length) {
     recentCard.appendChild(h(`<div class="rail-empty">Nothing filed yet. Notes you file will appear here.</div>`));
   } else {
@@ -1045,10 +1045,10 @@ function renderRecord() {
 
   const stage = h(`<div class="panel record-stage ${ent(1)}">
     <button class="backlink">&larr; back to clients</button>
-    <div class="record-client">Debrief for <b>${esc(c.name)}</b> &middot; ${esc(c.framework || "")}</div>
+    <h1 class="record-client">Debrief for <b>${esc(c.name)}</b> &middot; ${esc(c.framework || "")}</h1>
     ${recorder}
     <div class="dictate-guide">
-      <div class="dg-title">Worth mentioning</div>
+      <h2 class="dg-title">Worth mentioning</h2>
       <ul>
         <li>What happened this session and how the client responded</li>
         <li>A risk check, if it came up</li>
@@ -1081,7 +1081,7 @@ function renderRecord() {
     const why = toErr(App.error) || {};
     const fix = why.sub || "Try it again, or open Setup to check that Debrief's tools are running.";
     const retry = h(`<div class="retry-card">
-      <h4>That note did not save.</h4>
+      <h2>That note did not save.</h2>
       <p>Debrief could not finish processing your recording, so nothing was written and nothing was sent. Your recording is still here.</p>
       ${why.text && why.text !== SERVER_ERROR_TEXT ? `<p class="retry-why">${esc(why.text)}</p>` : ""}
       <p class="retry-fix">${esc(fix)}</p>
@@ -1142,7 +1142,7 @@ function renderProcessing() {
   // screen reader. Each step now carries the word for its state as well.
   const STATE_WORD = { done: "done", active: "in progress", todo: "not started yet" };
   const panel = h(`<div class="panel proc-steps ${ent(1)}">
-    <h2 class="visually-hidden">Writing your note</h2>
+    <h1 class="visually-hidden">Writing your note</h1>
     ${steps.map((t, i) => `<div class="pstep ${i === 0 ? "active" : "todo"}"><span class="ic" aria-hidden="true">${CHECK_SVG}</span><span class="t">${esc(t)}</span><span class="visually-hidden pstep-state">, ${i === 0 ? STATE_WORD.active : STATE_WORD.todo}</span></div>`).join("")}
     <div class="local-note">${LOCK_SVG}Everything runs on this Mac. Nothing is filed or sent until you have read it and approved it.</div>
   </div>`);
@@ -1177,8 +1177,8 @@ function renderProcessing() {
 // object the approve step POSTs verbatim: what you see is what gets filed.
 function buildEditableSection(heading, key, note) {
   const wrap = h(`<div class="note-section editable">
-    <h4>${esc(heading)}<span class="edit-pencil" aria-hidden="true" title="Click to edit">✎</span></h4>
-    <div class="note-body" contenteditable="true" spellcheck="true" role="textbox" aria-label="${esc(heading)}"></div>
+    <h3>${esc(heading)}<span class="edit-pencil" aria-hidden="true" title="Click to edit">✎</span></h3>
+    <div class="note-body" contenteditable="true" spellcheck="true" role="textbox" aria-multiline="true" aria-label="${esc(heading)}"></div>
   </div>`);
   const body = wrap.querySelector(".note-body");
   body.textContent = (note && note[key] != null) ? String(note[key]) : "";
@@ -1253,7 +1253,7 @@ function refreshApproveConsequence() {
 function renderReview() {
   const p = App.plan, note = p.note || {};
   el.appendChild(h(`<div class="flow-head ${ent(1)}">
-    <h2>Read it over.</h2>
+    <h1>Read it over.</h1>
     <p>Nothing is filed or sent yet.</p>
   </div>`));
 
@@ -1266,7 +1266,7 @@ function renderReview() {
     if (y && m && d) dateStr = new Date(y, m - 1, d).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
   }
   notePanel.appendChild(h(`<div class="letterhead">
-    <span class="who">${esc((p.client && p.client.name) || "Client")}</span>
+    <h2 class="who">${esc((p.client && p.client.name) || "Client")}</h2>
     ${dateStr ? `<span class="date">${esc(dateStr)}</span>` : ""}
     <span class="stamps">
       <span class="stamp">${esc(p.client.framework || "")} ${esc((p.session_meta && p.session_meta.format) || "DAP")}</span>
@@ -1289,7 +1289,10 @@ function renderReview() {
 
   if (risk) {
     if (!note.risk) note.risk = risk;
-    const riskBox = h(`<div class="risk"><h4>Risk</h4></div>`);
+    // The legally significant part of the note, marked as its own region so it
+    // can be jumped to and is announced by name on entry.
+    const riskId = uid("risk");
+    const riskBox = h(`<div class="risk" role="region" aria-labelledby="${riskId}"><h3 id="${riskId}">Risk</h3></div>`);
     riskBox.appendChild(buildRiskRow("Ideation", "ideation", note.risk));
     riskBox.appendChild(buildRiskRow("Plan, intent, means", "plan_intent_means", note.risk));
     riskBox.appendChild(buildRiskRow("Protective factors", "protective_factors", note.risk));
@@ -1303,7 +1306,7 @@ function renderReview() {
   notePanel.appendChild(h(`<details class="transcript"><summary>what you said</summary><div class="transcript-note">Your dictation, with clinical terms and names spelled correctly. Nothing else was changed.</div><p>${esc(p.corrected_transcript || p.transcript || "")}</p></details>`));
   el.appendChild(notePanel);
 
-  el.appendChild(h(`<div class="step-title ${ent(2)}">What happens when you approve</div>`));
+  el.appendChild(h(`<h2 class="step-title ${ent(2)}">What happens when you approve</h2>`));
   const actPanel = h(`<div class="panel ${ent(2)}"></div>`);
 
   // Deterministic gap nudges above the checklist. Nudges that add a disabled
@@ -1372,7 +1375,7 @@ function renderReview() {
   actPanel.appendChild(list);
 
   if ((p.next_session_suggestions || []).length) {
-    const sugg = h(`<div class="suggestions"><h4>Next session considerations</h4><ul></ul></div>`);
+    const sugg = h(`<div class="suggestions"><h3>Next session considerations</h3><ul></ul></div>`);
     const ul = sugg.querySelector("ul");
     p.next_session_suggestions.forEach(s => ul.appendChild(h(`<li>${esc(s)}</li>`)));
     actPanel.appendChild(sugg);
@@ -1438,6 +1441,7 @@ function confirmDiscard() {
 
 function renderExecuting() {
   el.appendChild(h(`<div class="panel processing ${ent(1)}">
+    <h1 class="visually-hidden">Filing the note</h1>
     <div class="spinner"></div>
     <div class="label">Filing the note and doing what you approved...</div>
   </div>`));
@@ -1484,15 +1488,15 @@ function renderResults() {
   el.appendChild(summary
     ? h(`<div class="flow-head flow-head-done ${ent(1)}">
           <div class="done-mark" aria-hidden="true">${CHECK_SVG}</div>
-          <h2>That's handled.</h2>
+          <h1>That's handled.</h1>
           <p>${esc(summary)}</p>
         </div>`)
     : h(`<div class="flow-head ${ent(1)}">
-          <h2>That did not go through.</h2>
+          <h1>That did not go through.</h1>
           <p>Nothing was filed and nothing was sent. Your note is still on the review screen if you go back.</p>
         </div>`));
 
-  el.appendChild(h(`<div class="step-title ${ent(1)}">What Debrief did</div>`));
+  el.appendChild(h(`<h2 class="step-title ${ent(1)}">What Debrief did</h2>`));
   const panel = h(`<div class="panel ${ent(1)}"></div>`);
   if (r.note_path) {
     const bits = [clientName, meta.session_number ? `Session ${meta.session_number}` : "", fmtDayMonth(meta.session_date)].filter(Boolean);
@@ -1516,7 +1520,7 @@ function renderResults() {
   el.appendChild(panel);
 
   if ((r.verification || []).length) {
-    el.appendChild(h(`<div class="step-title ${ent(2)}">Debrief checked the screen</div>`));
+    el.appendChild(h(`<h2 class="step-title ${ent(2)}">Debrief checked the screen</h2>`));
     const vpanel = h(`<div class="${ent(2)}"></div>`);
     r.verification.forEach(v => {
       const ok = v.confirmed;
@@ -1545,7 +1549,7 @@ function renderResults() {
 // ---------------------------------------------------------------------------
 
 function renderAssistant() {
-  el.appendChild(h(`<div class="step-title">Ask the assistant</div>`));
+  el.appendChild(h(`<h1 class="step-title">Ask the assistant</h1>`));
   const panel = h(`<div class="panel ${ent(1)} asst-card">
     <div class="asst-lead">Ask for a worksheet, an email draft, or something to look up. Nothing is saved until you approve it.</div>
     <textarea class="asst-textarea" id="asstText" rows="3" placeholder="For example: make a one page box breathing worksheet for before meetings"></textarea>
@@ -1622,6 +1626,7 @@ async function submitAssistant({ text, blob }) {
 
 function renderAssistantThinking() {
   el.appendChild(h(`<div class="panel processing ${ent(1)}">
+    <h1 class="visually-hidden">Preparing what you asked for</h1>
     <div class="spinner"></div>
     <div class="label">Reading your records and putting something together...</div>
   </div>`));
@@ -1636,7 +1641,7 @@ function clientNameFor(id) {
 
 function renderAssistantReview() {
   const a = App.assistant || {};
-  el.appendChild(h(`<div class="step-title">The assistant prepared this</div>`));
+  el.appendChild(h(`<h1 class="step-title">The assistant prepared this</h1>`));
 
   if (a.finalText) {
     el.appendChild(h(`<div class="panel ${ent(1)} asst-final"><p>${esc(a.finalText)}</p></div>`));
@@ -1646,7 +1651,7 @@ function renderAssistantReview() {
   if (!proposals.length) {
     el.appendChild(h(`<div class="panel ${ent(2)}"><div class="hint" style="margin:8px auto">No documents or drafts to file. Nothing will be saved.</div></div>`));
   } else {
-    el.appendChild(h(`<div class="step-title">Approve what to keep</div>`));
+    el.appendChild(h(`<h2 class="step-title">Approve what to keep</h2>`));
     const list = h(`<div class="panel ${ent(2)}"></div>`);
     proposals.forEach((p, i) => {
       let title = "", body = "";
@@ -1705,14 +1710,14 @@ async function executeAssistant() {
 function renderAssistantResults() {
   const a = App.assistant || {};
   if (a.sessionDebrief) {
-    el.appendChild(h(`<div class="step-title">This sounded like a session debrief</div>`));
+    el.appendChild(h(`<h1 class="step-title">This sounded like a session debrief</h1>`));
     el.appendChild(h(`<div class="panel ${ent(1)} asst-final"><p>Use New debrief so it is filed properly as a clinical note. The assistant is for making resources, drafting emails, and looking things up.</p></div>`));
     const bar = h(`<div class="actions-bar ${ent(2)}"><div class="grow"></div><button class="btn btn-primary" id="asstToClients">Back to clients</button></div>`);
     bar.querySelector("#asstToClients").onclick = () => { App.assistant = null; go("clients"); };
     el.appendChild(bar);
     return;
   }
-  el.appendChild(h(`<div class="step-title">Saved to your library</div>`));
+  el.appendChild(h(`<h1 class="step-title">Saved to your library</h1>`));
   const panel = h(`<div class="panel ${ent(1)}"></div>`);
   (a.results || []).forEach(r => {
     const title = r.type === "worksheet" ? "Worksheet filed" : r.type === "email" ? "Email draft" : esc(r.type);
@@ -2010,6 +2015,12 @@ function renderClientRecord() {
   tabs.querySelectorAll(".ctab").forEach(t => t.onclick = () => { App.recordTab = t.dataset.tab; render(); });
   el.appendChild(tabs);
 
+  // The record jumped from the client's name straight to a session card. The
+  // active tab is the section heading; it is already on screen as the selected
+  // tab, so the heading itself is for assistive technology only.
+  const TAB_NAME = { sessions: "Sessions", profile: "Profile", documents: "Documents" };
+  el.appendChild(h(`<h2 class="visually-hidden">${esc(TAB_NAME[App.recordTab] || "Sessions")}</h2>`));
+
   if (App.recordTab === "sessions") renderSessionsTab(d);
   else if (App.recordTab === "profile") renderProfileTab(d);
   else renderDocumentsTab(d);
@@ -2038,7 +2049,7 @@ function renderSessionsTab(d) {
     const row = h(`<button class="sesscard">
       <div class="sdate"><div class="d">${esc(day)}</div><div class="m">${esc(mon)}</div></div>
       <div>
-        <h4>${esc(sessionCardTitle(s))}</h4>
+        <h3>${esc(sessionCardTitle(s))}</h3>
         ${preview ? `<p>${esc(preview)}</p>` : ""}
         ${chip}
       </div>
@@ -3243,18 +3254,18 @@ function importStagePreview(flow, body, ctx) {
   const note = pv.note || {};
   const sections = pv.sections || [];
   const paper = h(`<div class="panel doc import-preview-doc"></div>`);
-  paper.appendChild(h(`<div class="letterhead"><span class="who">Sample</span><span class="stamps"><span class="stamp">${esc(flow.spec.name || "Format")}</span></span></div>`));
+  paper.appendChild(h(`<div class="letterhead"><h2 class="who">Sample</h2><span class="stamps"><span class="stamp">${esc(flow.spec.name || "Format")}</span></span></div>`));
   paper.appendChild(h(`<div class="dblrule"></div>`));
   const secBox = h(`<div class="note-sections"></div>`);
   sections.forEach(s => {
-    const secEl = h(`<div class="note-section"><h4></h4><p></p></div>`);
-    secEl.querySelector("h4").textContent = s.heading || "";
+    const secEl = h(`<div class="note-section"><h3></h3><p></p></div>`);
+    secEl.querySelector("h3").textContent = s.heading || "";
     secEl.querySelector("p").textContent = (note && note[s.key] != null) ? String(note[s.key]) : "";
     secBox.appendChild(secEl);
   });
   paper.appendChild(secBox);
   if (note.risk_present && note.risk) {
-    const riskBox = h(`<div class="risk"><h4>Risk</h4></div>`);
+    const riskBox = h(`<div class="risk"><h3>Risk</h3></div>`);
     [["Ideation", "ideation"], ["Plan, intent, means", "plan_intent_means"], ["Protective factors", "protective_factors"], ["Interventions taken", "interventions_taken"]].forEach(([label, key]) => {
       const v = note.risk[key];
       if (v) { const row = h(`<div class="row"><b>${esc(label)}:</b> <span></span></div>`); row.querySelector("span").textContent = String(v); riskBox.appendChild(row); }
