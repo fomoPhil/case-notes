@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 
-from . import config, vault
+from . import config, stt, vault
 
 APP_HOST = "127.0.0.1"
 APP_PORT = 8377
@@ -28,6 +28,10 @@ def main() -> None:
     repo_root = str(config.REPO_ROOT)
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
+
+    # Load the speech model now, on a background thread, so the first debrief
+    # of the session does not stall waiting for it.
+    stt.warm_engine_in_background()
 
     import uvicorn
 

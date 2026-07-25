@@ -172,3 +172,39 @@ def test_is_engine_model_cached_uses_scan(monkeypatch):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_warm_engine_in_background_is_never_fatal(monkeypatch):
+    """Warmup runs off-thread and swallows failures: a bad model must never
+    stop the app from starting."""
+    import debrief.stt as stt_mod
+
+    def _boom(engine_id=None):
+        raise RuntimeError("model exploded")
+
+    monkeypatch.setattr(stt_mod, "get_engine", _boom)
+    stt_mod.warm_engine_in_background()  # must not raise
+
+
+def test_warm_engine_loads_when_supported(monkeypatch):
+    """Engines exposing _ensure_loaded get warmed; others are skipped cleanly."""
+    import threading
+
+    import debrief.stt as stt_mod
+
+    called = threading.Event()
+
+    class _Warmable:
+        def _ensure_loaded(self):
+            called.set()
+
+    monkeypatch.setattr(stt_mod, "get_engine", lambda engine_id=None: _Warmable())
+    stt_mod.warm_engine_in_background()
+    assert called.wait(timeout=5), "warmup thread did not load the engine"
+
+    # An engine without _ensure_loaded (mlx-whisper) must not raise.
+    class _NotWarmable:
+        pass
+
+    monkeypatch.setattr(stt_mod, "get_engine", lambda engine_id=None: _NotWarmable())
+    stt_mod.warm_engine_in_background()

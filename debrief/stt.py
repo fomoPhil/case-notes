@@ -229,6 +229,32 @@ def get_engine(engine_id: str | None = None) -> _Engine:
     return _engine_cache[engine_id]
 
 
+def warm_engine_in_background(engine_id: str | None = None) -> None:
+    """Load the selected STT engine on a daemon thread at launch.
+
+    Without this, the very first debrief of a session stalls while the model
+    loads (or downloads on a fresh machine) with nothing on screen explaining
+    the wait. Warming at launch moves that cost to a moment when the clinician
+    is not waiting on it. Best effort: any failure is swallowed, because a
+    warmup problem must never stop the app from starting. The real transcribe
+    call will surface the error properly if it persists.
+
+    Only engines that can load without audio are warmed. mlx-whisper pulls its
+    weights inside transcribe(), so there is nothing to warm ahead of time.
+    """
+    import threading
+
+    def _warm() -> None:
+        try:
+            loader = getattr(get_engine(engine_id), "_ensure_loaded", None)
+            if callable(loader):
+                loader()
+        except Exception:  # noqa: BLE001 - warmup is never fatal
+            pass
+
+    threading.Thread(target=_warm, name="debrief-stt-warmup", daemon=True).start()
+
+
 def transcribe(wav_path: str, engine_id: str | None = None) -> str:
     """Transcribe a wav file to raw text with the selected local STT engine.
 
