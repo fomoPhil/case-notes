@@ -2655,7 +2655,7 @@ async function recheckStatus() {
   // Snapshot which checks were failing so the rows that just turned green can
   // cross-fade into their new state instead of hard-swapping (presentation only).
   const was = {};
-  ((App.status && App.status.checks) || []).forEach(c => { was[c.name] = !!c.ok; });
+  ((App.status && App.status.checks) || []).forEach(c => { was[c.key] = !!c.ok; });
   await refreshStatus();
   App.checkWasFailing = was;
   if (App.state === "setupWizard") render();
@@ -2672,7 +2672,7 @@ function renderSetupWizard() {
   const s = App.status;
   el.appendChild(h(`<div class="setup-head ${ent(1)}">
     <h1>Welcome to Debrief</h1>
-    <p class="setup-lead">A couple of quick checks so everything runs smoothly on this Mac.</p>
+    <p class="setup-lead">Six quick things and you are set up. Everything stays on this Mac.</p>
     <p class="setup-privacy">${LOCK_SVG}<span>${PRIVACY_PROMISE}</span></p>
   </div>`));
   if (!s) {
@@ -2702,9 +2702,10 @@ function renderSetupWizard() {
 function setupCheckRow(c) {
   const cls = c.ok ? "ok" : (c.hard ? "fail" : "warn");
   const mark = c.ok ? "✓" : (c.hard ? "✕" : "!");
-  // A row that flipped to ok on the last Re-check cross-fades into its new state.
-  const changed = (App.checkWasFailing && App.checkWasFailing[c.name] === false && c.ok) ? " changed" : "";
-  return h(`<div class="setup-check ${cls}${changed}">
+  // A row that flipped to ok on the last Re-check cross-fades into its new
+  // state. Keyed on the stable check key, never the display name.
+  const changed = (App.checkWasFailing && App.checkWasFailing[c.key] === false && c.ok) ? " changed" : "";
+  const row = h(`<div class="setup-check ${cls}${changed}">
     <span class="sc-mark">${mark}</span>
     <div class="sc-body">
       <div class="sc-name">${esc(c.name)}</div>
@@ -2712,9 +2713,38 @@ function setupCheckRow(c) {
       ${!c.ok && c.fix ? `<div class="sc-fix">${esc(c.fix)}</div>` : ""}
     </div>
   </div>`);
+  // A check that carries a shell command shows it ready to copy, so nobody has
+  // to retype something they do not understand.
+  if (!c.ok && c.command) {
+    const block = h(`<div class="setup-code sc-code"><code>${esc(c.command)}</code><button class="copybtn">Copy</button></div>`);
+    block.querySelector(".copybtn").onclick = (e) => { e.stopPropagation(); copyText(c.command, e.currentTarget); };
+    row.querySelector(".sc-body").appendChild(block);
+  }
+  return row;
 }
 
-const LMS_LOAD_CMD = "lms load gemma-4-12b-it-qat --context-length 64000";
+// The check block. All clear collapses to one line with the detail a click
+// away; a problem shows only the rows that are actually a problem. Plumbing
+// checks (cli_only) never appear here at all.
+function setupChecksBlock(s) {
+  const checks = ((s && s.checks) || []).filter(c => !c.cli_only);
+  const failing = checks.filter(c => !c.ok);
+  const box = h(`<div class="setup-checks"></div>`);
+  if (!checks.length) return box;
+  if (!failing.length) {
+    box.appendChild(h(`<div class="setup-check ok">
+      <span class="sc-mark">✓</span>
+      <div class="sc-body"><div class="sc-name">Everything Debrief needs is installed and running.</div></div>
+    </div>`));
+    const det = h(`<details class="setup-details"><summary>Show details</summary><div class="setup-checks sc-inner"></div></details>`);
+    const inner = det.querySelector(".sc-inner");
+    checks.forEach(c => inner.appendChild(setupCheckRow(c)));
+    box.appendChild(det);
+  } else {
+    failing.forEach(c => box.appendChild(setupCheckRow(c)));
+  }
+  return box;
+}
 
 // Initialise the wizard's in-progress choices from current settings (or the
 // defaults). These are collected across cards and POSTed in finishSetup before
@@ -2732,7 +2762,6 @@ function ensureWizardState() {
 
 function renderSetupStep1(s) {
   const ready = !!s.ready;
-  const reachable = (s.servers || []).filter(x => x.reachable);
   const card = h(`<div class="panel setup-card ${ent(2)}">
     <div class="setup-step-head">
       <span class="setup-num">1</span>
@@ -2741,19 +2770,15 @@ function renderSetupStep1(s) {
     </div>
     <p class="setup-note">Debrief runs a private AI model on this Mac with LM Studio. Your sessions are written up here, not in the cloud.</p>
   </div>`);
-  const checks = h(`<div class="setup-checks"></div>`);
-  (s.checks || []).forEach(c => checks.appendChild(setupCheckRow(c)));
-  card.appendChild(checks);
-  if (reachable.length) {
-    card.appendChild(h(`<div class="setup-sub">Model server reachable: ${esc(reachable.map(x => x.provider).join(", "))}</div>`));
+  card.appendChild(setupChecksBlock(s));
+  // The download link only earns its place when a model check is actually
+  // failing. What to run now travels with the check that needs it.
+  const modelTrouble = (s.checks || []).some(c => (c.key === "model_server" || c.key === "model_loaded") && !c.ok);
+  if (modelTrouble) {
+    card.appendChild(h(`<div class="setup-help">
+      <a class="setup-link" href="https://lmstudio.ai" target="_blank" rel="noreferrer">Download LM Studio</a>
+    </div>`));
   }
-  const help = h(`<div class="setup-help">
-    <a class="setup-link" href="https://lmstudio.ai" target="_blank" rel="noreferrer">Download LM Studio</a>
-    <div class="setup-code-label">Then load the model (in LM Studio's terminal, or the lms command line):</div>
-    <div class="setup-code"><code>${esc(LMS_LOAD_CMD)}</code><button class="copybtn" id="copyLms">Copy</button></div>
-  </div>`);
-  help.querySelector("#copyLms").onclick = (e) => copyText(LMS_LOAD_CMD, e.currentTarget);
-  card.appendChild(help);
 
   // STT engine choice folded into the local-AI card.
   const w = App.wizard;
@@ -2858,11 +2883,14 @@ function renderWizardFeatures() {
 function renderSetupStep2(s) {
   const path = (s.vault && s.vault.path) || "";
   const card = h(`<div class="panel setup-card ${ent(3)}">
-    <div class="setup-step-head"><span class="setup-num">2</span><h2>Your vault</h2></div>
-    <p class="setup-note">Every client record, note, and worksheet is plain Markdown stored on this Mac. You own the files.</p>
+    <div class="setup-step-head"><span class="setup-num">2</span><h2>Where your records live</h2></div>
+    <p class="setup-note">Every client record, note, and worksheet is an ordinary text file in this folder on your Mac. They are yours: you can open them, back them up, or move them any time, with or without Debrief.</p>
     <div class="setup-code"><code>${esc(path)}</code><button class="copybtn" id="copyVault">Copy</button></div>
-    <p class="setup-sub">To keep your vault somewhere else, set the DEBRIEF_VAULT_DIR environment variable to a folder you choose.</p>
     <p class="setup-sub">You can optionally open this folder in Obsidian to browse it visually. Debrief works fine without it.</p>
+    <details class="setup-details setup-advanced">
+      <summary>Advanced</summary>
+      <p class="setup-sub">To keep your records somewhere else, set the DEBRIEF_VAULT_DIR environment variable to a folder you choose before opening Debrief.</p>
+    </details>
   </div>`);
   card.querySelector("#copyVault").onclick = (e) => copyText(path, e.currentTarget);
   return card;
@@ -2871,7 +2899,7 @@ function renderSetupStep2(s) {
 const PERMS = [
   { key: "calendar", label: "Calendar", url: "/api/permissions/calendar", unlocks: "Lets Debrief book follow-up appointments in a dedicated Debrief calendar." },
   { key: "mail", label: "Mail", url: "/api/permissions/mail", unlocks: "Lets Debrief prepare email drafts to clients for your review. It never sends." },
-  { key: "screen", label: "Screen Recording", url: "/api/permissions/screen", unlocks: "Lets Debrief read the screen to verify what it did." },
+  { key: "screen", label: "Screen Recording", url: "/api/permissions/screen", unlocks: "Only used right after you approve. Debrief takes one screenshot of Calendar or Mail, checks that what you approved is really there, and shows you what it saw. The screenshot never leaves this Mac." },
 ];
 
 const PERM_ASKED = "We just asked macOS to show the permission prompt. Click Allow in the system dialog, then Re-check.";

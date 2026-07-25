@@ -1548,6 +1548,24 @@ h3.rsec { font-family: var(--font-serif); font-size: 17px; font-weight: 600; mar
 .setup-check .sc-detail { font-size: 12.5px; color: var(--ink-soft); margin-top: 1px; word-break: break-word; text-wrap: pretty; }
 .setup-check .sc-fix { font-size: 12.5px; color: var(--amber); margin-top: 4px; text-wrap: pretty; }
 
+/* Detail on request. A healthy setup is one line; the rows are one click away,
+   and the environment-variable escape hatch is filed under Advanced. */
+.setup-details { margin-top: 10px; }
+.setup-details summary {
+  cursor: pointer; list-style: none;
+  font-size: 12.5px; font-weight: 600; color: var(--ink-faint);
+  padding: 4px 0; border-radius: var(--radius-xs);
+  transition-property: color; transition-duration: 150ms; transition-timing-function: var(--ease);
+}
+.setup-details summary::-webkit-details-marker { display: none; }
+.setup-details summary:hover { color: var(--ink-soft); }
+.setup-details summary:focus-visible { box-shadow: var(--ring); }
+.setup-details .sc-inner { margin-top: 8px; margin-bottom: 0; }
+.setup-advanced { margin-top: 12px; }
+.setup-advanced .setup-sub { margin-top: 4px; }
+/* A command that belongs to one failing check sits inside that check's row. */
+.sc-code { margin-top: 9px; }
+
 .setup-help { margin-top: 4px; }
 .setup-link {
   position: relative;
