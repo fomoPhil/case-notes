@@ -1046,7 +1046,7 @@ function confirmDiscard() {
 function renderExecuting() {
   el.appendChild(h(`<div class="panel processing ${ent(1)}">
     <div class="spinner"></div>
-    <div class="label">Filing the note, booking, drafting, and reading the screen to verify...</div>
+    <div class="label">Filing the note and doing what you approved...</div>
   </div>`));
 }
 
@@ -1234,6 +1234,13 @@ function renderAssistantThinking() {
   </div>`));
 }
 
+// A client id is a filing detail. On a card the clinician is approving, it has
+// to be the person's name.
+function clientNameFor(id) {
+  const c = (App.clients || []).find(x => x.client_id === id);
+  return (c && c.name) || String(id || "the client");
+}
+
 function renderAssistantReview() {
   const a = App.assistant || {};
   el.appendChild(h(`<div class="step-title">The assistant prepared this</div>`));
@@ -1253,9 +1260,9 @@ function renderAssistantReview() {
       if (p.type === "worksheet") {
         title = "Worksheet: " + esc(p.title || "Untitled");
         const preview = (p.markdown_body || "").split("\n").filter(Boolean).slice(0, 4).join("\n");
-        body = `<pre class="asst-preview">${esc(preview)}</pre>` + (p.client_id ? `<div class="a-sub">Files under client ${esc(p.client_id)}</div>` : `<div class="a-sub">Files to the shared library</div>`);
+        body = `<pre class="asst-preview">${esc(preview)}</pre>` + (p.client_id ? `<div class="a-sub">Files under ${esc(clientNameFor(p.client_id))}</div>` : `<div class="a-sub">Files to the shared library</div>`);
       } else if (p.type === "email") {
-        title = "Email draft to " + esc(p.client_id || "client");
+        title = "Email draft to " + esc(clientNameFor(p.client_id));
         body = `<div class="a-sub">Subject: ${esc(p.subject || "")}</div><pre class="asst-preview">${esc((p.body || "").slice(0, 400))}</pre>` + (p.attach_worksheet ? `<div class="a-sub">Attaches the worksheet above</div>` : "");
       } else {
         title = esc(p.type || "item");
@@ -2130,7 +2137,7 @@ const STT_ENGINES = [
 const FEATURE_ROWS = [
   { key: "calendar", label: "Calendar booking", desc: "Book follow-up appointments in a dedicated Debrief calendar." },
   { key: "email", label: "Email drafts", desc: "Prepare client emails for your review. Debrief never sends them." },
-  { key: "verify", label: "On-screen verification", desc: "Read the screen after running to confirm what happened." },
+  { key: "verify", label: "On-screen check", desc: "After you approve, read the screen to confirm what really happened." },
   { key: "assistant", label: "Assistant", desc: "Ask for worksheets, email drafts, and quick lookups." },
 ];
 
@@ -2286,7 +2293,7 @@ function renderSettings() {
   // ---- Card D: features ----
   const cardD = h(`<div class="panel setup-card ${ent(5)}">
     <div class="setup-step-head"><h2>What Debrief can do</h2><span class="set-saved" id="savedD"></span></div>
-    <p class="setup-note">Turn off anything you do not use. Off features are hidden and never run.</p>
+    <p class="setup-note">Turn off anything you do not use. Anything you turn off is hidden and never happens.</p>
   </div>`);
   const togBox = h(`<div class="set-toggles"></div>`);
   FEATURE_ROWS.forEach(fr => {
@@ -2599,7 +2606,7 @@ async function doPreview(flow, ctx) {
 
 function importStagePreview(flow, body, ctx) {
   body.appendChild(importHeader(flow, ctx.close, "See it on a sample session"));
-  body.appendChild(h(`<p class="import-lead">A dry run on a bundled sample. Nothing is saved. This is how a filed note will read.</p>`));
+  body.appendChild(h(`<p class="import-lead">A practice run on a sample session. Nothing is saved. This is how a filed note will read.</p>`));
   const pv = flow.preview || {};
   const note = pv.note || {};
   const sections = pv.sections || [];
