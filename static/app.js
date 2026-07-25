@@ -2389,23 +2389,24 @@ async function doUpload(flow, file, ctx) {
   }
 }
 
-const GEMINI_CONSENT_COPY = "This sends this one document, and nothing else, ever, to Google Gemini. Use a blank or example template, not real client information.";
+const GEMINI_CONSENT_WARNING = "Do not use a document with real client information in it. Use a blank or example template.";
+const GEMINI_CONSENT_COPY = "Debrief will send that one document to Google Gemini, once. Nothing else from Debrief is ever sent, and your API key is used for this one request and then forgotten.";
 
 function importStageMode(flow, body, ctx) {
   body.appendChild(importHeader(flow, ctx.close, "How should Debrief read it?"));
-  const meta = flow.chars ? `${flow.chars.toLocaleString()} characters read.` : "";
-  const trunc = flow.truncated ? " The template was long, so only the first part was used." : "";
+  const meta = flow.docText ? "Template read." : "";
+  const trunc = flow.truncated ? " It was long, so only the first part was used." : "";
   if (meta) body.appendChild(h(`<p class="import-lead">${esc(meta + trunc)}</p>`));
   if (flow.error) body.appendChild(h(`<div class="import-error">${esc(flow.error)}</div>`));
 
   const radios = h(`<div class="set-radios"></div>`);
   const local = h(`<label class="set-radio">
     <input type="radio" name="impMode" value="local" ${flow.mode === "local" ? "checked" : ""} />
-    <span class="set-radio-body"><span class="set-radio-title">Local</span><span class="set-radio-desc">Runs entirely on this Mac.</span></span>
+    <span class="set-radio-body"><span class="set-radio-title">Read it on this Mac</span><span class="set-radio-desc">Nothing is sent anywhere. Works well for most templates.</span></span>
   </label>`);
   const cloud = h(`<label class="set-radio">
     <input type="radio" name="impMode" value="cloud" ${flow.mode === "cloud" ? "checked" : ""} />
-    <span class="set-radio-body"><span class="set-radio-title">Cloud boost</span><span class="set-radio-desc">Uses Google Gemini for one call. Bring your own API key.</span></span>
+    <span class="set-radio-body"><span class="set-radio-title">Send this document to Google Gemini</span><span class="set-radio-desc">One request, using your own API key. Better at unusual templates.</span></span>
   </label>`);
   local.querySelector("input").onchange = () => { flow.mode = "local"; flow.offerLocalFallback = false; ctx.repaint(); };
   cloud.querySelector("input").onchange = () => { flow.mode = "cloud"; ctx.repaint(); };
@@ -2415,6 +2416,7 @@ function importStageMode(flow, body, ctx) {
 
   if (flow.mode === "cloud") {
     const box = h(`<div class="import-consent"></div>`);
+    box.appendChild(h(`<p class="import-consent-warn">${esc(GEMINI_CONSENT_WARNING)}</p>`));
     box.appendChild(h(`<p class="import-consent-copy">${esc(GEMINI_CONSENT_COPY)}</p>`));
     const consentRow = h(`<label class="set-toggle import-consent-check">
       <span class="set-toggle-body"><span class="set-toggle-title">I understand and consent</span></span>
@@ -2437,11 +2439,11 @@ function importStageMode(flow, body, ctx) {
   bar.appendChild(back);
   bar.appendChild(h(`<div class="grow"></div>`));
   if (flow.offerLocalFallback) {
-    const tryLocal = h(`<button class="btn btn-ghost">Try again locally</button>`);
+    const tryLocal = h(`<button class="btn btn-ghost">Try again on this Mac</button>`);
     tryLocal.onclick = () => { flow.mode = "local"; flow.offerLocalFallback = false; doCompile(flow, ctx); };
     bar.appendChild(tryLocal);
   }
-  const compile = h(`<button class="btn btn-primary" ${flow.busy ? "disabled" : ""}>${flow.busy ? SPINNER + "Compiling..." : "Compile"}</button>`);
+  const compile = h(`<button class="btn btn-primary" ${flow.busy ? "disabled" : ""}>${flow.busy ? SPINNER + "Building..." : "Build the format"}</button>`);
   compile.onclick = () => doCompile(flow, ctx);
   bar.appendChild(compile);
   body.appendChild(bar);
@@ -2449,7 +2451,7 @@ function importStageMode(flow, body, ctx) {
 
 async function doCompile(flow, ctx) {
   if (flow.mode === "cloud" && (!flow.consent || !(flow.apiKey || "").trim())) {
-    flow.error = "Check the consent box and paste an API key, or switch to Local.";
+    flow.error = "Tick the consent box and paste an API key, or switch back to reading it on this Mac.";
     ctx.repaint(); return;
   }
   flow.busy = true; flow.error = null; flow.offerLocalFallback = false; ctx.repaint();
@@ -2461,7 +2463,7 @@ async function doCompile(flow, ctx) {
     // Key is single-use: drop it the instant the call returns, whatever happened.
     flow.apiKey = "";
     if (r.status === 502 && data.fallback === "local") {
-      flow.error = (data.error || "The cloud service could not compile this.") + " You can try again locally.";
+      flow.error = "Gemini could not read this template. You can try again on this Mac.";
       flow.offerLocalFallback = true; flow.busy = false; ctx.repaint(); return;
     }
     if (!r.ok) throw new Error(apiErr(data, r.status));
@@ -2475,7 +2477,7 @@ async function doCompile(flow, ctx) {
 }
 
 function importStageSpec(flow, body, ctx) {
-  body.appendChild(importHeader(flow, ctx.close, "Review the derived format"));
+  body.appendChild(importHeader(flow, ctx.close, "Check the format Debrief built"));
   body.appendChild(h(`<p class="import-lead">Edit the name and sections. This is the structure every note in this format will follow.</p>`));
   if (flow.error) body.appendChild(h(`<div class="import-error">${esc(flow.error)}</div>`));
 
@@ -2566,7 +2568,7 @@ async function doPreview(flow, ctx) {
 }
 
 function importStagePreview(flow, body, ctx) {
-  body.appendChild(importHeader(flow, ctx.close, "Preview on a sample transcript"));
+  body.appendChild(importHeader(flow, ctx.close, "See it on a sample session"));
   body.appendChild(h(`<p class="import-lead">A dry run on a bundled sample. Nothing is saved. This is how a filed note will read.</p>`));
   const pv = flow.preview || {};
   const note = pv.note || {};
