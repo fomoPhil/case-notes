@@ -349,7 +349,10 @@ def compile_local(doc_text: str, profession: str = "therapy") -> dict:
     try:
         raw = llm.chat(messages, schema=FORMAT_SPEC_SCHEMA, max_tokens=1500, temperature=0.1)
     except Exception as exc:  # noqa: BLE001
-        raise CompilerError(f"local compile failed: {exc}")
+        # `from exc` matters: the API layer inspects the cause chain to tell an
+        # unreachable model (503, "open LM Studio") apart from a model that
+        # answered with something unusable (422).
+        raise CompilerError(f"local compile failed: {exc}") from exc
     if not isinstance(raw, dict):
         raise CompilerError("local compile returned an unexpected shape")
     return _finalize_spec(raw, profession)

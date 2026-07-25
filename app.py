@@ -39,6 +39,7 @@ from debrief import (
     config,
     doctor,
     formats,
+    llm,
     models,
     pipeline,
     records,
@@ -153,6 +154,69 @@ def _require_model_ready() -> None:
             )
 
 
+# ---------------------------------------------------------------------------
+# Clinician-readable fix copy
+# ---------------------------------------------------------------------------
+#
+# Every failure a clinician can actually hit returns {"error", "fix"}: `error` is
+# the short technical line (useful in a bug report), `fix` is what to do about it.
+# The UI already understands that shape, so a raw Python exception string never
+# renders in a modal. Validation problems stay plain 400 strings: they are already
+# in plain language and the message IS the fix.
+
+_MODEL_FIX_GENERIC = (
+    "Debrief could not reach the local model. Open LM Studio, load the model, "
+    "then try again."
+)
+
+_MODEL_FIX_COMPILE = (
+    "Debrief could not reach the local model, so it could not read your template. "
+    "Open LM Studio, load the model, then press Compile again."
+)
+
+_MODEL_FIX_PREVIEW = (
+    "Debrief could not reach the local model, so it could not build a preview. "
+    "Open LM Studio, load the model, then try the preview again."
+)
+
+_MODEL_FIX_DEBRIEF = (
+    "Debrief could not finish reading that session. Check that LM Studio is "
+    "running with the model loaded, then record or upload the debrief again."
+)
+
+_MODEL_FIX_TRANSCRIBE = (
+    "Debrief could not transcribe that audio. Check that the speech model "
+    "finished downloading in Settings, then try again."
+)
+
+_VAULT_UNREADABLE_FIX = (
+    "Debrief could not read your vault folder. Check that it still exists and "
+    "that you have permission to open it, then reload."
+)
+
+_VAULT_UNWRITABLE_FIX = (
+    "Debrief could not write to your vault folder. Check that the disk is not "
+    "full and that you have permission to write there, then try again."
+)
+
+
+def _model_unavailable(exc: BaseException) -> bool:
+    """True when a failure is the local model being unreachable, not bad output.
+
+    llm.ModelUnavailable is raised on any transport failure talking to LM Studio
+    (refused connection, DNS, timeout). Wrapped errors carry it as __cause__, so
+    the whole chain is walked.
+    """
+    seen = 0
+    current: BaseException | None = exc
+    while current is not None and seen < 10:
+        if isinstance(current, llm.ModelUnavailable):
+            return True
+        current = current.__cause__ or current.__context__
+        seen += 1
+    return False
+
+
 def _require_feature(name: str) -> None:
     """Guard for feature-gated endpoints. Raises 403 when the named feature is
     turned off in settings, so a disabled assistant returns actionable JSON."""
@@ -211,26 +275,28 @@ def _iso_or_none(value) -> str | None:
     return text or None
 
 
+def _client_slim(c: dict) -> dict:
+    """The slim client shape the UI lists, from profile frontmatter."""
+    cid = c.get("client_id")
+    return {
+        "client_id": cid,
+        "name": c.get("name"),
+        "framework": c.get("framework"),
+        "presenting_concerns": c.get("presenting_concerns", []),
+        "risk_flags": c.get("risk_flags", []),
+        # Scheduling fields drive the home screen's "today" block.
+        "next_session": _iso_or_none(c.get("next_session")),
+        "last_session": _iso_or_none(c.get("last_session")),
+        "session_count": records.count_sessions(cid) if cid else 0,
+        # True only for the three demo clients the scaffold seeds, so the UI can
+        # label them and nobody mistakes a sample record for a real one.
+        "sample": bool(c.get("sample", False)),
+    }
+
+
 def _clients_slim_sync() -> list[dict]:
     """Blocking half of /api/clients: profile frontmatter plus session counts."""
-    clients = vault.list_clients()
-    slim = []
-    for c in clients:
-        cid = c.get("client_id")
-        slim.append(
-            {
-                "client_id": cid,
-                "name": c.get("name"),
-                "framework": c.get("framework"),
-                "presenting_concerns": c.get("presenting_concerns", []),
-                "risk_flags": c.get("risk_flags", []),
-                # Scheduling fields drive the home screen's "today" block.
-                "next_session": _iso_or_none(c.get("next_session")),
-                "last_session": _iso_or_none(c.get("last_session")),
-                "session_count": records.count_sessions(cid) if cid else 0,
-            }
-        )
-    return slim
+    return [_client_slim(c) for c in vault.list_clients()]
 
 
 @app.get("/api/clients")
@@ -239,8 +305,56 @@ async def api_clients() -> JSONResponse:
     try:
         slim = await run_in_threadpool(_clients_slim_sync)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Could not read clients: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": f"Could not read clients: {exc}",
+                "fix": _VAULT_UNREADABLE_FIX,
+            },
+        )
     return JSONResponse(jsonable_encoder(slim))
+
+
+@app.post("/api/clients")
+async def api_client_create(request: Request) -> JSONResponse:
+    """Create a client record from hand-entered details.
+
+    Body: {name, email?, framework?, presenting_concerns?}. name is required;
+    presenting_concerns accepts a list of short phrases or a comma-separated
+    string. Returns the created client in the same slim shape /api/clients uses.
+    """
+    try:
+        body = await request.json()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Expected an object.")
+
+    def _create() -> dict:
+        profile = vault.create_client(
+            name=body.get("name"),
+            email=body.get("email"),
+            framework=body.get("framework") or "",
+            presenting_concerns=body.get("presenting_concerns"),
+        )
+        return _client_slim(profile)
+
+    try:
+        created = await run_in_threadpool(_create)
+    except vault.ClientInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": f"Could not create the client folder: {exc}",
+                "fix": _VAULT_UNWRITABLE_FIX,
+            },
+        )
+    audit.log_records_change(
+        "Added client", f"Clients/{created['client_id']}/_Profile.md", created["name"] or ""
+    )
+    return JSONResponse(jsonable_encoder(created), status_code=201)
 
 
 @app.get("/api/activity/recent")
@@ -250,7 +364,11 @@ async def api_activity_recent(limit: int = 6) -> JSONResponse:
         payload = await run_in_threadpool(records.recent_activity, limit)
     except Exception as exc:
         raise HTTPException(
-            status_code=500, detail=f"Could not read recent activity: {exc}"
+            status_code=500,
+            detail={
+                "error": f"Could not read recent activity: {exc}",
+                "fix": _VAULT_UNREADABLE_FIX,
+            },
         )
     return JSONResponse(jsonable_encoder(payload))
 
@@ -296,7 +414,15 @@ def _debrief_sync(data: bytes, client_id: str) -> dict:
         except HTTPException:
             raise
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Debrief failed: {exc}")
+            if _model_unavailable(exc):
+                raise HTTPException(
+                    status_code=503,
+                    detail={"error": str(exc), "fix": _MODEL_FIX_GENERIC},
+                )
+            raise HTTPException(
+                status_code=500,
+                detail={"error": f"Debrief failed: {exc}", "fix": _MODEL_FIX_DEBRIEF},
+            )
 
 
 @app.post("/api/debrief")
@@ -342,7 +468,23 @@ async def api_execute(request: Request) -> JSONResponse:
     try:
         result = await run_in_threadpool(pipeline.execute_plan, plan, verify=verify)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Execution failed: {exc}")
+        if _model_unavailable(exc):
+            raise HTTPException(
+                status_code=503,
+                detail={"error": str(exc), "fix": _MODEL_FIX_GENERIC},
+            )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": f"Execution failed: {exc}",
+                "fix": (
+                    "Debrief could not finish filing that note. Check that LM "
+                    "Studio is running and your vault folder is writable, then "
+                    "approve the plan again. Check the client's Sessions folder "
+                    "first in case a partial note was already filed."
+                ),
+            },
+        )
     finally:
         if stored is not None:
             try:
@@ -447,7 +589,13 @@ def _transcribe_upload_sync(data: bytes) -> str:
         try:
             return stt.transcribe(wav_path)
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}")
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": f"Transcription failed: {exc}",
+                    "fix": _MODEL_FIX_TRANSCRIBE,
+                },
+            )
 
 
 @app.post("/api/assistant/plan")
@@ -624,7 +772,13 @@ async def api_client_detail(client_id: str) -> JSONResponse:
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"No such client: {cid}")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Could not read client: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": f"Could not read client: {exc}",
+                "fix": _VAULT_UNREADABLE_FIX,
+            },
+        )
     # Profile frontmatter can hold YAML date objects; coerce to JSON-safe types.
     return JSONResponse(jsonable_encoder(detail))
 
@@ -990,6 +1144,45 @@ async def api_settings_post(request: Request) -> JSONResponse:
     return JSONResponse(payload)
 
 
+@app.delete("/api/settings/formats/{format_id}")
+async def api_format_delete(format_id: str) -> JSONResponse:
+    """Remove an imported note format. Built-in formats are never deletable.
+
+    Deleting the format that is currently active falls back to DAP so the app can
+    never end up pointing at a format that no longer exists. The response always
+    reports the active format so the UI can say what happened.
+    """
+
+    def _delete() -> dict:
+        deleted = formats.delete_custom(format_id)
+        active = settings_store.load().get("note_format")
+        if active == deleted:
+            settings_store.save({"note_format": formats.DEFAULT_FORMAT_ID})
+            active = settings_store.load().get("note_format")
+        return {"deleted": deleted, "active_note_format": active}
+
+    try:
+        result = await run_in_threadpool(_delete)
+    except formats.InvalidFormatSpec as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except formats.UnknownFormat:
+        raise HTTPException(status_code=404, detail="No such imported format.")
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": f"Could not remove that format: {exc}",
+                "fix": _VAULT_UNWRITABLE_FIX,
+            },
+        )
+    audit.log_records_change(
+        "Removed note format",
+        f"_Settings/formats/{result['deleted']}.json",
+        f"Active format is now {result['active_note_format']}.",
+    )
+    return JSONResponse(result)
+
+
 # ---------------------------------------------------------------------------
 # Template import + prompt compiler (upload -> compile -> preview -> save)
 # ---------------------------------------------------------------------------
@@ -1107,7 +1300,22 @@ async def api_import_compile(request: Request) -> JSONResponse:
     try:
         spec = await run_in_threadpool(compiler.compile_local, doc_text, profession)
     except compiler.CompilerError as exc:
+        # The readiness guard above runs off a ~10s cache, so LM Studio can quit
+        # between the check and the call. That used to surface the raw
+        # "HTTPConnectionPool ... Connection refused" traceback verbatim in the
+        # import modal. An unreachable model is a 503 the user can fix; a model
+        # that answered with something unusable stays a 422.
+        if _model_unavailable(exc):
+            raise HTTPException(
+                status_code=503,
+                detail={"error": str(exc), "fix": _MODEL_FIX_COMPILE},
+            )
         raise HTTPException(status_code=422, detail=str(exc))
+    except llm.ModelUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": str(exc), "fix": _MODEL_FIX_COMPILE},
+        )
     return JSONResponse({"spec": spec, "truncated": doc_truncated})
 
 
@@ -1134,9 +1342,22 @@ async def api_import_preview(request: Request) -> JSONResponse:
     try:
         result = await run_in_threadpool(compiler.dry_run, validated, profession)
     except compiler.CompilerError as exc:
+        if _model_unavailable(exc):
+            raise HTTPException(
+                status_code=503,
+                detail={"error": str(exc), "fix": _MODEL_FIX_PREVIEW},
+            )
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Preview failed: {exc}")
+        if _model_unavailable(exc):
+            raise HTTPException(
+                status_code=503,
+                detail={"error": str(exc), "fix": _MODEL_FIX_PREVIEW},
+            )
+        raise HTTPException(
+            status_code=500,
+            detail={"error": f"Preview failed: {exc}", "fix": _MODEL_FIX_PREVIEW},
+        )
     return JSONResponse(result)
 
 
@@ -1316,7 +1537,13 @@ def api_setup_complete() -> JSONResponse:
         config.VAULT_DIR.mkdir(parents=True, exist_ok=True)
         marker.write_text("done\n", encoding="utf-8")
     except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not write setup marker: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": f"Could not write setup marker: {exc}",
+                "fix": _VAULT_UNWRITABLE_FIX,
+            },
+        )
     return JSONResponse({"ok": True})
 
 

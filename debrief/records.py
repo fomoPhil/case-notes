@@ -41,6 +41,15 @@ from .vault import (
 # ---------------------------------------------------------------------------
 
 _UPLOAD_ALLOWLIST = {".pdf", ".png", ".jpg", ".jpeg", ".docx", ".md"}
+
+# HEIC stays OFF the allowlist (nothing downstream renders or attaches it), but
+# it is the iPhone camera default, so photographing a signed consent form and
+# dragging it in is a likely first attempt. The rejection has to name the way out.
+UPLOAD_REJECTED_MESSAGE = (
+    "That file type is not supported. Debrief accepts PDF, PNG, JPG, DOCX, and "
+    "Markdown. iPhone photos save as HEIC by default; open the photo and export "
+    "it as JPG, or set Camera to Most Compatible in Settings."
+)
 _PROTECTED_NAMES = {"_Profile.md", "Treatment-Plan.md"}
 _TRASH_DIRNAME = "_Trash"
 _CACHE_DIRNAME = ".cache"
@@ -705,7 +714,7 @@ def save_upload(client_id: str, filename: str, data: bytes) -> dict:
     name = Path(str(filename or "")).name
     suffix = Path(name).suffix.lower()
     if suffix not in _UPLOAD_ALLOWLIST:
-        raise VaultPathError(f"file type not allowed: {suffix or '(none)'}")
+        raise VaultPathError(UPLOAD_REJECTED_MESSAGE)
     if not data:
         raise ValueError("empty upload")
     stem = _slug(Path(name).stem)

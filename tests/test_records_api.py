@@ -305,7 +305,10 @@ def test_library_shape(client):
 
 
 def test_clients_payload_carries_scheduling_fields(client):
+    import datetime as _dt
+
     tc, _ = client
+    today = _dt.date.today()
     body = tc.get("/api/clients").json()
     by_id = {c["client_id"]: c for c in body}
     maya = by_id["C-0003"]
@@ -314,14 +317,18 @@ def test_clients_payload_carries_scheduling_fields(client):
     assert maya["framework"] == "DBT"
     assert maya["presenting_concerns"] == ["emotion dysregulation", "relationship conflict"]
     assert maya["risk_flags"] == []
-    # New scheduling fields, always ISO strings or null.
-    assert maya["next_session"] == "2026-07-23T16:00:00"
-    assert maya["last_session"] == "2026-07-14"
+    # Scheduling fields are always ISO strings or null, and relative to the
+    # seeding date so a fresh install never opens on a past appointment.
+    assert maya["next_session"] == (
+        _dt.datetime.combine(today + _dt.timedelta(days=5), _dt.time(16, 0)).isoformat()
+    )
+    assert maya["last_session"] == (today - _dt.timedelta(days=4)).isoformat()
     assert maya["session_count"] == 2
     bob = by_id["C-0001"]
-    assert bob["risk_flags"] == ["SI-passive-2026-07-17"]
+    bob_last = (today - _dt.timedelta(days=1)).isoformat()
+    assert bob["risk_flags"] == [f"SI-passive-{bob_last}"]
     assert bob["session_count"] == 0
-    assert bob["last_session"] == "2026-07-17"
+    assert bob["last_session"] == bob_last
 
 
 def test_session_count_ignores_the_audio_archive(client):
@@ -336,9 +343,16 @@ def test_session_count_ignores_the_audio_archive(client):
 
 
 def test_activity_recent_orders_newest_first(client):
+    import datetime as _dt
+
     tc, vault_dir = client
-    _seed_session(vault_dir, "C-0001", "2026-07-18", number=14)
-    _seed_session(vault_dir, "C-0002", "2026-07-17", number=6)
+    # Relative dates: the sample clients now carry session notes relative to the
+    # seeding date, so a fixed date would not reliably be the newest note.
+    today = _dt.date.today()
+    newest = today.isoformat()
+    older = (today - _dt.timedelta(days=1)).isoformat()
+    _seed_session(vault_dir, "C-0001", newest, number=14)
+    _seed_session(vault_dir, "C-0002", older, number=6)
     body = tc.get("/api/activity/recent").json()
     assert set(body) == {"items", "filed_today"}
     dates = [i["date"] for i in body["items"]]
@@ -347,9 +361,11 @@ def test_activity_recent_orders_newest_first(client):
     assert first["client_id"] == "C-0001"
     assert first["client_name"] == "Bob Smith"
     assert first["title"] == "Session 14"
-    assert first["date"] == "2026-07-18"
+    assert first["date"] == newest
     # A note without a session_number falls back to the file stem.
-    _seed_session(vault_dir, "C-0002", "2026-07-19", stem="unnumbered")
+    _seed_session(
+        vault_dir, "C-0002", (today + _dt.timedelta(days=1)).isoformat(), stem="unnumbered"
+    )
     top = tc.get("/api/activity/recent").json()["items"][0]
     assert top["title"] == "unnumbered"
 

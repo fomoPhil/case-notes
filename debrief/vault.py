@@ -10,6 +10,8 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
+import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -169,6 +171,13 @@ def _seed_client(
             lines.append("- Objectives:\n")
             for obj in goal["objectives"]:
                 lines.append(f"  - {obj}\n")
+        if not goals:
+            # A client added by hand has no goals yet. The file still exists so
+            # the record shape matches every other client from the first day.
+            lines.append(
+                "\nNo goals recorded yet. Write them here, or talk them through "
+                "in a session and file the note.\n"
+            )
         _atomic_write(plan_path, "".join(lines))
 
 
@@ -283,6 +292,26 @@ def ensure_vault() -> None:
         "DBT Skills Training",
     )
 
+    # Seeded scheduling is computed from the seeding date, never hardcoded. A
+    # fresh install must never open on appointments that are already in the past,
+    # and a "last session" must always read as having already happened.
+    today = _dt.date.today()
+
+    def _seed_day(offset: int) -> _dt.date:
+        return today + _dt.timedelta(days=offset)
+
+    def _seed_moment(offset: int, hour: int, minute: int = 0) -> str:
+        """ISO datetime `offset` days from the seeding date at a fixed time."""
+        return _dt.datetime.combine(
+            _seed_day(offset), _dt.time(hour, minute)
+        ).isoformat()
+
+    # Past sessions (1, 3, and 4 days back) and upcoming ones (3, 4, and 5 days
+    # ahead), preserving each client's original time of day.
+    bob_last = _seed_day(-1)
+    jane_last = _seed_day(-3)
+    maya_last = _seed_day(-4)
+
     # Mock client C-0001: Bob Smith, CBT, SI history flag.
     _seed_client(
         VAULT_DIR / "Clients" / "C-0001",
@@ -293,23 +322,27 @@ def ensure_vault() -> None:
             "email": "bob@example.com",
             "status": "active",
             "intake_date": _dt.date(2026, 1, 15),
-            "last_session": _dt.date(2026, 7, 17),
-            "next_session": "2026-07-21T15:00:00",
+            "last_session": bob_last,
+            "next_session": _seed_moment(3, 15),
             "diagnosis": ["F41.1"],
             "presenting_concerns": ["workplace stress", "worthlessness"],
             "framework": "CBT",
             "themes": ["Work-Undermining"],
-            "risk_flags": ["SI-passive-2026-07-17"],
-            "summary_updated": "2026-07-17T18:30:00",
+            "risk_flags": [f"SI-passive-{bob_last.isoformat()}"],
+            "summary_updated": _seed_moment(-1, 18, 30),
+            # Marks the three scaffolded demo clients so the UI can label them
+            # and nobody mistakes a sample record for a real one.
+            "sample": True,
         },
         summary=(
             "Bob is a mid-career professional presenting with workplace stress and "
             "recurrent feelings of worthlessness tied to his performance at work. "
             "Treatment uses cognitive behavioral therapy with a focus on identifying "
             "and restructuring self-critical automatic thoughts. He has a documented "
-            "history of passive suicidal ideation (assessed 2026-07-17, no plan or "
-            "intent, protective factors in place) which is monitored each session. "
-            "Engagement is consistent and he completes between-session worksheets."
+            f"history of passive suicidal ideation (assessed {bob_last.isoformat()}, "
+            "no plan or intent, protective factors in place) which is monitored each "
+            "session. Engagement is consistent and he completes between-session "
+            "worksheets."
         ),
         goals=[
             {
@@ -341,14 +374,15 @@ def ensure_vault() -> None:
             "email": "jane@example.com",
             "status": "active",
             "intake_date": _dt.date(2026, 2, 3),
-            "last_session": _dt.date(2026, 7, 15),
-            "next_session": "2026-07-22T14:00:00",
+            "last_session": jane_last,
+            "next_session": _seed_moment(4, 14),
             "diagnosis": ["F41.9"],
             "presenting_concerns": ["anxiety", "sleep difficulties"],
             "framework": "ACT",
             "themes": ["Anxiety", "Sleep"],
             "risk_flags": [],
-            "summary_updated": "2026-07-15T17:00:00",
+            "summary_updated": _seed_moment(-3, 17, 0),
+            "sample": True,
         },
         summary=(
             "Jane presents with generalized anxiety and disrupted sleep, often driven "
@@ -388,14 +422,15 @@ def ensure_vault() -> None:
             "email": "maya@example.com",
             "status": "active",
             "intake_date": _dt.date(2026, 3, 10),
-            "last_session": _dt.date(2026, 7, 14),
-            "next_session": "2026-07-23T16:00:00",
+            "last_session": maya_last,
+            "next_session": _seed_moment(5, 16),
             "diagnosis": ["F60.3"],
             "presenting_concerns": ["emotion dysregulation", "relationship conflict"],
             "framework": "DBT",
             "themes": ["Emotion-Dysregulation"],
             "risk_flags": [],
-            "summary_updated": "2026-07-14T17:30:00",
+            "summary_updated": _seed_moment(-4, 17, 30),
+            "sample": True,
         },
         summary=(
             "Maya is a graduate student presenting with intense emotional swings and "
@@ -429,7 +464,7 @@ def ensure_vault() -> None:
     _seed_session_note(
         VAULT_DIR / "Clients" / "C-0003",
         "C-0003",
-        _dt.date(2026, 6, 30),
+        _seed_day(-18),
         16,
         "DBT",
         data=(
@@ -452,7 +487,7 @@ def ensure_vault() -> None:
     _seed_session_note(
         VAULT_DIR / "Clients" / "C-0003",
         "C-0003",
-        _dt.date(2026, 7, 14),
+        maya_last,
         17,
         "DBT",
         data=(
@@ -504,6 +539,206 @@ def list_clients() -> list[dict]:
 
 class VaultPathError(ValueError):
     """Raised when a requested path escapes its allowed subtree of the vault."""
+
+
+# ---------------------------------------------------------------------------
+# Client creation
+# ---------------------------------------------------------------------------
+
+# Limits on hand-entered client fields. These are guards against pathological
+# input (a pasted document into the name box), not clinical judgements, so they
+# sit well above anything a real entry needs.
+MAX_NAME_LEN = 120
+MAX_EMAIL_LEN = 254
+MAX_FRAMEWORK_LEN = 60
+MAX_CONCERN_LEN = 80
+MAX_CONCERNS = 12
+
+# New client folders are assembled here and then renamed into Clients/ in one
+# move. It sits outside Clients/ on purpose: pathlib globs match dot-prefixed
+# directories, so a staging folder inside Clients/ would show up in list_clients
+# for as long as it took to write the profile.
+_STAGING_DIRNAME = ".debrief_staging"
+
+_CLIENT_ID_RE = re.compile(r"^C-(\d+)$")
+# Deliberately permissive: an address is stored only when it has one @ with
+# something either side and a dot in the domain. Anything stricter rejects
+# valid addresses, and this is a display/mailto field, not an auth credential.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class ClientInputError(ValueError):
+    """Raised when hand-entered client details fail validation."""
+
+
+def next_client_id() -> str:
+    """Return the next free client id, formatted C-0001.
+
+    Takes max(existing numeric suffix) + 1 rather than count + 1, so deleting an
+    earlier client can never make the allocator hand out an id that is already
+    on disk. Non-conforming folder names are ignored.
+    """
+    clients_root = VAULT_DIR / "Clients"
+    highest = 0
+    if clients_root.exists():
+        for entry in clients_root.iterdir():
+            if not entry.is_dir():
+                continue
+            match = _CLIENT_ID_RE.match(entry.name)
+            if match:
+                highest = max(highest, int(match.group(1)))
+    return f"C-{highest + 1:04d}"
+
+
+def _clean_name(raw) -> str:
+    name = " ".join(str(raw or "").split())
+    if not name:
+        raise ClientInputError("A client needs a name.")
+    if len(name) > MAX_NAME_LEN:
+        raise ClientInputError(f"That name is too long (max {MAX_NAME_LEN} characters).")
+    return name
+
+
+def _clean_email(raw) -> str:
+    email = str(raw or "").strip()
+    if not email:
+        return ""
+    if len(email) > MAX_EMAIL_LEN or not _EMAIL_RE.match(email):
+        raise ClientInputError(
+            "That does not look like an email address. Leave it blank if you do "
+            "not have one."
+        )
+    return email
+
+
+def _clean_framework(raw) -> str:
+    framework = " ".join(str(raw or "").split())
+    if len(framework) > MAX_FRAMEWORK_LEN:
+        raise ClientInputError(
+            f"That framework name is too long (max {MAX_FRAMEWORK_LEN} characters)."
+        )
+    return framework
+
+
+def _clean_concerns(raw) -> list[str]:
+    """Normalize presenting concerns from a list or a comma-separated string."""
+    if raw is None:
+        items: list = []
+    elif isinstance(raw, str):
+        items = raw.split(",")
+    elif isinstance(raw, (list, tuple)):
+        items = list(raw)
+    else:
+        raise ClientInputError("Presenting concerns must be a list or a comma-separated string.")
+
+    cleaned: list[str] = []
+    for item in items:
+        if isinstance(item, (list, tuple, dict)):
+            raise ClientInputError("Each presenting concern must be a short phrase.")
+        text = " ".join(str(item or "").split())
+        if not text:
+            continue
+        if len(text) > MAX_CONCERN_LEN:
+            raise ClientInputError(
+                f"Presenting concerns should be short phrases (max {MAX_CONCERN_LEN} characters each)."
+            )
+        if text not in cleaned:
+            cleaned.append(text)
+    if len(cleaned) > MAX_CONCERNS:
+        raise ClientInputError(f"That is a lot of concerns (max {MAX_CONCERNS}).")
+    return cleaned
+
+
+def _new_client_summary(name: str, concerns: list[str], framework: str, today: _dt.date) -> str:
+    """The opening running summary for a hand-added client.
+
+    Factual only: this text is a clinical record, and it is also fed to the model
+    as context on the first debrief, so it must never invent clinical content.
+    """
+    parts = [f"{name} was added to the caseload on {today.isoformat()}."]
+    if concerns:
+        parts.append(f"Presenting concerns recorded at intake: {', '.join(concerns)}.")
+    if framework:
+        parts.append(f"Working framework: {framework}.")
+    parts.append(
+        "No sessions have been filed yet. This summary updates automatically "
+        "after each session note is filed."
+    )
+    return " ".join(parts)
+
+
+def create_client(
+    name: str,
+    email: str | None = None,
+    framework: str = "",
+    presenting_concerns=None,
+) -> dict:
+    """Create a new client record and return its profile frontmatter.
+
+    Writes Clients/<id>/_Profile.md, Clients/<id>/Sessions/, and
+    Clients/<id>/Treatment-Plan.md through the same seeding writer the scaffolded
+    clients use, so the frontmatter keys, order, and types are identical and every
+    downstream reader works unchanged.
+
+    The whole folder is built under a staging directory OUTSIDE Clients/ and
+    moved into place with a single os.rename, so a half-written client can never
+    appear in the Clients list (a glob over Clients/*/ would otherwise see the
+    staging folder, hidden name and all). If another writer claimed the id in the
+    meantime, a fresh id is allocated and the move retried.
+
+    Raises ClientInputError on invalid input.
+    """
+    clean_name = _clean_name(name)
+    clean_email = _clean_email(email)
+    clean_framework = _clean_framework(framework)
+    concerns = _clean_concerns(presenting_concerns)
+    today = _dt.date.today()
+
+    clients_root = VAULT_DIR / "Clients"
+    clients_root.mkdir(parents=True, exist_ok=True)
+    staging_root = VAULT_DIR / _STAGING_DIRNAME
+    staging_root.mkdir(parents=True, exist_ok=True)
+
+    last_error: OSError | None = None
+    for _ in range(10):
+        client_id = next_client_id()
+        destination = clients_root / client_id
+        if destination.exists():
+            continue
+        profile_fm = {
+            "type": "client-profile",
+            "client_id": client_id,
+            "name": clean_name,
+            "email": clean_email,
+            "status": "active",
+            "intake_date": today,
+            # No session has happened yet and none is booked. Null is the honest
+            # value; every reader already treats these as optional.
+            "last_session": None,
+            "next_session": None,
+            "diagnosis": [],
+            "presenting_concerns": concerns,
+            "framework": clean_framework,
+            "themes": [],
+            "risk_flags": [],
+            "summary_updated": _iso_datetime(_dt.datetime.now()),
+        }
+        staging = Path(tempfile.mkdtemp(prefix=f"{client_id}-", dir=str(staging_root)))
+        try:
+            _seed_client(
+                staging,
+                profile_fm,
+                summary=_new_client_summary(clean_name, concerns, clean_framework, today),
+                goals=[],
+            )
+            os.rename(staging, destination)
+        except OSError as exc:
+            last_error = exc
+            shutil.rmtree(staging, ignore_errors=True)
+            continue
+        return profile_fm
+
+    raise OSError(f"Could not allocate a client folder: {last_error}")
 
 
 def _safe_join(base: Path, relative: str) -> Path:

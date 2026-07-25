@@ -27,6 +27,17 @@ from .config import LMSTUDIO_URL, MODEL
 _TIMEOUT_SECONDS = 300
 
 
+class ModelUnavailable(RuntimeError):
+    """The local model server could not be reached at all.
+
+    A subclass of RuntimeError so every existing `except RuntimeError` handler
+    keeps working, but callers that want to tell "LM Studio is not running" apart
+    from "the model answered with something unusable" can catch this instead. The
+    difference matters at the API edge: the first is a 503 the user can fix by
+    opening LM Studio, the second is not.
+    """
+
+
 def _encode_image(path: str) -> str:
     """Read an image file and return an OpenAI-style data URI."""
     p = Path(path)
@@ -120,7 +131,7 @@ def chat(
     try:
         resp = requests.post(LMSTUDIO_URL, json=payload, timeout=_TIMEOUT_SECONDS)
     except requests.RequestException as exc:
-        raise RuntimeError(f"LM Studio request failed: {exc}") from exc
+        raise ModelUnavailable(f"LM Studio request failed: {exc}") from exc
 
     if resp.status_code != 200:
         raise RuntimeError(
@@ -173,7 +184,7 @@ def chat_tools(
     try:
         resp = requests.post(LMSTUDIO_URL, json=payload, timeout=_TIMEOUT_SECONDS)
     except requests.RequestException as exc:
-        raise RuntimeError(f"LM Studio request failed: {exc}") from exc
+        raise ModelUnavailable(f"LM Studio request failed: {exc}") from exc
 
     if resp.status_code != 200:
         raise RuntimeError(f"LM Studio returned {resp.status_code}: {resp.text}")

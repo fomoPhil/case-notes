@@ -66,6 +66,37 @@ RESERVED_KEYS = frozenset(
     {"interventions", "themes", "client_quotes", "risk", "risk_present"}
 )
 
+# "Interventions", "Risk", and "Themes" are among the most common headings in a
+# real clinical template, so hitting a reserved key is the expected case, not an
+# exotic one. The message has to explain that the content is still captured (as a
+# structured field) rather than read as a flat rejection. Per key: what Debrief
+# calls that field, and a heading the clinician could use instead.
+_RESERVED_KEY_COPY: dict = {
+    "interventions": ("interventions", "Approach used"),
+    "themes": ("recurring themes", "Topics explored"),
+    "client_quotes": ("client quotes", "In their words"),
+    "risk": ("risk", "Safety review"),
+    "risk_present": ("risk", "Safety review"),
+}
+
+
+def reserved_key_message(key: str, heading: str = "") -> str:
+    """Explain why a reserved section key cannot be a free-text section.
+
+    Built from the offending key so a new reserved key never leaves a clinician
+    reading implementation vocabulary.
+    """
+    field, suggestion = _RESERVED_KEY_COPY.get(
+        key, (key.replace("_", " "), "something more specific")
+    )
+    label = (heading or "").strip() or key.replace("_", " ").title()
+    return (
+        f"Debrief already records {field} as a structured field in every note, "
+        f'so "{label}" cannot also be a free-text section. Remove this section '
+        f"and it will still be captured, or rename it to something like "
+        f'"{suggestion}".'
+    )
+
 # The risk object schema, copied verbatim from the old extract.py:37-53. When a
 # spec is clinical (risk_section True) this is spliced into the note object
 # unchanged so the golden DAP schema stays byte-identical.
@@ -312,12 +343,12 @@ def _validate_spec(spec: dict) -> dict:
         key = slugify_key(entry.get("key") or entry.get("heading") or "")
         if not key:
             raise InvalidFormatSpec("each section needs a key or heading")
+        heading = str(entry.get("heading") or key.replace("_", " ").title()).strip()
         if key in RESERVED_KEYS:
-            raise InvalidFormatSpec(f"section key {key!r} is reserved")
+            raise InvalidFormatSpec(reserved_key_message(key, heading))
         if key in seen:
             raise InvalidFormatSpec(f"duplicate section key {key!r}")
         seen.add(key)
-        heading = str(entry.get("heading") or key.replace("_", " ").title()).strip()
         description = str(entry.get("description") or "").strip()
         if len(description) > 500:
             raise InvalidFormatSpec(
@@ -405,6 +436,45 @@ def save_custom(spec: dict) -> dict:
         json.dumps(validated, indent=2) + "\n",
     )
     return validated
+
+
+def delete_custom(format_id: str) -> str:
+    """Delete a custom format spec (and its compiled prompt layer). Returns the id.
+
+    Builtins are never deletable: they are code, not files, so removing one would
+    leave a dangling option in the UI and nothing on disk to remove. An id that is
+    not a bare slug is rejected by _custom_path before it can touch the filesystem,
+    and the resolved path is re-checked against _Settings/formats/ so no traversal
+    can reach a file outside the store.
+
+    Raises InvalidFormatSpec for a builtin id and UnknownFormat when there is no
+    such custom format.
+    """
+    fid = (format_id or "").strip()
+    if fid in _BUILTIN_SPECS:
+        raise InvalidFormatSpec(
+            f"{fid} is one of Debrief's built-in formats, so it cannot be removed. "
+            "Pick a different format in Settings instead."
+        )
+    path = _custom_path(fid)
+    formats_root = settings_store.formats_dir().resolve()
+    resolved = path.resolve()
+    if resolved.parent != formats_root:
+        raise UnknownFormat(f"unsafe or unknown note format id: {format_id!r}")
+    if not resolved.is_file():
+        raise UnknownFormat(f"unknown note format: {format_id!r}")
+    resolved.unlink()
+
+    # The compiled prompt layer is part of the same format. Leaving it behind
+    # would silently attach the old guidance to any format later saved under the
+    # same slug.
+    layer = (settings_store.profile_dir() / f"{fid}.prompt.md").resolve()
+    if layer.parent == settings_store.profile_dir().resolve() and layer.is_file():
+        try:
+            layer.unlink()
+        except OSError:
+            pass
+    return fid
 
 
 def get_spec(format_id: str | None) -> dict:
