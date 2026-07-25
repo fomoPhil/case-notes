@@ -99,6 +99,43 @@
     z-index: 0;
   }
 
+  /* Text for assistive technology only: present in the accessibility tree,
+     absent from the page. Never display:none, which removes it from both. */
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    clip-path: inset(50%);
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  /* Eleven tab stops used to sit between the top of the document and the
+     content on every screen. This is the way past them. */
+  .skip-link {
+    position: absolute;
+    left: 12px;
+    top: 12px;
+    z-index: 80;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    color: #fff;
+    background: var(--accent);
+    border-radius: var(--radius-sm);
+    padding: 11px 16px;
+    text-decoration: none;
+    box-shadow: var(--shadow);
+    transform: translateY(-160%);
+  }
+  .skip-link:focus-visible {
+    transform: none;
+    box-shadow: var(--ring), var(--shadow);
+  }
+
   /* Focus is a soft sage ring drawn with box-shadow so it hugs each element's
      own border-radius instead of the browser's rectangular outline. Elements
      that carry their own shadow re-declare the ring plus that shadow below. */

@@ -133,7 +133,9 @@ function technicalDetails(text) {
 
 function errorBanner(e) {
   const err = toErr(e);
-  const banner = h(`<div class="banner banner-error"></div>`);
+  // role=alert, so a failure is spoken the moment the banner lands rather than
+  // waiting for someone to happen to read past it.
+  const banner = h(`<div class="banner banner-error" role="alert"></div>`);
   banner.appendChild(h(`<div>${esc(err.text)}</div>`));
   if (err.sub) banner.appendChild(h(`<div class="banner-sub">${esc(err.sub)}</div>`));
   if (err.technical) banner.appendChild(technicalDetails(err.technical));
@@ -463,10 +465,31 @@ function initials(name) {
   return (name || "?").trim().split(/\s+/).map(w => w[0]).slice(0, 2).join("").toUpperCase();
 }
 
+// ---------------------------------------------------------------------------
+// Saying what just happened.
+//
+// Every asynchronous change in this app was silent: recording, the four
+// processing steps, the save confirmation, every toast, every error. The two
+// regions live OUTSIDE .app-shell on purpose, because a dialog marks the shell
+// inert and an inert live region cannot speak.
+// ---------------------------------------------------------------------------
+
+function announce(msg, urgent) {
+  const node = document.getElementById(urgent ? "a11yAlert" : "a11yStatus");
+  if (!node) return;
+  // Cleared first: setting a region to the string it already holds is not a
+  // change, so a failure that happens twice would only ever be said once.
+  node.textContent = "";
+  clearTimeout(node._sayT);
+  node._sayT = setTimeout(() => { node.textContent = String(msg || ""); }, 60);
+}
+
 function ensureShell() {
   const shell = document.getElementById("shell");
   if (shell.querySelector(".app-shell")) return;
   shell.innerHTML = `
+    <div id="a11yStatus" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+    <div id="a11yAlert" class="visually-hidden" role="alert" aria-live="assertive" aria-atomic="true"></div>
     <div class="app-shell">
       <aside class="side">
         <div class="brand">Debrief</div>
@@ -489,7 +512,7 @@ function ensureShell() {
           <div class="side-foot">${LOCK_DOT} Everything stays on this Mac</div>
         </div>
       </aside>
-      <main class="main-pane" id="main-pane"></main>
+      <main class="main-pane" id="main-pane" tabindex="-1"></main>
     </div>`;
   shell.querySelector("#navNewDebrief").onclick = () => { App.client = null; go("clients"); };
   shell.querySelector("#navAssistant").onclick = () => { App.assistant = null; go("assistant"); };
@@ -1115,20 +1138,29 @@ function renderProcessing() {
     `Writing your ${noteLabel()}`,
     "Working out the follow-ups",
   ];
+  // A step's state was carried by its class alone, which says nothing to a
+  // screen reader. Each step now carries the word for its state as well.
+  const STATE_WORD = { done: "done", active: "in progress", todo: "not started yet" };
   const panel = h(`<div class="panel proc-steps ${ent(1)}">
-    ${steps.map((t, i) => `<div class="pstep ${i === 0 ? "active" : "todo"}"><span class="ic">${CHECK_SVG}</span><span class="t">${esc(t)}</span></div>`).join("")}
+    <h2 class="visually-hidden">Writing your note</h2>
+    ${steps.map((t, i) => `<div class="pstep ${i === 0 ? "active" : "todo"}"><span class="ic" aria-hidden="true">${CHECK_SVG}</span><span class="t">${esc(t)}</span><span class="visually-hidden pstep-state">, ${i === 0 ? STATE_WORD.active : STATE_WORD.todo}</span></div>`).join("")}
     <div class="local-note">${LOCK_SVG}Everything runs on this Mac. Nothing is filed or sent until you have read it and approved it.</div>
   </div>`);
   el.appendChild(panel);
+  announce(`Step 1 of ${steps.length}, ${steps[0].toLowerCase()}.`);
   // Optimistic pacing only; the real work finishes whenever the server replies.
   // Transcription dominates and scales with audio length, later steps are steadier.
   const advance = (i) => {
     if (App.state !== "processing") return;
     document.querySelectorAll(".pstep").forEach((s, j) => {
-      s.classList.toggle("done", j < i);
-      s.classList.toggle("active", j === i);
-      s.classList.toggle("todo", j > i);
+      const state = j < i ? "done" : (j === i ? "active" : "todo");
+      s.classList.toggle("done", state === "done");
+      s.classList.toggle("active", state === "active");
+      s.classList.toggle("todo", state === "todo");
+      const carrier = s.querySelector(".pstep-state");
+      if (carrier) carrier.textContent = ", " + STATE_WORD[state];
     });
+    if (steps[i]) announce(`Step ${i + 1} of ${steps.length}, ${steps[i].toLowerCase()}.`);
   };
   const est = Math.max(4, Math.round((App.seconds || 30) * 0.35));
   clearProcTimers();
@@ -1725,6 +1757,7 @@ async function toggleRecord() {
   startMeter();
   const hint = document.getElementById("recHint");
   if (hint) hint.textContent = "Listening. Press again when you are finished.";
+  announce("Recording started. Press the button again when you are finished.");
   App.timerId = setInterval(() => {
     App.seconds++;
     const t = document.getElementById("timer");
@@ -1783,6 +1816,7 @@ async function onRecordingStopped() {
 // throwing away a session the clinician has already spoken.
 async function processRecording(blob) {
   App.lastRecording = blob;
+  announce("Recording stopped. Debrief is writing your note.");
   go("processing");
   const fd = new FormData();
   fd.append("audio", blob, "debrief.webm");
@@ -2202,19 +2236,25 @@ async function emailDocument(clientId, path, subject, body) {
     const r = await fetch("/api/documents/email", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     if (!r.ok) throw await failure(r);
     toast("Mail draft opened for review. Nothing was sent.");
-  } catch (e) { toast(errText(e)); }
+  } catch (e) { toastError(e); }
 }
 
-function toast(msg, action) {
+// A toast is the only word a clinician gets that a draft opened or a file
+// moved, and it disappears on a timer, so it is always spoken too.
+function toast(msg, action, urgent) {
   const t = h(`<div class="toast"><span class="toast-msg">${esc(msg)}</span></div>`);
   if (action && action.label) {
-    const btn = h(`<button class="toast-action">${esc(action.label)}</button>`);
+    const btn = h(`<button type="button" class="toast-action">${esc(action.label)}</button>`);
     btn.onclick = () => { t.remove(); action.onClick(); };
     t.appendChild(btn);
   }
   document.body.appendChild(t);
+  announce(msg, urgent);
   setTimeout(() => t.remove(), action ? 6000 : 3200);
 }
+
+// A toast that carries a failure. Assertive: it is interrupting for a reason.
+function toastError(e) { toast(errText(e), null, true); }
 
 // ---------------------------------------------------------------------------
 // Document view
@@ -2367,14 +2407,14 @@ async function amendNote(path, text) {
   try {
     const r = await fetch("/api/notes/amend", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, text }) });
     if (!r.ok) throw await failure(r);
-  } catch (e) { toast(errText(e)); }
+  } catch (e) { toastError(e); }
 }
 
 async function saveDocument(path, markdown) {
   try {
     const r = await fetch("/api/documents/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, markdown }) });
     if (!r.ok) throw await failure(r);
-  } catch (e) { toast(errText(e)); }
+  } catch (e) { toastError(e); }
 }
 
 function emailDocumentFromView(doc) {
@@ -2415,7 +2455,7 @@ async function post(url, body) {
     const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     if (!r.ok) throw await failure(r);
     return await r.json();
-  } catch (e) { toast(errText(e)); }
+  } catch (e) { toastError(e); }
 }
 
 // ---------------------------------------------------------------------------
@@ -2676,7 +2716,8 @@ async function postSettings(patch, dictionary) {
 // The quiet save confirmation. It fades in with a small rise, settles for about
 // a second and a half, then fades out; the word is only cleared once that fade
 // has finished, so it never blinks out mid-transition.
-function settingsSaved(node) {
+function settingsSaved(node, what) {
+  announce(what ? `${what} saved.` : "Saved.");
   if (!node) return;
   node.textContent = "Saved";
   clearTimeout(node._t);
@@ -2708,7 +2749,7 @@ async function removeFormat(f) {
     if (App.state === "settings") render();
     toast(wasActive ? "Removed. Debrief is back to DAP notes." : `Removed ${f.name}.`);
   } catch (e) {
-    toast(errText(e));
+    toastError(e);
   }
 }
 
@@ -2752,8 +2793,8 @@ function renderSettings() {
     profSel.appendChild(o);
   });
   profSel.onchange = async () => {
-    try { await postSettings({ profession: profSel.value }); settingsSaved(cardA.querySelector("#savedA")); }
-    catch (e) { toast(errText(e)); }
+    try { await postSettings({ profession: profSel.value }); settingsSaved(cardA.querySelector("#savedA"), "Profession"); }
+    catch (e) { toastError(e); }
   };
   profField.appendChild(profSel);
   cardA.appendChild(profField);
@@ -2780,8 +2821,8 @@ function renderSettings() {
     addOptions(fmtSel, formats);
   }
   fmtSel.onchange = async () => {
-    try { await postSettings({ note_format: fmtSel.value }); settingsSaved(cardA.querySelector("#savedA")); }
-    catch (e) { toast(errText(e)); }
+    try { await postSettings({ note_format: fmtSel.value }); settingsSaved(cardA.querySelector("#savedA"), "Note format"); }
+    catch (e) { toastError(e); }
   };
   fmtField.appendChild(fmtSel);
   cardA.appendChild(fmtField);
@@ -2831,8 +2872,8 @@ function renderSettings() {
       <span class="set-radio-body"><span class="set-radio-title">${esc(eng.label)}</span><span class="set-radio-desc">${esc(eng.desc)}</span></span>
     </label>`);
     row.querySelector("input").onchange = async () => {
-      try { await postSettings({ stt_engine: eng.id }); settingsSaved(cardB.querySelector("#savedB")); }
-      catch (e) { toast(errText(e)); }
+      try { await postSettings({ stt_engine: eng.id }); settingsSaved(cardB.querySelector("#savedB"), "Transcription model"); }
+      catch (e) { toastError(e); }
     };
     engBox.appendChild(row);
   });
@@ -2856,8 +2897,8 @@ function renderSettings() {
     try {
       await postSettings(null, area.value);
       lastSaved = area.value;
-      settingsSaved(cardC.querySelector("#savedC"));
-    } catch (e) { toast(errText(e)); }
+      settingsSaved(cardC.querySelector("#savedC"), "Personal dictionary");
+    } catch (e) { toastError(e); }
   };
   cardC.appendChild(area);
   el.appendChild(cardC);
@@ -2881,9 +2922,9 @@ function renderSettings() {
         // stale snapshot of the other toggles.
         await postSettings({ features: { [fr.key]: cb.checked } });
         feats[fr.key] = cb.checked;
-        settingsSaved(cardD.querySelector("#savedD"));
+        settingsSaved(cardD.querySelector("#savedD"), fr.label);
         if (fr.key === "assistant") { rebuildShell(); }
-      } catch (e) { cb.checked = !cb.checked; toast(errText(e)); }
+      } catch (e) { cb.checked = !cb.checked; toastError(e); }
     };
     togBox.appendChild(row);
   });
