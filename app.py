@@ -190,25 +190,64 @@ def api_status() -> JSONResponse:
     })
 
 
+def _iso_or_none(value) -> str | None:
+    """Coerce a frontmatter date/datetime/string to an ISO string, or None.
+
+    YAML parses unquoted dates into date/datetime objects, so the home screen
+    would otherwise receive types it cannot compare against today.
+    """
+    if value is None:
+        return None
+    if isinstance(value, _dt.datetime):
+        return value.replace(microsecond=0).isoformat()
+    if isinstance(value, _dt.date):
+        return value.isoformat()
+    text = str(value).strip()
+    return text or None
+
+
+def _clients_slim_sync() -> list[dict]:
+    """Blocking half of /api/clients: profile frontmatter plus session counts."""
+    clients = vault.list_clients()
+    slim = []
+    for c in clients:
+        cid = c.get("client_id")
+        slim.append(
+            {
+                "client_id": cid,
+                "name": c.get("name"),
+                "framework": c.get("framework"),
+                "presenting_concerns": c.get("presenting_concerns", []),
+                "risk_flags": c.get("risk_flags", []),
+                # Scheduling fields drive the home screen's "today" block.
+                "next_session": _iso_or_none(c.get("next_session")),
+                "last_session": _iso_or_none(c.get("last_session")),
+                "session_count": records.count_sessions(cid) if cid else 0,
+            }
+        )
+    return slim
+
+
 @app.get("/api/clients")
-def api_clients() -> JSONResponse:
+async def api_clients() -> JSONResponse:
     """Return the list of clients from the vault (profile frontmatter)."""
     try:
-        clients = vault.list_clients()
+        slim = await run_in_threadpool(_clients_slim_sync)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Could not read clients: {exc}")
-    # Slim payload for the picker; keep the fields the UI shows.
-    slim = [
-        {
-            "client_id": c.get("client_id"),
-            "name": c.get("name"),
-            "framework": c.get("framework"),
-            "presenting_concerns": c.get("presenting_concerns", []),
-            "risk_flags": c.get("risk_flags", []),
-        }
-        for c in clients
-    ]
-    return JSONResponse(slim)
+    return JSONResponse(jsonable_encoder(slim))
+
+
+@app.get("/api/activity/recent")
+async def api_activity_recent(limit: int = 6) -> JSONResponse:
+    """Recently filed session notes across the caseload, plus today's count."""
+    try:
+        payload = await run_in_threadpool(records.recent_activity, limit)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Could not read recent activity: {exc}"
+        )
+    return JSONResponse(jsonable_encoder(payload))
 
 
 def _convert_to_wav(src_bytes: bytes, workdir: Path) -> str:

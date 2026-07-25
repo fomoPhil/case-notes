@@ -46,6 +46,9 @@ _TRASH_DIRNAME = "_Trash"
 _CACHE_DIRNAME = ".cache"
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# Hard ceiling on the recent-activity feed, whatever limit a caller asks for.
+_ACTIVITY_MAX = 20
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
@@ -255,6 +258,109 @@ def list_documents(client_id: str) -> list[dict]:
         docs.append(_document_meta(p))
     docs.sort(key=lambda m: m.get("modified") or "", reverse=True)
     return list_sessions(client_id) + docs
+
+
+def count_sessions(client_id: str) -> int:
+    """How many session notes a client has (Sessions/*.md only).
+
+    Only direct children of Sessions/ are counted, so the Sessions/audio/
+    archive of dictation recordings never inflates the number.
+    """
+    try:
+        sessions = _client_dir(client_id) / "Sessions"
+    except VaultPathError:
+        return 0
+    if not sessions.is_dir():
+        return 0
+    return sum(1 for p in sessions.glob("*.md") if p.is_file())
+
+
+def _profile_name(client_dir: Path) -> str:
+    """Display name from a client's _Profile.md, falling back to the folder id."""
+    profile = client_dir / "_Profile.md"
+    try:
+        fm, _ = _split_frontmatter(profile.read_text(encoding="utf-8"))
+    except Exception:
+        fm = {}
+    if not isinstance(fm, dict):
+        fm = {}
+    return str(fm.get("name") or client_dir.name)
+
+
+def recent_activity(limit: int = 6) -> dict:
+    """Recent session-note activity across every client, newest first.
+
+    Shape: {"items": [{client_id, client_name, title, date}], "filed_today": n}
+
+    The clock here is the note's own `session_date` frontmatter, never the file
+    mtime: a freshly scaffolded vault writes every seeded note at install time,
+    so mtime would report a whole caseload as filed today. `filed_today` counts
+    every note dated today, not just the ones inside `limit`.
+
+    A note that cannot be read, has malformed frontmatter, carries no usable
+    session_date, or resolves outside the vault is skipped rather than failing
+    the request.
+    """
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 6
+    limit = max(1, min(limit, _ACTIVITY_MAX))
+
+    clients_root = VAULT_DIR / "Clients"
+    if not clients_root.is_dir():
+        return {"items": [], "filed_today": 0}
+    vault_root = VAULT_DIR.resolve()
+    today = _dt.date.today().isoformat()
+
+    rows: list[tuple[str, str, dict]] = []
+    filed_today = 0
+    for client_dir in sorted(clients_root.iterdir()):
+        if not client_dir.is_dir() or client_dir.name.startswith("."):
+            continue
+        sessions = client_dir / "Sessions"
+        if not sessions.is_dir():
+            continue
+        client_name = _profile_name(client_dir)
+        for path in sorted(sessions.glob("*.md")):
+            if not path.is_file():
+                continue
+            # A symlinked note could point anywhere; the vault guard is the
+            # resolved path staying under the vault root.
+            try:
+                resolved = path.resolve()
+            except OSError:
+                continue
+            if vault_root not in resolved.parents:
+                continue
+            try:
+                fm, _ = _split_frontmatter(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(fm, dict):
+                continue
+            date = str(fm.get("session_date") or "")[:10]
+            if not _ISO_DATE_RE.match(date):
+                continue
+            number = fm.get("session_number")
+            title = f"Session {number}" if number else path.stem
+            rows.append(
+                (
+                    date,
+                    _rel(path),
+                    {
+                        "client_id": client_dir.name,
+                        "client_name": client_name,
+                        "title": str(title),
+                        "date": date,
+                    },
+                )
+            )
+            if date == today:
+                filed_today += 1
+
+    rows.sort(key=lambda r: (r[0], r[1]), reverse=True)
+    return {"items": [r[2] for r in rows[:limit]], "filed_today": filed_today}
 
 
 def read_note(rel_path: str) -> dict:

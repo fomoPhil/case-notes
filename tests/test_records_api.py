@@ -34,6 +34,24 @@ def _first_session_path(vault_dir):
     return str(sorted(sessions.glob("*.md"))[0].relative_to(vault_dir))
 
 
+def _seed_session(vault_dir, client_id, date, number=None, stem=None):
+    """Write a minimal session note with the given session_date frontmatter."""
+    sessions = vault_dir / "Clients" / client_id / "Sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    path = sessions / f"{stem or (date + '-session')}.md"
+    lines = [
+        "---",
+        "type: session-note",
+        f"client_id: {client_id}",
+        f"session_date: {date}",
+    ]
+    if number is not None:
+        lines.append(f"session_number: {number}")
+    lines += ["---", "", "## Data", "", "Body.", ""]
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Reads
 # ---------------------------------------------------------------------------
@@ -279,3 +297,118 @@ def test_library_shape(client):
     assert "worksheets" in body and "reference" in body
     titles = [w["title"] for w in body["worksheets"]]
     assert any("Thought Record" in t or "thought" in t.lower() for t in titles)
+
+
+# ---------------------------------------------------------------------------
+# Home screen data: client scheduling fields + recent activity
+# ---------------------------------------------------------------------------
+
+
+def test_clients_payload_carries_scheduling_fields(client):
+    tc, _ = client
+    body = tc.get("/api/clients").json()
+    by_id = {c["client_id"]: c for c in body}
+    maya = by_id["C-0003"]
+    # Existing consumers keep every field they had.
+    assert maya["name"] == "Maya Chen"
+    assert maya["framework"] == "DBT"
+    assert maya["presenting_concerns"] == ["emotion dysregulation", "relationship conflict"]
+    assert maya["risk_flags"] == []
+    # New scheduling fields, always ISO strings or null.
+    assert maya["next_session"] == "2026-07-23T16:00:00"
+    assert maya["last_session"] == "2026-07-14"
+    assert maya["session_count"] == 2
+    bob = by_id["C-0001"]
+    assert bob["risk_flags"] == ["SI-passive-2026-07-17"]
+    assert bob["session_count"] == 0
+    assert bob["last_session"] == "2026-07-17"
+
+
+def test_session_count_ignores_the_audio_archive(client):
+    tc, vault_dir = client
+    audio = vault_dir / "Clients" / "C-0003" / "Sessions" / "audio"
+    audio.mkdir(parents=True, exist_ok=True)
+    (audio / "2026-07-14-session.m4a").write_bytes(b"not audio")
+    (audio / "stray.md").write_text("---\n---\n", encoding="utf-8")
+    body = tc.get("/api/clients").json()
+    maya = next(c for c in body if c["client_id"] == "C-0003")
+    assert maya["session_count"] == 2
+
+
+def test_activity_recent_orders_newest_first(client):
+    tc, vault_dir = client
+    _seed_session(vault_dir, "C-0001", "2026-07-18", number=14)
+    _seed_session(vault_dir, "C-0002", "2026-07-17", number=6)
+    body = tc.get("/api/activity/recent").json()
+    assert set(body) == {"items", "filed_today"}
+    dates = [i["date"] for i in body["items"]]
+    assert dates == sorted(dates, reverse=True)
+    first = body["items"][0]
+    assert first["client_id"] == "C-0001"
+    assert first["client_name"] == "Bob Smith"
+    assert first["title"] == "Session 14"
+    assert first["date"] == "2026-07-18"
+    # A note without a session_number falls back to the file stem.
+    _seed_session(vault_dir, "C-0002", "2026-07-19", stem="unnumbered")
+    top = tc.get("/api/activity/recent").json()["items"][0]
+    assert top["title"] == "unnumbered"
+
+
+def test_activity_recent_respects_limit_and_its_cap(client):
+    tc, vault_dir = client
+    for day in range(1, 26):
+        _seed_session(vault_dir, "C-0001", f"2026-06-{day:02d}", number=day)
+    assert len(tc.get("/api/activity/recent", params={"limit": 3}).json()["items"]) == 3
+    # Anything above the cap is clamped to 20 rather than dumping the vault.
+    assert len(tc.get("/api/activity/recent", params={"limit": 999}).json()["items"]) == 20
+    assert len(tc.get("/api/activity/recent").json()["items"]) == 6
+
+
+def test_activity_recent_counts_filed_today(client):
+    tc, vault_dir = client
+    import datetime as _dt
+
+    today = _dt.date.today().isoformat()
+    _seed_session(vault_dir, "C-0001", today, number=15, stem="today-a")
+    _seed_session(vault_dir, "C-0002", today, number=7, stem="today-b")
+    body = tc.get("/api/activity/recent", params={"limit": 1}).json()
+    # filed_today counts every note dated today, not just the ones in `items`.
+    assert body["filed_today"] == 2
+    assert len(body["items"]) == 1
+    assert body["items"][0]["date"] == today
+
+
+def test_activity_recent_tolerates_malformed_notes(client):
+    tc, vault_dir = client
+    sessions = vault_dir / "Clients" / "C-0001" / "Sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    (sessions / "broken.md").write_text(
+        "---\nsession_date: [unclosed\n---\n\n# Broken\n", encoding="utf-8"
+    )
+    (sessions / "scalar.md").write_text("---\nhello\n---\n\n# Scalar\n", encoding="utf-8")
+    (sessions / "no-date.md").write_text(
+        "---\ntype: session-note\nsession_number: 3\n---\n\n# No date\n", encoding="utf-8"
+    )
+    _seed_session(vault_dir, "C-0001", "2026-07-18", number=14)
+    resp = tc.get("/api/activity/recent")
+    assert resp.status_code == 200
+    titles = [i["title"] for i in resp.json()["items"]]
+    assert "Session 14" in titles
+    assert not any(t in ("broken", "scalar", "no-date", "Session 3") for t in titles)
+
+
+def test_activity_recent_stays_inside_the_vault(client, tmp_path):
+    tc, vault_dir = client
+    outside = tmp_path / "outside"
+    outside.mkdir(parents=True, exist_ok=True)
+    secret = outside / "secret.md"
+    secret.write_text(
+        "---\ntype: session-note\nsession_date: 2026-12-31\nsession_number: 99\n---\n\n# Secret\n",
+        encoding="utf-8",
+    )
+    link = vault_dir / "Clients" / "C-0001" / "Sessions" / "leak.md"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(secret)
+    body = tc.get("/api/activity/recent").json()
+    assert all(i["title"] != "Session 99" for i in body["items"])
+    assert all(i["date"] != "2026-12-31" for i in body["items"])
