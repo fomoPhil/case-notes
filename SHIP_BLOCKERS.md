@@ -18,6 +18,8 @@ Do one real debrief end to end, then poke the new home screen, Settings, and the
 
 **Why only you:** taste, and the fact that your vault has real content and real muscle memory. Also, your Mac is the only one with the model, the permissions, and your microphone.
 
+**One thing to expect:** your existing vault predates last night's seed changes, and the scaffolder never overwrites files you already have. So Bob, Jane, and Maya will still show their old hardcoded July 21 to 23 appointments (the home screen will label them "past") and they will not carry the new "Sample" pill. A fresh vault gets relative, always-future dates automatically. If you want clean demo data for the video, move `DebriefVault/Clients/` aside and relaunch. Your real test notes live in there, so I did not touch it.
+
 ---
 
 ## 2. Decisions I made for you while you slept (reverse any of them)
@@ -63,6 +65,20 @@ I had to choose to keep moving. Each is one commit and trivially reversible.
 - The assistant makes a worksheet from a voice request and files it only after you approve.
 - Note formats: DAP, SOAP, GROW, meeting memo, or your own imported from a sample document.
 - Everything runs locally. The one exception is the optional template import, which asks first.
+- The home screen opens with the day, what is on your calendar, and what you have already filed.
+- You can add a client from inside the app. Until last night that was impossible without hand-editing files in Finder.
+
+## What changed while you slept
+
+Roughly thirty commits. The ones that change how the app behaves, rather than how it reads:
+
+- **Failures stop being silent.** `go()` was clearing the error message one line after every caller set it, so a failed debrief, a failed assistant request, a rejected upload, and a denied microphone all failed with no message at all. The recording used to be discarded too. Now the error survives, the audio is handed back, and there is a Try again button.
+- **You get warned before you speak.** The app polls readiness and, when the model is not running, says so and stops you recording into a void rather than failing after you have talked for three minutes.
+- **Filed notes no longer carry boilerplate you did not write** (see the decisions table above).
+- **Amber means risk and only risk.** It used to look identical on "you did not request an email" and "this note documents suicidal ideation".
+- **Errors stopped speaking Python.** Tracebacks, shell commands, and raw file paths no longer reach the screen; the technical text sits behind a disclosure.
+- **PDF export downloads a file** instead of opening a browser tab full of raw JSON when rendering is unavailable.
+- **Accessibility**: document and library cards are now real buttons operable by keyboard (their actions were previously mouse-only and invisible to screen readers), modals behave as dialogs, and every text colour clears AA contrast.
 
 ## What I stubbed rather than finished
 
