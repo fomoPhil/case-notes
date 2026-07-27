@@ -2,6 +2,20 @@
 
 Session-to-session state of the project. Read this first. Update it whenever meaningful state changes.
 
+## Source trust loop (built 2026-07-27, same day as Phase A, after Phil's first hands-on pass)
+
+Phil's first contact with Phase A surfaced five gaps; all are closed. Plan: `docs/plans/2026-07-27-source-trust-loop.md`. Tests now **786 non-live** (Phase A ended at 695).
+
+- **Word for word in app:** every source card opens a viewer (Corrected / Raw / Original text) reading the rung files through the existing notes route.
+- **Session date:** a source carries `session_date` (editable, any direction) beside the never-editable `captured_at`; cards, summaries, and drafted notes all use it. A note drafted from a July 18 session uploaded July 27 files as `2026-07-18-session.md`.
+- **Connect and draft:** a source can be connected to a filed note (dated amendment through the existing amend machinery, notes never rewritten) or become a draft note via the no-debrief path (zero actions, honest body copy). Unconfirmed sources can do neither.
+- **Reference material:** two new kinds (`reference_recording`, `reference_document`, both shown as "Reference material"). Reference digests are reference-shaped (title, key points, practices; no client statements, no risk, enforced in code at four independent layers with their own map and reduce prompts that never name a clinician or client). Reference sources are never session evidence (backend gate, not just UI). Flip a source either way from its card.
+- **Reveal in Finder everywhere:** `/api/reveal` learned directories; source cards, both dialogs, document cards, library items, the Settings vault card, and the developer panel all reveal real folders.
+- **Developer panel:** Settings, "Under the hood": model + reachability, STT engine, vault path, doctor checks, live job list with errors.
+- Review checkpoints again caught real defects each chunk (reference map calls running under the session prompt; a reference draft's filed note calling an article "session material"; same-second job ids sorting randomly so a card could permanently show a cancelled job).
+
+Open items: Phil has not yet clicked through the trust-loop UI (a scratch server may be live at http://127.0.0.1:8378). The MCP-server idea and Phase B (live recording) remain the two candidate next fronts, in that discussion order; see the assistant conversation of 2026-07-27 for the pushback on MCP scoping (read-scoped, allowlisted, audited, Private/ and raw transcripts excluded).
+
 ## Session recording and ingestion, Phase A (built overnight 2026-07-27)
 
 The whole of Phase A from `docs/specs/2026-07-25-session-recording-and-ingestion.md` shipped: a clinician can upload or paste a session recording, video, transcript, or document; it is classified with provenance (word for word vs AI summary, with a one-tap confirmation when unsure), distilled by a background job ladder (raw transcript, corrected transcript, session digest), and the digest rides into the debrief as labelled session evidence. Plan with per-chunk detail: `docs/plans/2026-07-26-session-recording-phase-a.md`.
