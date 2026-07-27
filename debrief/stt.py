@@ -27,6 +27,8 @@ No em dashes anywhere.
 from __future__ import annotations
 
 import os
+import re
+from collections.abc import Callable
 from pathlib import Path
 
 from . import llm, settings_store, vocab
@@ -116,14 +118,44 @@ def _seal_offline() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _fallback_segments(text: str) -> list[dict]:
+    """The whole transcript as one segment of unknown duration.
+
+    The contract for a timed transcription when the engine cannot supply
+    timestamps: one span starting at 0.0 with end None, so a caller can always
+    iterate segments without branching on whether timing was available. Empty
+    text yields no segments rather than one empty one.
+    """
+    text = (text or "").strip()
+    return [{"start": 0.0, "end": None, "text": text}] if text else []
+
+
+def _coerce_seconds(value) -> float | None:
+    """A segment boundary as float seconds, or None when it is not a number."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class _Engine:
-    """Common shape: a stable id, its HF repo, and transcribe(wav_path)."""
+    """Common shape: a stable id, its HF repo, and transcribe(wav_path).
+
+    transcribe_timed() is optional in spirit: the base implementation satisfies
+    it by degrading to a single spanning segment, so a new engine that has no
+    timestamps still works everywhere a timed transcript is expected.
+    """
 
     id: str = ""
     repo_id: str = ""
 
     def transcribe(self, wav_path: str) -> str:  # pragma: no cover - interface
         raise NotImplementedError
+
+    def transcribe_timed(self, wav_path: str) -> tuple[str, list[dict]]:
+        """Default: no timestamps, so the full text is one spanning segment."""
+        text = self.transcribe(wav_path)
+        return text, _fallback_segments(text)
 
 
 class ParakeetEngine(_Engine):
@@ -154,6 +186,34 @@ class ParakeetEngine(_Engine):
         result = model.transcribe(wav_path, chunk_duration=120.0)
         return result.text.strip()
 
+    def transcribe_timed(self, wav_path: str) -> tuple[str, list[dict]]:
+        """One transcription pass, returning text plus sentence timestamps.
+
+        parakeet_mlx already aligns tokens into sentences carrying .start and
+        .end in seconds, so the timings are free: this is the SAME single call
+        transcribe() makes, not a second pass over the audio. Any sentence that
+        cannot yield a usable start time is dropped, and a result with no usable
+        sentences at all degrades to one spanning segment.
+        """
+        model = self._ensure_loaded()
+        result = model.transcribe(wav_path, chunk_duration=120.0)
+        text = (getattr(result, "text", "") or "").strip()
+
+        segments: list[dict] = []
+        for sentence in getattr(result, "sentences", None) or []:
+            seg_text = (getattr(sentence, "text", "") or "").strip()
+            start = _coerce_seconds(getattr(sentence, "start", None))
+            if not seg_text or start is None:
+                continue
+            segments.append(
+                {
+                    "start": start,
+                    "end": _coerce_seconds(getattr(sentence, "end", None)),
+                    "text": seg_text,
+                }
+            )
+        return text, segments or _fallback_segments(text)
+
 
 class MlxWhisperEngine(_Engine):
     """mlx-whisper (whisper-large-v3-turbo).
@@ -170,7 +230,13 @@ class MlxWhisperEngine(_Engine):
     def __init__(self) -> None:
         self._ready = False
 
-    def transcribe(self, wav_path: str) -> str:
+    def _run(self, wav_path: str) -> dict:
+        """One mlx_whisper pass, with the first-call offline dance around it.
+
+        Shared by transcribe() and transcribe_timed() so asking for timestamps
+        never costs a second transcription. A non-dict result becomes {}, which
+        is what the old inline isinstance check produced.
+        """
         first = not self._ready
         if first:
             _prepare_offline_for(self.repo_id)
@@ -180,8 +246,30 @@ class MlxWhisperEngine(_Engine):
         if first:
             _seal_offline()
             self._ready = True
-        text = result.get("text", "") if isinstance(result, dict) else ""
-        return (text or "").strip()
+        return result if isinstance(result, dict) else {}
+
+    def transcribe(self, wav_path: str) -> str:
+        result = self._run(wav_path)
+        return (result.get("text", "") or "").strip()
+
+    def transcribe_timed(self, wav_path: str) -> tuple[str, list[dict]]:
+        """Text plus whisper's own segment timings when the result carries them."""
+        result = self._run(wav_path)
+        text = (result.get("text", "") or "").strip()
+
+        segments: list[dict] = []
+        raw = result.get("segments")
+        for seg in raw if isinstance(raw, list) else []:
+            if not isinstance(seg, dict):
+                continue
+            seg_text = (seg.get("text") or "").strip()
+            start = _coerce_seconds(seg.get("start"))
+            if not seg_text or start is None:
+                continue
+            segments.append(
+                {"start": start, "end": _coerce_seconds(seg.get("end")), "text": seg_text}
+            )
+        return text, segments or _fallback_segments(text)
 
 
 _ENGINE_CLASSES: dict[str, type[_Engine]] = {
@@ -266,6 +354,35 @@ def transcribe(wav_path: str, engine_id: str | None = None) -> str:
     return get_engine(engine_id).transcribe(wav_path)
 
 
+def transcribe_timed(wav_path: str, engine_id: str | None = None) -> tuple[str, list[dict]]:
+    """Transcribe a wav file to text plus timed segments.
+
+    Returns (text, segments) where segments is
+    [{"start": float, "end": float | None, "text": str}] in seconds. Engine
+    resolution matches transcribe() exactly.
+
+    Timestamps are best effort by contract: an engine that cannot produce them
+    (or produces a shape this adapter does not understand) yields the whole
+    transcript as one segment starting at 0.0 with end None. This never raises
+    just because timings were unavailable, so a caller can always rely on
+    getting at least the text.
+    """
+    if not Path(wav_path).exists():
+        raise FileNotFoundError(f"Audio file not found: {wav_path}")
+    engine = get_engine(engine_id)
+
+    timed = getattr(engine, "transcribe_timed", None)
+    if callable(timed):
+        text, segments = timed(wav_path)
+    else:
+        # A duck-typed engine predating the timed contract.
+        text, segments = engine.transcribe(wav_path), []
+    # Normalised here as well as in the adapters, so the returned text and the
+    # fallback segment's text can never disagree about leading whitespace.
+    text = (text or "").strip()
+    return text, segments or _fallback_segments(text)
+
+
 # ---------------------------------------------------------------------------
 # Glossary correction pass (unchanged contract)
 # ---------------------------------------------------------------------------
@@ -327,3 +444,179 @@ def correct_transcript(
     ]
     corrected = llm.chat(messages, max_tokens=1500, temperature=0.0)
     return corrected.strip() if isinstance(corrected, str) else text
+
+
+# ---------------------------------------------------------------------------
+# Windowed correction for full-session transcripts
+# ---------------------------------------------------------------------------
+
+# A 50-minute session is 6,000 to 9,000 words. correct_transcript cannot carry
+# that: max_tokens=1500 truncates it, and one call cannot hold the transcript
+# plus the layered correction prompt. So the long path splits into windows that
+# each comfortably fit, and stitches the results back together.
+_WINDOW_WORDS = 1200
+
+# A run of words with no sentence-ending punctuation (a wall-of-text paste, or
+# an engine that emitted none) is hard-split at this length, so one unbroken
+# run can never become a monster window. Split pieces are _WINDOW_WORDS long,
+# so the largest possible window is one sentence of _MAX_SENTENCE_WORDS.
+_MAX_SENTENCE_WORDS = 1500
+
+# Output budget per window. Roughly 2 tokens per word (generous: English runs
+# nearer 1.33) plus slack, because a window truncated mid-sentence is exactly
+# the bug this function exists to fix.
+_TOKENS_PER_WORD = 2
+_TOKEN_SLACK = 200
+_MIN_WINDOW_TOKENS = 256
+_MAX_WINDOW_TOKENS = 2600
+
+# The read-only tail handed to the next window. Two sentences, but capped in
+# words so a hard-split wall of text cannot hand over a context block larger
+# than the window it is meant to orient.
+_CONTEXT_SENTENCES = 2
+_CONTEXT_MAX_WORDS = 250
+
+_CONTEXT_HEADER = "CONTEXT (already corrected, do not repeat it in your output):"
+_WINDOW_HEADER = "CORRECT ONLY THE FOLLOWING TEXT:"
+
+# Split after sentence-ending punctuation followed by whitespace. Deliberately
+# simple: an abbreviation like "Dr. Smith" splits early, which only makes a
+# window boundary land one clause sooner. It never loses or duplicates text.
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split a transcript into sentences, hard-splitting unbroken runs.
+
+    Any piece longer than _MAX_SENTENCE_WORDS is chopped into _WINDOW_WORDS
+    chunks so a punctuation-free paste still windows. Whitespace inside a
+    hard-split chunk is normalised; ordinary sentences keep their own spacing.
+    """
+    pieces: list[str] = []
+    for raw in _SENTENCE_END.split((text or "").strip()):
+        piece = raw.strip()
+        if not piece:
+            continue
+        words = piece.split()
+        if len(words) <= _MAX_SENTENCE_WORDS:
+            pieces.append(piece)
+            continue
+        for start in range(0, len(words), _WINDOW_WORDS):
+            pieces.append(" ".join(words[start : start + _WINDOW_WORDS]))
+    return pieces
+
+
+def _pack_windows(sentences: list[str]) -> list[tuple[int, int]]:
+    """Pack sentences into disjoint windows of roughly _WINDOW_WORDS words.
+
+    Returns half-open index ranges into `sentences`. A window closes when the
+    next sentence would push it past the budget, so every boundary lands on a
+    sentence boundary. Every window holds at least one sentence (an oversized
+    single sentence gets its own window rather than an empty one), and the
+    ranges tile the whole list: disjoint, contiguous, nothing dropped.
+    """
+    windows: list[tuple[int, int]] = []
+    start = 0
+    words_in_window = 0
+    for index, sentence in enumerate(sentences):
+        length = len(sentence.split())
+        if words_in_window and words_in_window + length > _WINDOW_WORDS:
+            windows.append((start, index))
+            start = index
+            words_in_window = 0
+        words_in_window += length
+    if start < len(sentences):
+        windows.append((start, len(sentences)))
+    return windows
+
+
+def _window_max_tokens(window_text: str) -> int:
+    """Output budget for one window: generous per word, hard-capped."""
+    words = len(window_text.split())
+    budget = words * _TOKENS_PER_WORD + _TOKEN_SLACK
+    return min(_MAX_WINDOW_TOKENS, max(_MIN_WINDOW_TOKENS, budget))
+
+
+def _context_tail(text: str) -> str:
+    """The last couple of sentences of a window, for the next window's context."""
+    tail = " ".join(_split_sentences(text)[-_CONTEXT_SENTENCES:])
+    words = tail.split()
+    if len(words) > _CONTEXT_MAX_WORDS:
+        tail = " ".join(words[-_CONTEXT_MAX_WORDS:])
+    return tail
+
+
+def correct_long_transcript(
+    text: str,
+    client_ctx: dict | None = None,
+    framework: str | None = None,
+    profession: str | None = None,
+    dictionary: str | None = None,
+    progress: Callable[[int, int], None] | None = None,
+) -> str:
+    """Fix misheard clinical terms across a full-session transcript.
+
+    Same contract and same layered prompt as correct_transcript, applied over
+    windows of roughly 1,200 words split on sentence boundaries. The system
+    prompt does not vary per window, so it is built once. Each window is one
+    call; windows after the first are handed the previous window's last two
+    sentences as read-only context so terminology stays consistent across a
+    boundary, and that context is never part of the window's own output.
+
+    Windows are independent on purpose: a window whose call raises, or answers
+    with nothing, degrades to its own uncorrected text. A long session never
+    fails wholesale because one call went wrong, and no apology note is ever
+    injected into the clinical text.
+
+    progress, when given, is called as progress(done, total) after each window.
+    profession and dictionary default from the settings store at call time.
+    Empty input is returned unchanged.
+    """
+    if not text or not text.strip():
+        return text
+    if profession is None:
+        profession = settings_store.load().get("profession", "therapy")
+    if dictionary is None:
+        dictionary = settings_store.read_dictionary()
+    system = _build_correction_system(client_ctx, framework, profession, dictionary)
+
+    sentences = _split_sentences(text)
+    windows = _pack_windows(sentences)
+    total = len(windows)
+
+    corrected_windows: list[str] = []
+    previous_tail = ""
+    for done, (start, end) in enumerate(windows, start=1):
+        window_text = " ".join(sentences[start:end])
+        if previous_tail:
+            user = (
+                f"{_CONTEXT_HEADER}\n{previous_tail}\n\n{_WINDOW_HEADER}\n{window_text}"
+            )
+        else:
+            user = window_text
+
+        try:
+            answer = llm.chat(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                max_tokens=_window_max_tokens(window_text),
+                temperature=0.0,
+            )
+        except Exception:  # noqa: BLE001 - one bad window must not fail the run
+            answer = None
+
+        if isinstance(answer, str) and answer.strip():
+            corrected = answer.strip()
+        else:
+            corrected = window_text
+
+        corrected_windows.append(corrected)
+        # Context comes from the corrected output when the window succeeded, and
+        # from its raw text when it did not (corrected is the raw text then).
+        previous_tail = _context_tail(corrected)
+        if progress is not None:
+            progress(done, total)
+
+    return " ".join(corrected_windows)
