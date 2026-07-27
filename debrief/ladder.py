@@ -88,6 +88,14 @@ from .sources import Source, SourceError
 _PROMPT_DIR = Path(__file__).resolve().parent.parent / "prompts"
 _MAP_PROMPT_PATH = _PROMPT_DIR / "digest_map.md"
 _REDUCE_PROMPT_PATH = _PROMPT_DIR / "digest_reduce.md"
+# Reference material gets its own pair, at both stages. The session map prompt
+# says "you read one part of a therapy session transcript" and asks what the
+# clinician did and how the client responded, and a window summary written under
+# that instruction lands verbatim in the digest's timeline. A talk would come
+# back described as a session that never happened, with the presenter cast as
+# the clinician and the audience as the client, and that sentence would then be
+# in the vault under a real person's name.
+_REFERENCE_MAP_PROMPT_PATH = _PROMPT_DIR / "digest_map_reference.md"
 _REFERENCE_PROMPT_PATH = _PROMPT_DIR / "digest_reference.md"
 
 
@@ -271,6 +279,21 @@ _SESSION_CLAIM_FIELDS = (
     "interventions_observed",
     "risk_language_present",
     "risk_excerpts",
+)
+
+# What survives of a session digest whose source is now reference material: the
+# description of what was covered, and nothing that says anybody said or did
+# anything. A list of what may pass rather than a list of what may not, because
+# a field nobody thought to ban is exactly how a sentence gets through.
+_SUMMARY_SAFE_SESSION_FIELDS = (
+    "source_id",
+    "duration_min",
+    "diarized",
+    "segments",
+    "themes",
+    "practices_or_homework",
+    "unresolved_threads",
+    "notable_shifts",
 )
 
 # The two attribution values the schema allows. Anything else becomes the safer
@@ -744,16 +767,22 @@ def _run_map(
 
     One bad window costs its segment, not the digest. The caller turns a None
     into a visible placeholder in the timeline.
+
+    Reference material runs under a different system prompt, not a softened
+    version of the same one. The window's topic and summary are copied into the
+    digest's timeline word for word, so an instruction that asks what the
+    clinician did puts a session that never happened into the record.
     """
-    user = (
-        _reference_map_user_message(window_text, ordinal, total)
-        if reference
-        else _map_user_message(window_text, ordinal, total, context)
-    )
+    if reference:
+        system = _prompt(_REFERENCE_MAP_PROMPT_PATH)
+        user = _reference_map_user_message(window_text, ordinal, total)
+    else:
+        system = _prompt(_MAP_PROMPT_PATH)
+        user = _map_user_message(window_text, ordinal, total, context)
     try:
         result = llm.chat(
             [
-                {"role": "system", "content": _prompt(_MAP_PROMPT_PATH)},
+                {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
             schema=_MAP_SCHEMA,
@@ -1078,13 +1107,14 @@ def enforce_provenance(digest: dict, source: Source | None) -> dict:
         # so this is a digest that a job wrote after the flip or that outran it.
         # Same direction as rule 2 and one step further, because reference
         # material is not evidence about anybody: the quotes, the excerpts, the
-        # interventions, and the risk flag all go, and the description of what
-        # is in the material survives.
-        digest["client_statements"] = []
-        digest["risk_excerpts"] = []
-        digest["interventions_observed"] = []
-        digest["risk_language_present"] = False
-        return digest
+        # interventions, and the risk flag all go, and only the description of
+        # what is in the material comes through. A whitelist for the same reason
+        # the reference branch above is one.
+        return {
+            field: digest[field]
+            for field in _SUMMARY_SAFE_SESSION_FIELDS
+            if field in digest
+        }
 
     if source is None or not source.verbatim:
         digest["client_statements"] = []

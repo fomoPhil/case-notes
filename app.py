@@ -1857,8 +1857,16 @@ async def api_source_confirm(source_id: str, request: Request) -> JSONResponse:
     meta = await run_in_threadpool(recstore.read_meta, cid, sid)
     if meta is None:
         raise HTTPException(status_code=404, detail="No such source for this client.")
-    if str(meta.get("kind") or "") in sources.MEDIA_KINDS:
+    kind = str(meta.get("kind") or "")
+    if kind in sources.MEDIA_KINDS:
         raise HTTPException(status_code=409, detail=sources.MEDIA_CONFIRM_MESSAGE)
+    if kind in sources.REFERENCE_KINDS:
+        # Refused here rather than one layer down, because the layer down is
+        # behind _cancel_source_jobs. reclassify would raise the same message,
+        # but by then a stale confirm click from a screen opened before the
+        # source was made reference material would have killed the ladder run
+        # that is building its reference digest, and nothing queues it again.
+        raise HTTPException(status_code=422, detail=sources.REFERENCE_CONFIRM_MESSAGE)
 
     def _confirm() -> tuple[sources.Source, list[str]]:
         # Any ladder already running for this source is building rungs under

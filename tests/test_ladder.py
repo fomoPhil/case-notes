@@ -174,6 +174,11 @@ class FakeLLM:
         self.calls: list[str] = []
         self.map_messages: list[str] = []
         self.reduce_messages: list[str] = []
+        # The system turn of each call, so a test can pin which prompt file the
+        # ladder chose. Which instruction a window runs under is the difference
+        # between a talk described as a talk and a talk described as a session.
+        self.map_systems: list[str] = []
+        self.reduce_systems: list[str] = []
         self._map_reply = map_reply or (lambda index: _map_reply())
         self._reduce_reply = reduce_reply or (lambda: _reduce_reply())
         self._on_map = on_map
@@ -181,15 +186,18 @@ class FakeLLM:
 
     def chat(self, messages, schema=None, **kwargs):
         user = messages[-1]["content"]
+        system = messages[0]["content"]
         if schema is ladder._MAP_SCHEMA:
             index = len(self.map_messages)
             self.calls.append("map")
             self.map_messages.append(user)
+            self.map_systems.append(system)
             if self._on_map is not None:
                 self._on_map(index)
             return self._map_reply(index)
         self.calls.append("reduce")
         self.reduce_messages.append(user)
+        self.reduce_systems.append(system)
         if self._on_reduce is not None:
             self._on_reduce()
         return self._reduce_reply()
@@ -1443,6 +1451,13 @@ def test_a_session_digest_stops_serving_claims_once_its_source_is_reference(
     built = ladder.build(_source(), CLIENT_CTX)
     assert built["client_statements"] and built["risk_excerpts"]
 
+    # A field nobody thought to ban, added to the file by hand.
+    path = recstore.source_dir(CLIENT, SID) / "digest.json"
+    tampered = json.loads(path.read_text(encoding="utf-8"))
+    tampered["quotes"] = [REAL_QUOTE]
+    tampered["verbatim_excerpts"] = [REAL_QUOTE]
+    path.write_text(json.dumps(tampered), encoding="utf-8")
+
     _seed_meta(_reference_source())
 
     def _boom(*args, **kwargs):
@@ -1454,14 +1469,14 @@ def test_a_session_digest_stops_serving_claims_once_its_source_is_reference(
         ladder.load_digest(CLIENT, SID),
         ladder.build(_reference_source(), CLIENT_CTX),
     ):
-        assert digest["client_statements"] == []
-        assert digest["risk_excerpts"] == []
-        assert digest["interventions_observed"] == []
-        assert digest["risk_language_present"] is False
         assert REAL_QUOTE not in json.dumps(digest)
+        assert set(digest) <= set(ladder._SUMMARY_SAFE_SESSION_FIELDS)
+        for field in ladder._SESSION_CLAIM_FIELDS + ("quotes", "verbatim_excerpts"):
+            assert field not in digest
         # What the material was about is not a claim about anybody, so it stays.
         assert digest["themes"] == ["Sleep", "Self blame"]
         assert digest["segments"]
+        assert digest["source_id"] == SID
 
 
 def test_enforce_provenance_needs_no_source_to_strip_a_reference_digest():
@@ -1486,3 +1501,75 @@ def test_a_failed_reference_reduce_raises_laddererror(scratch_vault, monkeypatch
     with pytest.raises(ladder.LadderError) as excinfo:
         ladder.build_digest(TRANSCRIPT, _reference_source(), {}, timed_lines=None)
     assert "could not be assembled" in str(excinfo.value)
+
+
+def test_reference_and_session_builds_load_different_prompt_files(
+    scratch_vault, monkeypatch
+):
+    """Which instruction a window runs under is picked by code, so pin it.
+
+    The session map prompt asks what the clinician did and how the client
+    responded, and a window summary written under it is copied into the digest's
+    timeline word for word. A talk read under that instruction comes back as a
+    session that never happened.
+    """
+    prompts = ladder._PROMPT_DIR
+    session_map = (prompts / "digest_map.md").read_text(encoding="utf-8").strip()
+    session_reduce = (prompts / "digest_reduce.md").read_text(encoding="utf-8").strip()
+    reference_map = (prompts / "digest_map_reference.md").read_text(encoding="utf-8").strip()
+    reference_reduce = (prompts / "digest_reference.md").read_text(encoding="utf-8").strip()
+    assert session_map != reference_map and session_reduce != reference_reduce
+
+    _seed_rungs(rung0=_timed_rung0(), rung1=TRANSCRIPT)
+    fake = _install(monkeypatch, FakeLLM(reduce_reply=_reference_reduce_reply))
+    ladder.build(_reference_source(), CLIENT_CTX)
+
+    assert fake.map_systems == [reference_map]
+    assert fake.reduce_systems == [reference_reduce]
+    assert session_map not in fake.map_systems
+    for prompt in fake.map_systems + fake.reduce_systems:
+        assert "therapy session transcript" not in prompt
+        assert "how the client responded" not in prompt
+        assert "not a therapy session" in prompt.lower()
+        # Both halves of the pair name the failure and forbid it by name.
+        assert '"the clinician"' in prompt.lower()
+
+    _seed_rungs(rung0=_timed_rung0(), rung1=TRANSCRIPT, sid="session-2")
+    session = _install(monkeypatch, FakeLLM())
+    ladder.build(_source(id="session-2"), CLIENT_CTX)
+
+    assert session.map_systems == [session_map]
+    assert session.reduce_systems == [session_reduce]
+
+
+def test_the_reference_assembler_alone_drops_a_foreign_field(scratch_vault, monkeypatch):
+    """Barrier two, on its own: the assembler copies fields, never objects.
+
+    enforce_provenance is stubbed out to identity here on purpose. It is the
+    last barrier and it works, which is exactly why it would hide a regression
+    in this one. If _assemble_reference ever starts with the model's dict and
+    edits it, this test fails and the other reference tests do not.
+    """
+    monkeypatch.setattr(ladder, "enforce_provenance", lambda digest, source: digest)
+
+    maps = [
+        {
+            "start_char": 0,
+            "end_char": 10,
+            "start_min": 0,
+            "end_min": 4,
+            "result": _map_reply(),
+        }
+    ]
+    poisoned = _reference_reduce_reply(
+        client_statements=[{"quote": REAL_QUOTE, "attribution_confidence": "high"}],
+        risk_excerpts=[REAL_QUOTE],
+        quotes=[REAL_QUOTE],
+        notes_about_the_client=REAL_QUOTE,
+    )
+
+    digest = ladder._assemble_reference(poisoned, maps, _reference_source())
+
+    assert set(digest) == set(ladder.REFERENCE_DIGEST_SCHEMA["properties"])
+    assert REAL_QUOTE not in json.dumps(digest)
+    assert digest["title"] == "Working with panic, introductory talk"

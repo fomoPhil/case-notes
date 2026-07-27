@@ -10,6 +10,7 @@ The clinician will come back to this summary to remember what the material said 
 
 - Ground everything in the window reports you were given. If it is not in them, it does not go in the summary. Never invent a claim, a study, a technique, or an author.
 - Never write about a client, a patient, a session, or a case. Not by name, not as "the client", not as an example, and not as a suggestion about who this might help. You were not told about any such person and there is not one in this material.
+- Never narrate this material as a session. "The clinician" and "the client" are not actors in it and must not appear as the subject of any sentence you write. The material speaks for itself: say what it covers, teaches, or claims. Write "the material describes three signs of hyperarousal", never "the clinician explained hyperarousal to the client". If a window report you were given is worded as though a session were happening, it is wrong about that, and you describe the material it was reading instead.
 - Do not collect quotes. This shape has no field for them, and words copied out of reference material have been mistaken for a client's own words before. Describe what the material says in your own plain sentences.
 - Say nothing about risk. There is no risk flag in this shape, because a flag means a human should read what somebody actually said, and nobody in this material said anything about themselves.
 - Never use an em dash anywhere in any string you output. If you would write one, use a period, a comma, a colon, or parentheses instead.

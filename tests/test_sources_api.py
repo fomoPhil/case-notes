@@ -890,3 +890,37 @@ def test_lifespan_survives_a_failing_sweep(monkeypatch, tmp_path):
     with TestClient(app_module.app):
         pass
     assert resumed == ["resume"]
+
+
+def test_confirm_a_reference_source_422_and_leaves_its_ladder_alone(client):
+    """A stale confirm click must not kill the run building a reference digest.
+
+    reclassify refuses this too, but by the time it is reached the route has
+    already cancelled the source's jobs, and nothing queues them again. So the
+    refusal happens before the cancellation, not after it.
+    """
+    tc, _ = client
+    body = _upload_fixture(
+        tc, "clinician-notes.md", declared_kind="reference_document"
+    ).json()
+    source_id, job_id = body["source_id"], body["job_id"]
+    assert body["kind"] == "reference_document"
+    assert body["needs_confirmation"] is False
+    assert job_id, "the ladder is queued, and this is the job that must survive"
+
+    resp = tc.post(
+        f"/api/sources/{source_id}/confirm",
+        json={"client_id": CLIENT, "verbatim": False, "produced_by": "clinician"},
+    )
+
+    assert resp.status_code == 422
+    assert "reference material" in resp.json()["detail"]
+    assert app_module.jobs.status(job_id)["state"] != "cancelled"
+    live = [
+        row
+        for row in app_module.jobs.list_jobs(CLIENT)
+        if row["state"] not in ("cancelled", "failed", "done")
+    ]
+    assert [row["id"] for row in live] == [job_id]
+    # And the source is exactly as it was.
+    assert app_module.recstore.read_meta(CLIENT, source_id)["kind"] == "reference_document"
