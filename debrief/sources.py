@@ -610,7 +610,16 @@ def parse_transcript(path_or_text) -> tuple[str, list[dict]]:
         elif _looks_like_dialogue(text):
             turns = _parse_speaker_turns(text)
         else:
-            turns = [_turn(None, None, None, text)]
+            # The unstructured fallback still filters tool credits and generated
+            # headings line by line: a one-utterance export lands here (below
+            # the header-density bar) and its credits must stay out of the
+            # archive just as they do on the structured paths.
+            kept = [
+                line
+                for line in text.splitlines()
+                if line.strip() and not _ends_accumulation(line)
+            ]
+            turns = [_turn(None, None, None, " ".join(kept))]
 
     turns = [turn for turn in turns if turn["text"]]
     plain = "\n".join(

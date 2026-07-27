@@ -975,3 +975,26 @@ def test_source_meta_roundtrip_is_json_safe():
     assert meta["captured_at"] == "2026-07-25T14:30:00"
     assert meta["audio_path"] == "/tmp/x/source.m4a"
     assert sources.Source.from_meta(meta) == source
+
+
+def test_unstructured_fallback_filters_credits_and_headings():
+    # A one-utterance export sits below the header-density bar and lands in the
+    # unstructured fallback, which must still keep tool credits and generated
+    # headings out of the archive (the raw text is retained separately).
+    text = (
+        "Speaker 1  0:03\n"
+        "Hello there, thanks for making time today, it has been a while.\n"
+        "Transcribed by https://otter.ai"
+    )
+    plain, turns = sources.parse_transcript(text)
+    assert len(turns) == 1
+    assert turns[0]["speaker"] is None
+    assert "otter.ai" not in plain
+    assert "Hello there" in turns[0]["text"]
+    # Ordinary prose mentioning a time or a URL mid-sentence is untouched.
+    prose = (
+        "Client called after the session.\n"
+        "They said they gave up around 2:30 and browsed www.headspace.com for a while."
+    )
+    plain2, turns2 = sources.parse_transcript(prose)
+    assert "2:30" in plain2 and "headspace" in plain2
