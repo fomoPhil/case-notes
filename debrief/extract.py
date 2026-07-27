@@ -128,6 +128,35 @@ _RISK_EXCERPT_HEADING = "Flagged language from the session (speaker unconfirmed)
 _CONFLICTS_KEY = "evidence_conflicts"
 _CONFLICTS_PROPERTY: dict = {"type": "array", "items": {"type": "string"}}
 
+# What a reference digest calls itself in its own body (ladder.REFERENCE_KIND).
+# Named here rather than imported, exactly as the digest's other field names are:
+# this module reads the digest's shape by name and does not otherwise depend on
+# the module that builds it.
+_REFERENCE_KIND = "reference"
+
+# The fields that make a claim about a session: who said what, what was done to
+# whom, and whether anything said bears on risk. Reference material may not
+# carry any of them, so a digest holding even one of them is refused at the
+# reference door rather than rendered through it.
+_SESSION_CLAIM_FIELDS = (
+    "client_statements",
+    "interventions_observed",
+    "risk_language_present",
+    "risk_excerpts",
+)
+
+# The reference block's framing. Everything about it is the opposite of the
+# session evidence framing above: there is no session, no client was in the
+# room, and the note being drafted records that material was shared and what is
+# in it. The last clause is the one doing the work.
+_REFERENCE_FRAMING = (
+    "REFERENCE MATERIAL (saved by the clinician, not a session with this "
+    "client):\n"
+    "The clinician saved this reference material for this client. Draft a note "
+    "recording that the material was shared and what it covers. There was no "
+    "session; invent nothing about one."
+)
+
 
 def _minute_label(value) -> str:
     """A minute for display, or a question mark when the ladder had none.
@@ -263,8 +292,98 @@ def _render_digest_evidence(digest: dict) -> str:
 
 
 def _evidence_block(digest: dict) -> str:
-    """The framing plus the rendered evidence, ready to slot into the message."""
+    """The framing plus the rendered evidence, ready to slot into the message.
+
+    Refuses a reference digest outright. Reference material is not a session
+    with anybody, so nothing in it is evidence about this client, and the block
+    above says the opposite in its first line. The pipeline already gates this
+    before the call is built; this raise is what makes sure a future caller
+    cannot route reference material through the session door in silence.
+    """
+    if str((digest or {}).get("kind") or "").strip().casefold() == _REFERENCE_KIND:
+        raise ValueError(
+            "reference material is never session evidence: a reference digest "
+            "cannot be rendered as evidence about a client."
+        )
     return f"{_EVIDENCE_FRAMING}\n\n{_render_digest_evidence(digest)}\n\n"
+
+
+def _render_reference_material(digest: dict) -> str:
+    """Render a reference digest as the material description the prompt carries.
+
+    Only what the material itself is and covers: its title, what it is about,
+    its timeline, its key points, what it suggests trying, and its topics. There
+    is nothing here that can be read as somebody's words, because a reference
+    digest has no field that holds them.
+
+    The two fallbacks handle the rarer shape: a session digest whose source was
+    flipped to reference material after it was built comes back from
+    enforce_provenance as the descriptive fields only, under their session
+    names. Those are the same facts under a different key, and the guard in
+    _reference_block has already refused anything carrying a session claim.
+    """
+    digest = digest or {}
+    lines: list[str] = []
+
+    title = str(digest.get("title") or "").strip()
+    if title:
+        lines.append(f"Title: {title}")
+    summary = str(digest.get("summary") or "").strip()
+    if summary:
+        lines.append(f"What it covers: {summary}")
+    if lines:
+        lines.append("")
+
+    segments = [item for item in (digest.get("segments") or []) if isinstance(item, dict)]
+    if segments:
+        lines.append("Timeline:")
+        for segment in segments:
+            topic = str(segment.get("topic") or "").strip() or "(no topic)"
+            text = str(segment.get("summary") or "").strip()
+            row = (
+                f"- Minutes {_minute_label(segment.get('start_min'))} to "
+                f"{_minute_label(segment.get('end_min'))}, {topic}"
+            )
+            lines.append(f"{row}: {text}" if text else row)
+        lines.append("")
+
+    for label, items in (
+        ("Key points:", _evidence_list(digest.get("key_points"))),
+        (
+            "Practices or suggestions:",
+            _evidence_list(digest.get("practices_or_suggestions"))
+            or _evidence_list(digest.get("practices_or_homework")),
+        ),
+        (
+            "Topics:",
+            _evidence_list(digest.get("topics")) or _evidence_list(digest.get("themes")),
+        ),
+    ):
+        if items:
+            lines.append(label)
+            lines += [f"- {item}" for item in items]
+            lines.append("")
+
+    return "\n".join(lines).rstrip()
+
+
+def _reference_block(digest: dict) -> str:
+    """The reference framing plus the rendered material, for the draft path.
+
+    Guarded on the way in: a digest carrying any field that makes a claim about
+    a session is refused rather than rendered. That is what makes the end to end
+    promise hold in code rather than in convention. A note drafted from
+    reference material cannot quote a client, because a digest that could hold a
+    client's words never reaches this renderer.
+    """
+    digest = digest or {}
+    present = [field for field in _SESSION_CLAIM_FIELDS if field in digest]
+    if present:
+        raise ValueError(
+            "reference material makes no claim about a session: this digest "
+            f"still carries {', '.join(present)}."
+        )
+    return f"{_REFERENCE_FRAMING}\n\n{_render_reference_material(digest)}\n\n"
 
 
 def _schema_with_conflicts(schema: dict) -> dict:
@@ -291,6 +410,7 @@ def _build_user_message(
     framework: str,
     profession: str = "therapy",
     digest: dict | None = None,
+    reference: dict | None = None,
 ) -> str:
     fw_vocab = vocab.extract_framework_vocab(framework, profession)
     vocab_line = (
@@ -298,9 +418,15 @@ def _build_user_message(
         if fw_vocab
         else f"ACTIVE FRAMEWORK: {framework}."
     )
-    # With no digest this evaluates to the empty string, so the message is the
-    # one this function has always built, character for character.
-    evidence = _evidence_block(digest) if digest is not None else ""
+    # With neither a digest nor reference material this evaluates to the empty
+    # string, so the message is the one this function has always built,
+    # character for character.
+    if digest is not None:
+        evidence = _evidence_block(digest)
+    elif reference is not None:
+        evidence = _reference_block(reference)
+    else:
+        evidence = ""
     return (
         f"{vocab_line}\n\n"
         f"CLIENT CONTEXT:\n{_format_context(client_ctx)}\n\n"
@@ -333,6 +459,7 @@ def extract(
     features: dict | None = None,
     spec: dict | None = None,
     digest: dict | None = None,
+    reference: dict | None = None,
 ) -> dict:
     """Run the single constrained extraction call and resolve action dates.
 
@@ -358,7 +485,18 @@ def extract(
     digest=None every byte of this call is what it has always been, which is the
     regression that protects the hero flow. The digest never carries the raw or
     corrected transcript, per spec section 6 rule 1.
+
+    reference, when given, is a REFERENCE digest: material the clinician saved
+    for this client that is not a session with them. It is rendered through a
+    different block entirely, framed as material that was shared rather than as
+    evidence about anybody, and the schema does NOT gain evidence_conflicts:
+    there is no second account of a session to disagree with. A call may carry
+    session evidence or reference material, never both.
     """
+    if digest is not None and reference is not None:
+        raise ValueError(
+            "a call carries session evidence or reference material, never both."
+        )
     # Resolve the spec ONCE so the schema and system prompt share one section
     # list, then key the caches by the resolved id. A caller-supplied spec wins.
     supplied = spec is not None
@@ -386,7 +524,7 @@ def extract(
         {
             "role": "user",
             "content": _build_user_message(
-                transcript, client_ctx, framework, profession, digest
+                transcript, client_ctx, framework, profession, digest, reference
             ),
         },
     ]

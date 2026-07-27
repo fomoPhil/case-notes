@@ -945,6 +945,11 @@ def write_session_note(
           note drew evidence from; written to frontmatter so the record points
           at its evidence. The recording's transcript itself never enters the
           note).
+
+    transcript is the clinician's own debrief. An empty one is only meaningful
+    alongside source_id (a note drafted from the material with nobody
+    dictating), and that case says so in the body rather than leaving a reader
+    to wonder; any other note with no transcript renders exactly as before.
     """
     session_date = meta.get("session_date") or _dt.date.today()
     fmt = meta.get("format", "DAP")
@@ -1046,6 +1051,17 @@ def write_session_note(
         parts.append("<details><summary>Show transcript</summary>\n\n")
         parts.append(f"{transcript.strip()}\n\n")
         parts.append("</details>\n")
+    elif meta.get("source_id"):
+        # A note drafted from session material with no debrief behind it. The
+        # absence is stated rather than left as a missing section: a reader
+        # months later needs to know that nobody dictated this and where the
+        # material it was written from actually lives. Nothing renders here for
+        # any other note, so a note filed the ordinary way is unchanged.
+        parts.append("\n## Debrief\n\n")
+        parts.append(
+            "No debrief was recorded. This note was drafted from the session "
+            f"material filed at Recordings/{client_id}/{meta['source_id']}/.\n"
+        )
 
     # Archived dictation audio: Obsidian embed renders an inline player.
     if audio_name:

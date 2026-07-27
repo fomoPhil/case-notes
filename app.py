@@ -1709,6 +1709,25 @@ def _ingest_payload(
     }
 
 
+def _source_display(entry: dict) -> dict:
+    """The two stored fields no caller should have to interpret for itself.
+
+    session_date becomes the EFFECTIVE date: the one the clinician stated, else
+    the day the material arrived. A source stored before session dates existed
+    still comes back with a date, and it is the one that was true of it all
+    along, so no surface has to carry the fallback rule.
+
+    linked_notes is always a list. "No notes yet" and "stored before links
+    existed" mean the same thing to a caller, so they arrive looking the same.
+    """
+    session_date = sources.effective_session_date(entry)
+    entry["session_date"] = session_date.isoformat() if session_date else None
+    entry["linked_notes"] = [
+        str(item) for item in (entry.get("linked_notes") or []) if str(item).strip()
+    ]
+    return entry
+
+
 def _enriched_source(client_id: str, source_id: str, job_rows: list[dict]) -> dict | None:
     """One source's provenance joined with its rungs, its audio, and its job."""
     meta = recstore.read_meta(client_id, source_id)
@@ -1725,7 +1744,7 @@ def _enriched_source(client_id: str, source_id: str, job_rows: list[dict]) -> di
             "job": _job_view(_newest_job_for(job_rows, source_id)),
         }
     )
-    return entry
+    return _source_display(entry)
 
 
 @app.post("/api/sources/upload")
@@ -1890,6 +1909,105 @@ async def api_source_confirm(source_id: str, request: Request) -> JSONResponse:
     return JSONResponse(payload)
 
 
+async def _existing_source(client_id, source_id) -> tuple[str, str]:
+    """Both ids validated and the source known to exist, or 400 / 404.
+
+    "There is no such source" and "that source cannot do this yet" are different
+    answers, and every route below wants the first one settled before it starts.
+    """
+    cid, sid = _source_ids(client_id, source_id)
+    if await run_in_threadpool(recstore.read_meta, cid, sid) is None:
+        raise HTTPException(status_code=404, detail="No such source for this client.")
+    return cid, sid
+
+
+@app.post("/api/sources/{source_id}/draft")
+async def api_source_draft(source_id: str, request: Request) -> JSONResponse:
+    """Draft a note from stored material alone. Body: {client_id}.
+
+    Returns the same plan shape a debrief returns, so it flows into the review
+    screen the clinician already knows: a note they can edit, with no actions in
+    it and no transcript behind it. Nothing is filed here. /api/execute files it
+    after they approve it, exactly as it does for a debrief.
+
+    409 when there is nothing to draft from yet, carrying the plain reason: the
+    summary is still being built, was never built, or nobody has confirmed what
+    the material is.
+    """
+    body = await _json_body(request, _JSON_MAX_BYTES, _JSON_TOO_LARGE)
+    cid, sid = await _existing_source(body.get("client_id"), source_id)
+
+    try:
+        plan = await run_in_threadpool(pipeline.plan_from_source, cid, sid)
+    except sources.SourceError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse(jsonable_encoder(plan))
+
+
+@app.post("/api/sources/{source_id}/assign")
+async def api_source_assign(source_id: str, request: Request) -> JSONResponse:
+    """Connect stored material to a note that is already filed.
+
+    Body: {client_id, note_path}. The note gains a dated amendment naming the
+    material and where it lives; nothing above that amendment is touched,
+    because a filed note is never rewritten. Connecting the same material to the
+    same note twice appends nothing and says so.
+    """
+    body = await _json_body(request, _JSON_MAX_BYTES, _JSON_TOO_LARGE)
+    cid, sid = await _existing_source(body.get("client_id"), source_id)
+    note_path = body.get("note_path")
+    if not isinstance(note_path, str) or not note_path.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="note_path must name one of this client's filed session notes.",
+        )
+
+    try:
+        result = await run_in_threadpool(
+            sources.link_source_to_note, cid, sid, note_path
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except sources.SourceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except (VaultPathError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if not result["already_linked"]:
+        audit.log_records_change(
+            "Amended", result["note_path"], "Session material connected."
+        )
+    return JSONResponse(result)
+
+
+@app.patch("/api/sources/{source_id}/session-date")
+async def api_source_session_date(source_id: str, request: Request) -> JSONResponse:
+    """Correct when this source's session actually happened.
+
+    Body: {client_id, session_date}. captured_at is not touched: when the
+    material arrived is the app's own statement about its own history, and it is
+    nobody's to edit. Returns the updated source row.
+    """
+    body = await _json_body(request, _JSON_MAX_BYTES, _JSON_TOO_LARGE)
+    cid, sid = await _existing_source(body.get("client_id"), source_id)
+
+    def _set() -> dict | None:
+        sources.set_session_date(cid, sid, body.get("session_date"))
+        return _enriched_source(cid, sid, jobs.list_jobs(cid))
+
+    try:
+        entry = await run_in_threadpool(_set)
+    except sources.SourceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if entry is None:
+        raise HTTPException(status_code=404, detail="No such source for this client.")
+    return JSONResponse(jsonable_encoder(entry))
+
+
 @app.get("/api/sources")
 async def api_sources_list(client_id: str = "") -> JSONResponse:
     """Every source for one client: provenance, rungs built, audio, latest job."""
@@ -1901,7 +2019,7 @@ async def api_sources_list(client_id: str = "") -> JSONResponse:
         for row in recstore.list_sources(cid):
             row = dict(row)
             row["job"] = _job_view(_newest_job_for(job_rows, row["source_id"]))
-            rows.append(row)
+            rows.append(_source_display(row))
         return {"sources": rows}
 
     try:

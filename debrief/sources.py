@@ -61,7 +61,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import doctext, recstore, vault
+from . import doctext, records, recstore, vault
 
 
 class SourceError(RuntimeError):
@@ -143,6 +143,16 @@ REFERENCE_CONFIRM_MESSAGE = (
     "That source is filed as reference material rather than a session, so there "
     "is nothing to confirm about it. Treat it as a session recording first if "
     "that is what it turned out to be."
+)
+
+# Said wherever unconfirmed material is asked to become part of the clinical
+# record, whether as a drafted note or as a line amended onto a filed one. The
+# classifier's guess is still only a guess until somebody answers, and a record
+# that names a provenance nobody vouched for is the failure this app is built
+# around. One sentence, one place, because two copies drift.
+UNCONFIRMED_MESSAGE = (
+    "Debrief is not sure what that material is yet. Answer the question on the "
+    "source first, so the note says where it came from and means it."
 )
 
 # The one shape a session date is written in, everywhere. Fixed rather than
@@ -374,6 +384,163 @@ def set_session_date(client_id: str, source_id: str, value) -> dict:
     meta["session_date"] = session_date.isoformat()
     recstore.write_meta(client_id, source_id, meta)
     return meta
+
+
+# ---------------------------------------------------------------------------
+# Connecting material to a note that is already filed
+# ---------------------------------------------------------------------------
+#
+# A filed note is never rewritten. That is the whole records posture of this
+# app, and it does not bend for a convenience: connecting material a clinician
+# found later to a note they filed last week is an AMENDMENT, dated, appended,
+# and going through the same machinery as any other amendment. The source's meta
+# records the link as well, so the source card can show where its material ended
+# up, but the note is the record and the meta is only an index of it.
+
+# Each kind in the words a clinician would use, written to sit inside the
+# amendment sentence below. The reference kinds name their shape only: the
+# sentence they land in has already said they are reference material.
+KIND_LABELS: dict[str, str] = {
+    "live_recording": "an audio recording made in Debrief",
+    "uploaded_audio": "an audio recording",
+    "uploaded_video": "a video recording",
+    "transcript_file": "a transcript",
+    "pasted_transcript": "a pasted transcript",
+    "third_party_summary": "a meeting tool's AI summary",
+    "clinician_notes": "the clinician's own notes",
+    "reference_recording": "a recording",
+    "reference_document": "a document",
+}
+
+# What lives beside the material in the vault, which is different for material
+# that is word for word and material that is somebody's write up. An amendment
+# promising a word for word transcript that does not exist would send a reader
+# looking for a file that was never there.
+_VERBATIM_TRAIL = "Word for word transcript and summary live beside it."
+_SUMMARY_TRAIL = "The text and summary live beside it."
+
+
+def _kind_label(kind: str) -> str:
+    """The kind in plain words. The fallback is neutral on purpose: it has to
+    read correctly under either lead, and claiming a shape nobody recorded is
+    the one thing this sentence must not do."""
+    return KIND_LABELS.get(kind, "material")
+
+
+def amendment_line(client_id: str, source_id: str, meta: dict) -> str:
+    """The one sentence pair an assignment appends to a filed note.
+
+    Names what the material is, when its session was, and exactly where the
+    bytes live, so a reader coming to this note in a year can find the material
+    without this app. Reference material says so in its first two words rather
+    than being called session evidence, because it is not.
+    """
+    meta = meta or {}
+    kind = str(meta.get("kind") or "")
+    lead = (
+        "Reference material connected"
+        if kind in REFERENCE_KINDS
+        else "Session evidence connected"
+    )
+    session_date = effective_session_date(meta)
+    when = session_date.isoformat() if session_date else "an unrecorded date"
+    trail = _VERBATIM_TRAIL if meta.get("verbatim") else _SUMMARY_TRAIL
+    return (
+        f"{lead}: {_kind_label(kind)} from {when}, stored in the vault at "
+        f"Recordings/{client_id}/{source_id}/. {trail}"
+    )
+
+
+def _session_note_rel(client_id: str, note_rel_path) -> str:
+    """The vault relative path of this client's own session note, or a refusal.
+
+    Two different failures, deliberately kept apart. A path that tries to leave
+    the vault, or arrives absolute, is a ValueError: that is a malformed request
+    and the answer is 400. A path that is well formed but names a note this
+    client does not have, including another client's note, is a FileNotFoundError
+    and the answer is 404. Telling the two apart is what keeps one client's
+    record from being probed through the other's.
+    """
+    target = records._guard(note_rel_path)
+    sessions = records._client_dir(client_id) / "Sessions"
+    try:
+        inside = target.parent.resolve() == sessions.resolve()
+    except OSError:
+        inside = False
+    if not inside or target.suffix.lower() != ".md":
+        raise FileNotFoundError(
+            "That is not one of this client's session notes, so nothing was connected."
+        )
+    if not target.is_file():
+        raise FileNotFoundError("There is no such session note for this client.")
+    return records._rel(target)
+
+
+def link_source_to_note(client_id: str, source_id: str, note_rel_path) -> dict:
+    """Connect stored material to a note that is already filed. Returns the result.
+
+    The note gains a dated amendment naming the material and where it lives, and
+    the source's meta gains the note in linked_notes. Connecting the same source
+    to the same note twice appends nothing and says so: a record that grows a
+    duplicate paragraph every time somebody clicks is a worse record.
+
+    Withdrawn consent does not block this. The material is already in the
+    record's custody, and this documents that fact rather than adding to it. The
+    remedy for withdrawn consent is deleting the material, which is its own
+    route and says so.
+
+    Unconfirmed provenance DOES block it, and the two are not in tension. The
+    amendment names what the material is, in a clinical record, permanently. A
+    classifier's guess that nobody has answered yet is not something a record
+    should assert, and the answer is one tap away on the source card.
+
+    Raises SourceError when there is no such source or its provenance is still
+    unconfirmed, ValueError when the path is not one the vault will accept, and
+    FileNotFoundError when the note is not this client's.
+    """
+    try:
+        meta = recstore.read_meta(client_id, source_id)
+    except ValueError as exc:
+        raise SourceError(str(exc)) from exc
+    if not meta:
+        raise SourceError(f"there is no stored source {source_id} for this client.")
+    if meta.get("needs_confirmation"):
+        raise SourceError(UNCONFIRMED_MESSAGE)
+
+    rel = _session_note_rel(client_id, note_rel_path)
+
+    linked = [str(item) for item in (meta.get("linked_notes") or []) if str(item).strip()]
+    if rel in linked:
+        return {
+            "linked": True,
+            "note_path": rel,
+            "already_linked": True,
+            "linked_notes": linked,
+        }
+
+    line = amendment_line(client_id, source_id, meta)
+    records.append_amendment(rel, line, _dt.datetime.now())
+
+    # The note is amended, so the connection is now a fact of the record whether
+    # or not the index below can be written. A failure here is reported as
+    # exactly that rather than left to read as "nothing happened".
+    meta = dict(meta)
+    meta["linked_notes"] = linked + [rel]
+    try:
+        recstore.write_meta(client_id, source_id, meta)
+    except Exception as exc:  # noqa: BLE001 - the amendment already landed
+        raise SourceError(
+            "The note was amended, but Debrief could not record the link on the "
+            f"source: {exc}"
+        ) from exc
+
+    return {
+        "linked": True,
+        "note_path": rel,
+        "already_linked": False,
+        "linked_notes": meta["linked_notes"],
+        "amendment": line,
+    }
 
 
 # ---------------------------------------------------------------------------

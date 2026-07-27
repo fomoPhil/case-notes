@@ -20,6 +20,7 @@ Three things carry the clinical weight here:
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import io
 import json
 import tempfile
@@ -91,6 +92,11 @@ def _source_dir(vault_dir: Path, source_id: str, client_id: str = CLIENT) -> Pat
     return vault_dir / "Recordings" / client_id / source_id
 
 
+def _today() -> str:
+    """The day material uploaded in a test was captured on, in the one form."""
+    return _dt.date.today().isoformat()
+
+
 def _digest(source_id: str) -> dict:
     return {
         "source_id": source_id,
@@ -118,6 +124,47 @@ def _seed_digest(source_id: str, client_id: str = CLIENT) -> dict:
         rendered_md="# Session digest\n",
     )
     return digest
+
+
+def _seed_note(vault_dir: Path, client_id: str = CLIENT, date: str = "2026-07-20") -> str:
+    """One filed session note, and its vault relative path."""
+    path = app_module.vault.write_session_note(
+        client_id,
+        {"data": "Filed from the debrief.", "assessment": "a", "plan": "p"},
+        "the spoken debrief",
+        {
+            "session_date": date,
+            "session_number": 1,
+            "sections": [
+                {"key": "data", "heading": "Data"},
+                {"key": "assessment", "heading": "Assessment"},
+                {"key": "plan", "heading": "Plan"},
+            ],
+        },
+    )
+    return str(path.relative_to(vault_dir))
+
+
+def _stub_extraction(monkeypatch) -> None:
+    """No model, and no STT: the draft route's one call answers from here."""
+
+    def fake_chat(messages, schema=None, max_tokens=None, temperature=None):
+        return {
+            "note": {
+                "data": "The recording covers sleep since the move.",
+                "assessment": "Consistent with the sleep goal.",
+                "plan": "Continue paced breathing.",
+                "risk_present": False,
+                "interventions": [],
+                "themes": ["sleep"],
+                "client_quotes": [],
+            },
+            "actions": [],
+            "unsupported_requests": [],
+            "next_session_suggestions": [],
+        }
+
+    monkeypatch.setattr(app_module.llm, "chat", fake_chat)
 
 
 # ---------------------------------------------------------------------------
@@ -924,3 +971,353 @@ def test_confirm_a_reference_source_422_and_leaves_its_ladder_alone(client):
     assert [row["id"] for row in live] == [job_id]
     # And the source is exactly as it was.
     assert app_module.recstore.read_meta(CLIENT, source_id)["kind"] == "reference_document"
+
+
+# ---------------------------------------------------------------------------
+# Draft a note from a source
+# ---------------------------------------------------------------------------
+
+
+def test_draft_returns_a_no_debrief_plan(client, monkeypatch):
+    tc, _ = client
+    source_id = _upload_fixture(tc, "zoom.vtt").json()["source_id"]
+    _seed_digest(source_id)
+    _stub_extraction(monkeypatch)
+
+    resp = tc.post(f"/api/sources/{source_id}/draft", json={"client_id": CLIENT})
+    assert resp.status_code == 200, resp.text
+    plan = resp.json()
+
+    # The review screen already knows this shape: a note, no actions, no debrief.
+    assert plan["no_debrief"] is True
+    assert plan["actions"] == []
+    assert plan["deduped_actions"] == []
+    assert plan["transcript"] == ""
+    assert plan["digest_used"] is True
+    assert plan["note"]["data"]
+    assert plan["session_meta"]["source_id"] == source_id
+    assert plan["session_meta"]["session_date"] == _today()
+
+
+def test_draft_while_the_ladder_is_still_running_409(client):
+    tc, _ = client
+    source_id = _upload_fixture(tc, "zoom.vtt").json()["source_id"]
+
+    resp = tc.post(f"/api/sources/{source_id}/draft", json={"client_id": CLIENT})
+    assert resp.status_code == 409
+    assert "still processing" in resp.json()["detail"]
+
+
+def test_draft_of_an_unconfirmed_source_409(client):
+    """Unconfirmed provenance must not become a note, digest or no digest."""
+    tc, _ = client
+    body = _upload_fixture(tc, "clinician-notes.md").json()
+    assert body["needs_confirmation"] is True
+    _seed_digest(body["source_id"])
+
+    resp = tc.post(f"/api/sources/{body['source_id']}/draft", json={"client_id": CLIENT})
+    assert resp.status_code == 409
+    assert "not sure what that material is" in resp.json()["detail"]
+
+
+def test_draft_unknown_source_404(client):
+    tc, _ = client
+    resp = tc.post("/api/sources/2026-01-01-0900/draft", json={"client_id": CLIENT})
+    assert resp.status_code == 404
+
+
+def test_draft_rejects_a_bad_client_id_400(client):
+    tc, _ = client
+    resp = tc.post("/api/sources/2026-01-01-0900/draft", json={"client_id": "../escape"})
+    assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Connect a source to a note that is already filed
+# ---------------------------------------------------------------------------
+
+
+def test_assign_appends_one_amendment_and_leaves_the_note_above_it_alone(client):
+    tc, vault_dir = client
+    source_id = _upload_fixture(tc, "zoom.vtt").json()["source_id"]
+    rel = _seed_note(vault_dir)
+    before = (vault_dir / rel).read_text(encoding="utf-8")
+
+    resp = tc.post(
+        f"/api/sources/{source_id}/assign",
+        json={"client_id": CLIENT, "note_path": rel},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body == {
+        "linked": True,
+        "note_path": rel,
+        "already_linked": False,
+        "linked_notes": [rel],
+        "amendment": body["amendment"],
+    }
+
+    after = (vault_dir / rel).read_text(encoding="utf-8")
+    # Everything the note said before is still there, unchanged, in order. The
+    # amend machinery strips the file's trailing newline before appending, and
+    # that is the only difference above the amendment.
+    kept = before.rstrip("\n")
+    assert after.startswith(kept)
+    assert "## Amendment" in after[len(kept):]
+    assert after.count("## Amendment") == 1
+
+    line = (
+        f"Session evidence connected: a transcript from {_today()}, stored in "
+        f"the vault at Recordings/{CLIENT}/{source_id}/. Word for word "
+        "transcript and summary live beside it."
+    )
+    assert line in after
+    assert body["amendment"] == line
+    assert "—" not in after
+
+
+def test_assign_a_second_time_appends_nothing(client):
+    tc, vault_dir = client
+    source_id = _upload_fixture(tc, "zoom.vtt").json()["source_id"]
+    rel = _seed_note(vault_dir)
+
+    tc.post(f"/api/sources/{source_id}/assign", json={"client_id": CLIENT, "note_path": rel})
+    once = (vault_dir / rel).read_text(encoding="utf-8")
+    resp = tc.post(
+        f"/api/sources/{source_id}/assign",
+        json={"client_id": CLIENT, "note_path": rel},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["already_linked"] is True
+    assert (vault_dir / rel).read_text(encoding="utf-8") == once
+    assert app_module.recstore.read_meta(CLIENT, source_id)["linked_notes"] == [rel]
+
+
+def test_assign_a_reference_source_says_reference_material(client):
+    tc, vault_dir = client
+    source_id = _upload_fixture(
+        tc, "clinician-notes.md", declared_kind="reference_document"
+    ).json()["source_id"]
+    rel = _seed_note(vault_dir)
+
+    resp = tc.post(
+        f"/api/sources/{source_id}/assign",
+        json={"client_id": CLIENT, "note_path": rel},
+    )
+    assert resp.status_code == 200
+    text = (vault_dir / rel).read_text(encoding="utf-8")
+    # It is not session evidence and the record does not say it is.
+    assert "Reference material connected: a document from" in text
+    assert "Session evidence connected" not in text
+    assert "The text and summary live beside it." in text
+
+
+@pytest.mark.parametrize(
+    "note_path",
+    ["../../etc/passwd", "/etc/passwd", "Clients/../../escape.md", "~/notes.md"],
+)
+def test_assign_refuses_a_path_that_leaves_the_vault(client, note_path):
+    tc, _ = client
+    source_id = _upload_fixture(tc, "zoom.vtt").json()["source_id"]
+    resp = tc.post(
+        f"/api/sources/{source_id}/assign",
+        json={"client_id": CLIENT, "note_path": note_path},
+    )
+    assert resp.status_code == 400
+
+
+def test_assign_refuses_an_empty_note_path(client):
+    tc, _ = client
+    source_id = _upload_fixture(tc, "zoom.vtt").json()["source_id"]
+    resp = tc.post(
+        f"/api/sources/{source_id}/assign",
+        json={"client_id": CLIENT, "note_path": "   "},
+    )
+    assert resp.status_code == 400
+
+
+def test_assign_another_clients_note_404(client):
+    """A valid vault path that is not this client's record is not found here."""
+    tc, vault_dir = client
+    source_id = _upload_fixture(tc, "zoom.vtt").json()["source_id"]
+    foreign = _seed_note(vault_dir, client_id=NO_CONSENT_CLIENT)
+
+    resp = tc.post(
+        f"/api/sources/{source_id}/assign",
+        json={"client_id": CLIENT, "note_path": foreign},
+    )
+    assert resp.status_code == 404
+    assert "## Amendment" not in (vault_dir / foreign).read_text(encoding="utf-8")
+
+
+def test_assign_a_note_that_is_not_there_404(client):
+    tc, _ = client
+    source_id = _upload_fixture(tc, "zoom.vtt").json()["source_id"]
+    resp = tc.post(
+        f"/api/sources/{source_id}/assign",
+        json={"client_id": CLIENT, "note_path": f"Clients/{CLIENT}/Sessions/2020-01-01-session.md"},
+    )
+    assert resp.status_code == 404
+
+
+def test_assign_unknown_source_404(client):
+    tc, vault_dir = client
+    rel = _seed_note(vault_dir)
+    resp = tc.post(
+        "/api/sources/2026-01-01-0900/assign",
+        json={"client_id": CLIENT, "note_path": rel},
+    )
+    assert resp.status_code == 404
+
+
+def test_assign_after_consent_is_withdrawn_still_documents_the_material(client):
+    """The material is already in the record's custody. This only says where."""
+    tc, vault_dir = client
+    source_id = _upload_fixture(tc, "zoom.vtt").json()["source_id"]
+    rel = _seed_note(vault_dir)
+    app_module.vault.set_recording_consent(CLIENT, False)
+
+    resp = tc.post(
+        f"/api/sources/{source_id}/assign",
+        json={"client_id": CLIENT, "note_path": rel},
+    )
+    assert resp.status_code == 200
+    assert "## Amendment" in (vault_dir / rel).read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# The session date
+# ---------------------------------------------------------------------------
+
+
+def test_session_date_round_trips_into_the_row(client):
+    tc, _ = client
+    source_id = _upload_fixture(tc, "zoom.vtt").json()["source_id"]
+
+    resp = tc.patch(
+        f"/api/sources/{source_id}/session-date",
+        json={"client_id": CLIENT, "session_date": "2026-07-20"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["session_date"] == "2026-07-20"
+    # captured_at answers a different question and is nobody's to edit.
+    assert resp.json()["captured_at"].startswith(_today())
+
+    rows = tc.get("/api/sources", params={"client_id": CLIENT}).json()["sources"]
+    assert rows[0]["session_date"] == "2026-07-20"
+
+
+@pytest.mark.parametrize("value", ["20 July 2026", "2026-13-40", "", None, "20260720"])
+def test_session_date_refuses_what_it_cannot_read(client, value):
+    tc, _ = client
+    source_id = _upload_fixture(tc, "zoom.vtt").json()["source_id"]
+    resp = tc.patch(
+        f"/api/sources/{source_id}/session-date",
+        json={"client_id": CLIENT, "session_date": value},
+    )
+    assert resp.status_code == 400
+    assert "YYYY-MM-DD" in resp.json()["detail"]
+
+
+def test_session_date_unknown_source_404(client):
+    tc, _ = client
+    resp = tc.patch(
+        "/api/sources/2026-01-01-0900/session-date",
+        json={"client_id": CLIENT, "session_date": "2026-07-20"},
+    )
+    assert resp.status_code == 404
+
+
+def test_the_listing_carries_an_effective_date_and_its_links(client):
+    tc, vault_dir = client
+    source_id = _upload_fixture(tc, "zoom.vtt").json()["source_id"]
+    rel = _seed_note(vault_dir)
+
+    row = tc.get("/api/sources", params={"client_id": CLIENT}).json()["sources"][0]
+    # Never stated, so it falls back to the day the material arrived.
+    assert row["session_date"] == _today()
+    assert row["linked_notes"] == []
+
+    tc.post(f"/api/sources/{source_id}/assign", json={"client_id": CLIENT, "note_path": rel})
+    row = tc.get("/api/sources", params={"client_id": CLIENT}).json()["sources"][0]
+    assert row["linked_notes"] == [rel]
+    one = tc.get(f"/api/sources/{source_id}", params={"client_id": CLIENT}).json()
+    assert one["linked_notes"] == [rel]
+    assert one["session_date"] == _today()
+
+
+def test_a_drafted_plan_files_through_the_existing_review_flow(client, monkeypatch):
+    """Draft, then approve: the plan goes straight into /api/execute unchanged.
+
+    The point of the draft path is that it produces the plan shape the review
+    screen already files. Nothing is stubbed between the two calls except the
+    model and the surfaces that would open on a real Mac.
+    """
+    tc, vault_dir = client
+    source_id = _upload_fixture(tc, "zoom.vtt").json()["source_id"]
+    _seed_digest(source_id)
+    _stub_extraction(monkeypatch)
+    monkeypatch.setattr(app_module.vault, "obsidian_available", lambda: False)
+
+    plan = tc.post(f"/api/sources/{source_id}/draft", json={"client_id": CLIENT}).json()
+    plan["verify"] = False
+    resp = tc.post("/api/execute", json=plan)
+
+    assert resp.status_code == 200, resp.text
+    result = resp.json()
+    assert result["note_path"], result["errors"]
+    text = Path(result["note_path"]).read_text(encoding="utf-8")
+    assert f"source_id: {source_id}" in text
+    assert f"session_date: '{_today()}'" in text
+    # No debrief happened, and the note says so instead of holding an empty
+    # transcript block.
+    assert "## Session Transcript" not in text
+    assert "No debrief was recorded." in text
+    assert result["actions"] == []
+
+
+def test_assign_of_an_unconfirmed_source_is_refused(client):
+    """An amendment names what the material is, forever. A guess may not.
+
+    Withdrawn consent does not block a link, because linking only documents
+    material the record already holds. An unanswered classification is a
+    different thing: the sentence appended to the note asserts a provenance, and
+    nobody has vouched for this one yet.
+    """
+    tc, vault_dir = client
+    body = _upload_fixture(tc, "clinician-notes.md").json()
+    assert body["needs_confirmation"] is True
+    rel = _seed_note(vault_dir)
+
+    resp = tc.post(
+        f"/api/sources/{body['source_id']}/assign",
+        json={"client_id": CLIENT, "note_path": rel},
+    )
+    assert resp.status_code == 422
+    assert "not sure what that material is" in resp.json()["detail"]
+    assert "## Amendment" not in (vault_dir / rel).read_text(encoding="utf-8")
+
+
+def test_a_link_survives_the_source_changing_kind(client):
+    """Flipping what material IS does not un-say where it ended up."""
+    tc, vault_dir = client
+    source_id = _upload_fixture(tc, "zoom.vtt").json()["source_id"]
+    rel = _seed_note(vault_dir)
+    linked = tc.post(
+        f"/api/sources/{source_id}/assign", json={"client_id": CLIENT, "note_path": rel}
+    )
+    assert linked.status_code == 200, linked.text
+
+    # The clinician decides it was a write up after all. reclassify rewrites the
+    # provenance and carries everything it does not own across with it.
+    resp = tc.post(
+        f"/api/sources/{source_id}/confirm",
+        json={"client_id": CLIENT, "verbatim": False, "produced_by": "otter"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["kind"] == "third_party_summary"
+
+    assert app_module.recstore.read_meta(CLIENT, source_id)["linked_notes"] == [rel]
+    row = tc.get(f"/api/sources/{source_id}", params={"client_id": CLIENT}).json()
+    assert row["linked_notes"] == [rel]
