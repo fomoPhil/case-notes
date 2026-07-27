@@ -18,7 +18,7 @@ const App = {
   // Records UI
   nav: "home",            // sidebar highlight: home | client:<id> | lib:worksheets | lib:reference | trash
   recordData: null,        // GET /api/clients/{id} payload
-  recordTab: "sessions",  // sessions | profile | documents
+  recordTab: "sessions",  // sessions | profile | documents | sources
   doc: null,               // current document view payload
   docCrumb: null,          // breadcrumb context for the document view
   library: null,           // GET /api/library payload
@@ -41,6 +41,22 @@ const App = {
   docError: null,
   recordError: null,
   statusTimer: null,       // readiness poll handle
+  // Session material (the Recordings tab). sources is the last GET /api/sources
+  // list, sourcesFor the client it belongs to, so switching client never shows
+  // the previous person's recordings for a frame.
+  sources: null,
+  sourcesFor: null,
+  sourcesLoading: false,
+  sourcesError: null,
+  sourcesTimer: null,      // Recordings tab poll handle, cleared in go()
+  sourceStates: null,      // last seen job state per source, for announcements
+  uploads: [],             // in-flight and failed uploads, one line each
+  // The record screen's evidence pick: which sources are ready for this client,
+  // and the one the clinician ticked. Fetched once when the screen opens.
+  debriefFor: null,
+  debriefClient: null,
+  debriefSources: [],
+  debriefSourceId: null,
 };
 
 // Mirror of settings_store DEFAULTS: used when /api/settings has not loaded yet
@@ -50,6 +66,7 @@ const SETTINGS_DEFAULTS = {
   note_format: "DAP",
   features: { calendar: true, email: true, verify: true, assistant: true },
   stt_engine: "parakeet",
+  recording_retention_days: 0,
 };
 
 let el = null;             // reassigned each render to the active container
@@ -421,8 +438,12 @@ function clearProcTimers() { (App.procTimers || []).forEach(clearTimeout); App.p
 // as though nothing happened.
 function go(state, opts) {
   clearProcTimers();
+  clearSourcesTimer();
   App.overflowOpen = false;
   App.state = state;
+  // Arriving at the recorder re-reads which session material is ready, so a
+  // digest that finished while the clinician was elsewhere is offered.
+  if (state === "record") App.debriefFor = null;
   if (!(opts && opts.keepError)) App.error = null;
   if (state === "assistant") App.nav = "assistant";
   else if (state === "setupWizard") App.nav = "setup";
@@ -615,7 +636,7 @@ function enterKey() {
 // Classes for one staggered chunk, or "" when this render must not animate.
 function ent(step) {
   if (!enterOn) return "";
-  const n = Math.min(Math.max(Math.round(step) || 1, 1), 8);
+  const n = Math.min(Math.max(Math.round(step) || 1, 1), 9);
   return "enter d" + n;
 }
 
@@ -1072,6 +1093,26 @@ function renderRecord() {
     </div>
   </div>`);
   stage.querySelector(".backlink").onclick = () => { stopStream(); App.lastRecording = null; go("clients"); };
+
+  // Session evidence, if any is ready for this client. Fetched once when the
+  // screen opens, never polled: nobody should be waiting on a background job
+  // with a client just out of the room.
+  ensureDebriefSources(c.client_id);
+  const evidence = newestReadySource();
+  if (evidence && !down) {
+    const pickId = uid("ev");
+    const row = h(`<label class="ev-pick" for="${pickId}">
+      <input type="checkbox" id="${pickId}" ${App.debriefSourceId === evidence.source_id ? "checked" : ""} />
+      <span class="ev-pick-body">
+        <span class="ev-pick-title">Use the session recording from ${esc(fmtSourceWhen(evidence))} as evidence</span>
+        <span class="ev-pick-desc">Debrief reads its session summary alongside what you say. Your debrief still decides what happens next.</span>
+      </span>
+    </label>`);
+    const cb = row.querySelector("input");
+    cb.onchange = () => { App.debriefSourceId = cb.checked ? evidence.source_id : null; };
+    stage.insertBefore(row, stage.querySelector(".dictate-guide"));
+  }
+
   if (down) {
     stage.querySelector("#recCheck").onclick = async (e) => {
       const btn = e.currentTarget;
@@ -1110,6 +1151,39 @@ function renderRecord() {
     stage.insertBefore(retry, stage.querySelector(".record-client").nextSibling);
   }
   el.appendChild(stage);
+}
+
+// Which of this client's session material is ready to stand behind a debrief.
+// Fetched once each time the record screen opens, never polled: nobody should
+// be waiting on a background job with a client just out of the room. A failure
+// is silent on purpose, because evidence is optional and the recorder has to
+// work without it.
+async function ensureDebriefSources(clientId) {
+  if (!clientId || App.debriefFor === clientId) return;
+  // A different client makes the previous tick meaningless. The same client
+  // arriving again (a retry after a failed debrief) keeps theirs.
+  if (App.debriefClient !== clientId) { App.debriefClient = clientId; App.debriefSourceId = null; }
+  App.debriefFor = clientId;
+  App.debriefSources = [];
+  try {
+    const r = await fetch("/api/sources?client_id=" + encodeURIComponent(clientId));
+    if (!r.ok) return;
+    const data = await r.json();
+    App.debriefSources = ((data && data.sources) || []).filter(row => ((row.rungs || []).indexOf(2) >= 0));
+  } catch (e) { /* the recorder works with or without session evidence */ }
+  // A pick that has since been deleted is not a pick any more.
+  if (App.debriefSourceId && !App.debriefSources.some(r => r.source_id === App.debriefSourceId)) {
+    App.debriefSourceId = null;
+  }
+  if (App.state === "record") render();
+}
+
+// The most recent ready piece. Sources arrive newest first; sorting again keeps
+// that true even if the server's order ever changes.
+function newestReadySource() {
+  const rows = (App.debriefSources || []).slice();
+  rows.sort((a, b) => String(b.captured_at || b.source_id || "").localeCompare(String(a.captured_at || a.source_id || "")));
+  return rows[0] || null;
 }
 
 const MIC_BLOCKED = "macOS is blocking the microphone. Allow it in System Settings, Privacy and Security, Microphone, then try again.";
@@ -1262,12 +1336,26 @@ function refreshApproveConsequence() {
   node.textContent = approveConsequence(App.plan, enabled);
 }
 
+// A plain callout about the session evidence. Never red: none of this is a
+// failure, it is the app saying what it did and did not have to work from.
+function evidenceCallout(text) {
+  return h(`<div class="banner banner-notice ev-callout ${ent(1)}">${esc(text)}</div>`);
+}
+
 function renderReview() {
   const p = App.plan, note = p.note || {};
   el.appendChild(h(`<div class="flow-head ${ent(1)}">
     <h1>Read it over.</h1>
     <p>Nothing is filed or sent yet.</p>
   </div>`));
+
+  // What the note was actually written from. Said before the note, because it
+  // changes how closely the note deserves to be read.
+  if (p.source_status === "processing") {
+    el.appendChild(evidenceCallout("The session recording is still processing. This note was written from your debrief alone."));
+  } else if (p.source_status === "missing") {
+    el.appendChild(evidenceCallout("The session recording was not there to read. This note was written from your debrief alone."));
+  }
 
   const risk = note.risk_present && note.risk ? note.risk : null;
   const notePanel = h(`<div class="panel doc ${ent(1)}"></div>`);
@@ -1315,8 +1403,28 @@ function renderReview() {
   (note.interventions || []).forEach(x => chips.push(`<span class="chip">${esc(x)}</span>`));
   (note.themes || []).forEach(x => chips.push(`<span class="chip theme">${esc(x)}</span>`));
   if (chips.length) notePanel.appendChild(h(`<div class="chips">${chips.join("")}</div>`));
+  // The badge sits with the transcript because that is where the question "what
+  // was this written from" gets asked.
+  if (p.digest_used === true) {
+    notePanel.appendChild(h(`<div class="ev-badge-row"><span class="ev-badge">Session evidence used</span></div>`));
+  }
   notePanel.appendChild(h(`<details class="transcript"><summary>what you said</summary><div class="transcript-note">Your dictation, with clinical terms and names spelled correctly. Nothing else was changed.</div><p>${esc(p.corrected_transcript || p.transcript || "")}</p></details>`));
   el.appendChild(notePanel);
+
+  // Where the recording and the debrief do not agree. Nothing is resolved here
+  // and nothing can be actioned: it is put in front of the clinician because
+  // they are the only one who can say which is right.
+  const conflicts = (p.evidence_conflicts || []).filter(x => String(x || "").trim());
+  if (conflicts.length) {
+    const box = h(`<div class="panel ev-conflicts ${ent(2)}">
+      <h2>The recording and the debrief disagree</h2>
+      <p class="ev-conflicts-note">Nothing has been changed or removed for you. Read these and decide.</p>
+      <ul></ul>
+    </div>`);
+    const ul = box.querySelector("ul");
+    conflicts.forEach(c => ul.appendChild(h(`<li>${esc(String(c))}</li>`)));
+    el.appendChild(box);
+  }
 
   el.appendChild(h(`<h2 class="step-title ${ent(2)}">What happens when you approve</h2>`));
   const actPanel = h(`<div class="panel ${ent(2)}"></div>`);
@@ -1325,9 +1433,14 @@ function renderReview() {
   // action type (calendar booking / email drafts) are hidden: those actions are
   // turned off in settings and cannot run, so offering to add one would mislead.
   const feats = (p.session_meta && p.session_meta.features) || (App.settings && App.settings.features) || {};
+  const noDebrief = p.no_debrief === true;
   let nudges = computeNudges(p);
   if (feats.calendar === false) nudges = nudges.filter(n => n.id !== "no-followup");
   if (feats.email === false) nudges = nudges.filter(n => n.id !== "no-email");
+  // With no debrief there are no actions by design, so "no appointment in this
+  // debrief" would be telling the clinician off for something they never did.
+  // Risk is never suppressed.
+  if (noDebrief) nudges = nudges.filter(n => n.kind === "risk");
   if (nudges.length) {
     const box = h(`<div class="nudges"></div>`);
     // Risk leads. Everything else is housekeeping and reads as such.
@@ -1365,7 +1478,11 @@ function renderReview() {
   }
 
   const list = h(`<div class="actions-list"></div>`);
-  if (!p.actions.length) list.appendChild(h(`<div class="a-sub" style="color:var(--ink-soft)">Nothing to book or send in this debrief. The note is the only thing that gets filed.</div>`));
+  if (noDebrief) {
+    list.appendChild(h(`<div class="ev-callout">No debrief was recorded. This draft came from the session recording alone, so there are no actions to approve. Record a debrief to add your judgment.</div>`));
+  } else if (!p.actions.length) {
+    list.appendChild(h(`<div class="a-sub" style="color:var(--ink-soft)">Nothing to book or send in this debrief. The note is the only thing that gets filed.</div>`));
+  }
   p.actions.forEach((a, i) => {
     const when = a.datetime_display ? `<div class="a-when">${esc(a.datetime_display)}</div>` : "";
     const title = a.type === "schedule_followup" ? "Book follow-up appointment"
@@ -1871,11 +1988,15 @@ async function processRecording(blob) {
   const fd = new FormData();
   fd.append("audio", blob, "debrief.webm");
   fd.append("client_id", App.client.client_id);
+  // Only when the clinician ticked it. An untouched box sends nothing, and a
+  // debrief with no source behaves exactly as it always has.
+  if (App.debriefSourceId) fd.append("source_id", App.debriefSourceId);
   try {
     const r = await fetch("/api/debrief", { method: "POST", body: fd });
     if (!r.ok) throw await failure(r);
     App.plan = await r.json();
     App.lastRecording = null;
+    App.debriefSourceId = null;
     go("review");
   } catch (e) {
     // The reason travels with them; the audio stays put. renderRecord offers
@@ -2011,6 +2132,14 @@ async function openClient(c) {
   App.recordData = null;
   App.error = null;
   App.recordError = null;
+  // Another person's session material must never be on screen, even for the
+  // frame before this client's list arrives.
+  clearSourcesTimer();
+  App.sources = null;
+  App.sourcesFor = null;
+  App.sourcesError = null;
+  App.sourceStates = null;
+  App.uploads = [];
   render();
   try {
     const r = await fetch("/api/clients/" + encodeURIComponent(c.client_id));
@@ -2021,6 +2150,9 @@ async function openClient(c) {
 }
 
 function renderClientRecord() {
+  // Every repaint of this screen drops the Recordings poll; the tab that needs
+  // it starts a fresh one below. That is what keeps it off the other tabs.
+  clearSourcesTimer();
   const d = App.recordData;
   const c = App.client || {};
   const name = (d && d.profile && d.profile.name) || c.name || "Client";
@@ -2056,6 +2188,7 @@ function renderClientRecord() {
     <button class="ctab ${App.recordTab === "sessions" ? "on" : ""}" data-tab="sessions">Sessions</button>
     <button class="ctab ${App.recordTab === "profile" ? "on" : ""}" data-tab="profile">Profile</button>
     <button class="ctab ${App.recordTab === "documents" ? "on" : ""}" data-tab="documents">Documents</button>
+    <button class="ctab ${App.recordTab === "sources" ? "on" : ""}" data-tab="sources">Recordings</button>
   </div>`);
   tabs.querySelectorAll(".ctab").forEach(t => t.onclick = () => { App.recordTab = t.dataset.tab; render(); });
   el.appendChild(tabs);
@@ -2063,11 +2196,12 @@ function renderClientRecord() {
   // The record jumped from the client's name straight to a session card. The
   // active tab is the section heading; it is already on screen as the selected
   // tab, so the heading itself is for assistive technology only.
-  const TAB_NAME = { sessions: "Sessions", profile: "Profile", documents: "Documents" };
+  const TAB_NAME = { sessions: "Sessions", profile: "Profile", documents: "Documents", sources: "Recordings" };
   el.appendChild(h(`<h2 class="visually-hidden">${esc(TAB_NAME[App.recordTab] || "Sessions")}</h2>`));
 
   if (App.recordTab === "sessions") renderSessionsTab(d);
   else if (App.recordTab === "profile") renderProfileTab(d);
+  else if (App.recordTab === "sources") renderSourcesTab(d);
   else renderDocumentsTab(d);
 }
 
@@ -2242,6 +2376,800 @@ async function uploadFile(file, clientId) {
     if (!r.ok) throw await failure(r);
     openClient(App.client);
   } catch (e) { App.error = errOf(e); render(); }
+}
+
+// ===========================================================================
+// Session recordings: the Recordings tab.
+//
+// This is where session material lives: what was recorded, what was imported,
+// and exactly how far Debrief has got with each piece. It leads with consent
+// because nothing here may start without it, and every stage is named in plain
+// words rather than hidden behind a spinner that says nothing.
+// ===========================================================================
+
+// What the API accepts. Said twice on purpose: once to the file picker, once to
+// the clinician. Kept in step with _SOURCE_ALLOWED_EXTS in app.py.
+const SOURCE_ACCEPT = ".m4a,.mp3,.wav,.aac,.mp4,.mov,.webm,.vtt,.srt,.txt,.md,.pdf,.docx";
+const SOURCE_ACCEPT_TEXT = "Audio (.m4a, .mp3, .wav, .aac), video (.mp4, .mov, .webm), transcripts (.vtt, .srt), and documents (.txt, .md, .pdf, .docx).";
+
+// Said under the consent button, always, whichever way the flag is set. It
+// names whose job consent is and stops there: recording law varies and this app
+// takes no position on it.
+const CONSENT_RESPONSIBILITY = "Recording or importing a session needs the client's consent. Obtaining and documenting it is your responsibility.";
+const CONSENT_BLOCKED = "No recording consent is recorded for this client, so nothing can be brought in yet. Record the consent above first.";
+
+// Provenance in the clinician's words. The distinction that matters is whether
+// something is word for word, so it is never left to a technical noun.
+const SOURCE_KIND_LABEL = {
+  live_recording: "Audio recording",
+  uploaded_audio: "Audio recording",
+  uploaded_video: "Video (audio kept)",
+  transcript_file: "Transcript",
+  pasted_transcript: "Pasted transcript",
+  third_party_summary: "AI summary",
+  clinician_notes: "Your notes",
+};
+const SOURCE_PRODUCER_LABEL = {
+  debrief: "Recorded in Debrief",
+  zoom: "From Zoom",
+  otter: "From Otter",
+  granola: "From Granola",
+  clinician: "Written by you",
+};
+
+// Job stages, as a title on the card and as a clause inside a failure sentence.
+const JOB_STAGE_LABEL = {
+  transcribing: "Transcribing",
+  correcting: "Correcting vocabulary",
+  digesting: "Building the session summary",
+};
+const JOB_STAGE_PLAIN = {
+  transcribing: "transcribing",
+  correcting: "correcting vocabulary",
+  digesting: "building the session summary",
+};
+
+// Material that came from a microphone or a camera. Mirrors MEDIA_KINDS in
+// debrief/sources.py: these are the ones that can have audio to delete.
+const SOURCE_MEDIA_KINDS = new Set(["live_recording", "uploaded_audio", "uploaded_video"]);
+
+const SOURCES_POLL_MS = 4000;
+const JOB_ACTIVE = new Set(["queued", "running", "waiting"]);
+
+function sourceKindLabel(kind) { return SOURCE_KIND_LABEL[String(kind || "")] || "Session material"; }
+
+// "25 July 2026" from a plain wall-clock date. Read by regex, never through
+// Date(iso), so no timezone can slide the day the consent was given.
+function fmtDayLong(value) {
+  const m = isoDatePart(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return "";
+  return `${+m[3]} ${MONTHS_LONG[+m[2] - 1]} ${m[1]}`;
+}
+
+// When a piece of session material was captured, for a card heading.
+function fmtSourceWhen(row) {
+  const captured = (row && row.captured_at) || "";
+  return fmtWhenShort(captured) || fmtDayLong(captured) || String(row && row.source_id ? row.source_id : "");
+}
+
+function consentState(d) {
+  const pf = (d && d.profile) || {};
+  return { granted: pf.recording_consent === true, date: isoDatePart(pf.recording_consent_date) };
+}
+
+function sourceJobActive(row) {
+  return !!(row && row.job && JOB_ACTIVE.has(String(row.job.state || "")));
+}
+
+// ---------------------------------------------------------------------------
+// Fetching, and the poll that only runs while something is actually happening.
+// ---------------------------------------------------------------------------
+
+function clearSourcesTimer() {
+  if (App.sourcesTimer) { clearTimeout(App.sourcesTimer); App.sourcesTimer = null; }
+}
+
+// Say out loud when a piece of material finishes or fails. A clinician who has
+// walked away from the screen still gets told, and nothing announces twice.
+function announceSourceChanges(rows) {
+  const before = App.sourceStates || {};
+  const now = {};
+  const said = [];
+  rows.forEach(row => {
+    const id = String(row.source_id || "");
+    const state = String((row.job && row.job.state) || "");
+    now[id] = state;
+    if (!App.sourceStates || before[id] === state) return;
+    if (state === "done") said.push(`The session material from ${fmtSourceWhen(row)} is ready to use in a debrief.`);
+    if (state === "failed") said.push(`The session material from ${fmtSourceWhen(row)} could not be finished.`);
+  });
+  App.sourceStates = now;
+  if (said.length) announce(said.join(" "));
+}
+
+// quiet:true is a poll. A poll that fails keeps what is on screen rather than
+// replacing a working list with a banner over a blip.
+async function refreshSources(clientId, opts) {
+  const quiet = !!(opts && opts.quiet);
+  try {
+    const r = await fetch("/api/sources?client_id=" + encodeURIComponent(clientId));
+    if (!r.ok) throw await failure(r);
+    const data = await r.json();
+    const rows = (data && data.sources) || [];
+    App.sources = rows;
+    App.sourcesError = null;
+    announceSourceChanges(rows);
+  } catch (e) {
+    if (quiet) return;
+    App.sources = [];
+    App.sourcesError = errOf(e);
+  } finally {
+    // Set either way, so a failure shows its banner instead of refetching
+    // forever behind it.
+    App.sourcesFor = clientId;
+  }
+}
+
+function scheduleSourcesPoll(clientId) {
+  clearSourcesTimer();
+  if (!(App.sources || []).some(sourceJobActive)) return;
+  App.sourcesTimer = setTimeout(async () => {
+    App.sourcesTimer = null;
+    // The screen may have moved on between ticks. Nothing here repaints another
+    // screen, and nothing schedules the next tick from anywhere but a render of
+    // this tab.
+    if (App.state !== "clientRecord" || App.recordTab !== "sources") return;
+    await refreshSources(clientId, { quiet: true });
+    if (App.state === "clientRecord" && App.recordTab === "sources") render();
+  }, SOURCES_POLL_MS);
+}
+
+// ---------------------------------------------------------------------------
+// The tab itself.
+// ---------------------------------------------------------------------------
+
+function renderSourcesTab(d) {
+  const cid = String(d.client_id || (App.client && App.client.client_id) || "");
+  const wrap = h(`<div class="srcs"></div>`);
+  const consent = consentState(d);
+  wrap.appendChild(buildConsentCard(d, cid, consent));
+  wrap.appendChild(buildSourceDrop(cid, consent.granted));
+
+  if (App.sourcesFor !== cid) {
+    if (!App.sourcesLoading) {
+      App.sourcesLoading = true;
+      refreshSources(cid).then(() => {
+        App.sourcesLoading = false;
+        if (App.state === "clientRecord" && App.recordTab === "sources") render();
+      });
+    }
+    wrap.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Looking for session material...</div></div>`));
+    el.appendChild(wrap);
+    return;
+  }
+
+  const rows = App.sources || [];
+  rows.filter(r => r.needs_confirmation).forEach(r => wrap.appendChild(buildConfirmBanner(r, cid)));
+
+  if (App.sourcesError) {
+    // "Nothing here yet" would be a lie when the list is what failed.
+    wrap.appendChild(errorBanner(App.sourcesError));
+  } else if (!rows.length) {
+    wrap.appendChild(emptyState({
+      title: "No session material yet",
+      body: "Bring in a recording, a transcript, or a meeting tool export and Debrief will read it, ready to sit alongside your next debrief for this client.",
+      note: "Audio stays on this Mac until you delete it.",
+      wide: true,
+    }));
+  } else {
+    const list = h(`<div class="src-list"></div>`);
+    rows.forEach(r => list.appendChild(buildSourceCard(r, cid)));
+    wrap.appendChild(list);
+  }
+
+  el.appendChild(wrap);
+  scheduleSourcesPoll(cid);
+}
+
+// ---------------------------------------------------------------------------
+// Consent.
+// ---------------------------------------------------------------------------
+
+function buildConsentCard(d, clientId, consent) {
+  const state = consent.granted
+    ? (consent.date ? `Recording consent on file, dated ${fmtDayLong(consent.date)}` : "Recording consent on file")
+    : "No recording consent recorded";
+  const card = h(`<div class="rcard src-consent">
+    <div class="src-consent-head">
+      <h3>Consent to record</h3>
+      <span class="rchip ${consent.granted ? "ok" : "wait"}">${consent.granted ? "On file" : "Not recorded"}</span>
+    </div>
+    <div class="src-consent-state">${esc(state)}</div>
+    <div class="src-consent-actions">
+      <button type="button" class="btn btn-ghost btn-compact" id="consentToggle">${consent.granted ? "Withdraw consent" : "Record consent"}</button>
+    </div>
+    <p class="src-consent-note">${esc(CONSENT_RESPONSIBILITY)}</p>
+  </div>`);
+  const btn = card.querySelector("#consentToggle");
+  btn.onclick = () => setRecordingConsent(clientId, !consent.granted, btn);
+  return card;
+}
+
+async function setRecordingConsent(clientId, granted, btn) {
+  const original = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "Saving..."; }
+  try {
+    const r = await fetch("/api/clients/" + encodeURIComponent(clientId) + "/recording-consent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ granted: !!granted }),
+    });
+    if (!r.ok) throw await failure(r);
+    const data = await r.json();
+    // Patch the record in place rather than reopening the client: reopening
+    // would drop the clinician back on the Sessions tab mid task.
+    if (App.recordData) {
+      App.recordData.profile = App.recordData.profile || {};
+      App.recordData.profile.recording_consent = !!data.granted;
+      App.recordData.profile.recording_consent_date = data.date || "";
+    }
+    announce(data.granted ? "Recording consent recorded." : "Recording consent withdrawn.");
+    render();
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = original; }
+    toastError(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Bringing material in: drop, browse, or paste.
+// ---------------------------------------------------------------------------
+
+function buildSourceDrop(clientId, granted) {
+  const zone = h(`<div class="srcdrop${granted ? "" : " off"}"${granted ? "" : ' aria-disabled="true"'}>
+    <div class="srcdrop-title">Bring in session material</div>
+    <div class="srcdrop-hint">${granted
+      ? "Drag files here, or choose them from your Mac. Video is kept as audio only."
+      : esc(CONSENT_BLOCKED)}</div>
+  </div>`);
+
+  const input = h(`<input type="file" class="visually-hidden" multiple accept="${SOURCE_ACCEPT}" />`);
+  input.onchange = () => {
+    const files = Array.from(input.files || []);
+    input.value = "";
+    if (files.length) uploadSources(files, clientId);
+  };
+
+  const actions = h(`<div class="srcdrop-actions"></div>`);
+  const choose = h(`<button type="button" class="btn btn-primary btn-compact">Choose files</button>`);
+  const paste = h(`<button type="button" class="btn btn-ghost btn-compact">Paste a transcript</button>`);
+  if (!granted) { choose.disabled = true; paste.disabled = true; }
+  choose.onclick = () => input.click();
+  paste.onclick = () => openPasteSheet(clientId);
+  actions.appendChild(choose);
+  actions.appendChild(paste);
+  zone.appendChild(actions);
+  zone.appendChild(input);
+  zone.appendChild(h(`<div class="srcdrop-accepts">${esc(SOURCE_ACCEPT_TEXT)}</div>`));
+
+  if (granted) {
+    zone.addEventListener("dragover", (e) => { e.preventDefault(); zone.classList.add("drop-active"); });
+    zone.addEventListener("dragleave", () => zone.classList.remove("drop-active"));
+    zone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      zone.classList.remove("drop-active");
+      const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+      if (files.length) uploadSources(files, clientId);
+    });
+  }
+
+  const lines = h(`<div class="src-uploads"></div>`);
+  (App.uploads || []).forEach(u => lines.appendChild(buildUploadLine(u)));
+  zone.appendChild(lines);
+  return zone;
+}
+
+function buildUploadLine(u) {
+  const pct = Math.max(0, Math.min(100, Math.round(u.pct || 0)));
+  const state = u.state === "done" ? "Brought in"
+    : u.state === "failed" ? "Could not be brought in"
+    : pct >= 100 ? "Reading it" : `Uploading ${pct}%`;
+  const line = h(`<div class="src-upl ${esc(u.state)}" data-upl="${esc(u.id)}">
+    <div class="src-upl-top">
+      <span class="src-upl-name">${esc(u.name)}</span>
+      <span class="src-upl-state">${esc(state)}</span>
+    </div>
+    <div class="src-upl-bar" aria-hidden="true"><span style="width:${pct}%"></span></div>
+  </div>`);
+  if (u.state === "failed") {
+    line.querySelector(".src-upl-bar").remove();
+    if (u.error) line.appendChild(h(`<div class="src-upl-err">${esc(u.error)}</div>`));
+    const dismiss = h(`<button type="button" class="btn btn-ghost btn-compact src-upl-dismiss">Dismiss</button>`);
+    dismiss.onclick = () => {
+      App.uploads = (App.uploads || []).filter(x => x.id !== u.id);
+      render();
+    };
+    line.appendChild(dismiss);
+  }
+  return line;
+}
+
+// Repaint one upload line in place. A full render every progress event would
+// fight the clinician's scroll position; a poll tick rebuilds from App.uploads
+// anyway, so the state and the screen cannot drift apart.
+function paintUploadLine(u) {
+  const live = document.querySelector(`.src-upl[data-upl="${u.id}"]`);
+  if (live) live.replaceWith(buildUploadLine(u));
+}
+
+// One file, with real progress. XHR rather than fetch purely because a 2 GB
+// video deserves a percentage instead of a frozen line.
+function uploadSourceFile(file, clientId, onProgress) {
+  return new Promise((resolve, reject) => {
+    const fd = new FormData();
+    fd.append("client_id", clientId);
+    fd.append("file", file, file.name);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/sources/upload");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress((e.loaded / e.total) * 100);
+    };
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText || "{}"); } catch (err) { data = {}; }
+      if (xhr.status >= 200 && xhr.status < 300) { resolve(data); return; }
+      const err = new Error(httpError(xhr.status, data).text);
+      err.debrief = httpError(xhr.status, data);
+      reject(err);
+    };
+    xhr.onerror = () => reject(new Error("Debrief could not reach its own server. " + SERVER_ERROR_FIX));
+    xhr.onabort = () => reject(new Error("That upload was stopped."));
+    xhr.send(fd);
+  });
+}
+
+// Several files at once upload one after another, each with its own line. One
+// model server means they would queue anyway, and a serial upload keeps the
+// failure of one file from taking the others with it.
+async function uploadSources(files, clientId) {
+  const batch = files.map(f => ({ id: uid("upl"), name: f.name || "file", pct: 0, state: "uploading", error: "" }));
+  App.uploads = (App.uploads || []).filter(u => u.state === "failed").concat(batch);
+  render();
+  announce(files.length === 1 ? "Uploading one file." : `Uploading ${files.length} files.`);
+
+  for (let i = 0; i < files.length; i++) {
+    const entry = batch[i];
+    try {
+      const result = await uploadSourceFile(files[i], clientId, (pct) => {
+        entry.pct = pct;
+        paintUploadLine(entry);
+      });
+      entry.pct = 100;
+      entry.state = "done";
+      // The material is stored either way. A queue that could not take the job
+      // is said out loud rather than left as a card that never moves.
+      if (result && result.job_error) toast(String(result.job_error), null, true);
+    } catch (e) {
+      entry.state = "failed";
+      entry.error = errText(e);
+    }
+    paintUploadLine(entry);
+  }
+
+  const failed = batch.filter(u => u.state === "failed").length;
+  const brought = batch.length - failed;
+  // The cards below are the real confirmation, so a finished line has done its
+  // job. A failed one stays put, with its reason, until it is dismissed.
+  App.uploads = (App.uploads || []).filter(u => u.state === "failed");
+  await refreshSources(clientId);
+  if (brought) announce(brought === 1 ? "One file was brought in." : `${brought} files were brought in.`);
+  if (failed) announce(failed === 1 ? "One file could not be brought in." : `${failed} files could not be brought in.`, true);
+  if (App.state === "clientRecord" && App.recordTab === "sources") render();
+}
+
+function openPasteSheet(clientId) {
+  const titleId = uid("dlg");
+  const textId = uid("paste");
+  const backdrop = h(`<div class="modal-backdrop"><div class="modal paste-modal">
+    <h4 id="${titleId}">Paste a transcript</h4>
+    <p class="ac-lead">Paste the text below, then tell Debrief what it is. This matters: a write up must never be quoted as the client's own words.</p>
+    <div class="ac-error" role="alert" hidden></div>
+    <label class="visually-hidden" for="${textId}">The text to bring in</label>
+    <textarea class="set-textarea paste-area" id="${textId}" rows="9" spellcheck="false" placeholder="Paste here"></textarea>
+    <div class="set-radios paste-kinds">
+      <label class="set-radio">
+        <input type="radio" name="pasteKind" value="pasted_transcript" checked />
+        <span class="set-radio-body"><span class="set-radio-title">Word for word transcript</span><span class="set-radio-desc">Exactly what was said, from a recording or a meeting tool.</span></span>
+      </label>
+      <label class="set-radio">
+        <input type="radio" name="pasteKind" value="clinician_notes" />
+        <span class="set-radio-body"><span class="set-radio-title">My own notes</span><span class="set-radio-desc">Your write up of the session. Debrief reads it, and never quotes from it.</span></span>
+      </label>
+    </div>
+    <div class="confirm-actions">
+      <button class="btn btn-ghost" id="pasteCancel">Cancel</button>
+      <button class="btn btn-primary" id="pasteSave">Bring it in</button>
+    </div>
+  </div></div>`);
+
+  const area = backdrop.querySelector(".paste-area");
+  const errBox = backdrop.querySelector(".ac-error");
+  const showError = (msg) => { errBox.textContent = String(msg || ""); errBox.hidden = !msg; };
+  const save = backdrop.querySelector("#pasteSave");
+  let close = () => backdrop.remove();
+
+  const submit = async () => {
+    const text = area.value.trim();
+    if (!text) { showError("Paste the text first."); area.focus(); return; }
+    const picked = backdrop.querySelector('input[name="pasteKind"]:checked');
+    showError("");
+    save.disabled = true;
+    const original = save.textContent;
+    save.textContent = "Bringing it in...";
+    try {
+      const r = await fetch("/api/sources/paste", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_id: clientId, text, kind: (picked && picked.value) || "pasted_transcript" }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        showError(apiErr(data, r.status));
+        save.disabled = false; save.textContent = original;
+        return;
+      }
+      close();
+      await refreshSources(clientId);
+      announce("The pasted text was brought in.");
+      if (data && data.job_error) toast(String(data.job_error), null, true);
+      if (App.state === "clientRecord" && App.recordTab === "sources") render();
+    } catch (e) {
+      showError("Debrief could not reach its own server. " + SERVER_ERROR_FIX);
+      save.disabled = false; save.textContent = original;
+    }
+  };
+
+  backdrop.querySelector("#pasteCancel").onclick = () => close();
+  save.onclick = submit;
+  backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
+  close = openDialog({
+    backdrop,
+    sheet: backdrop.querySelector(".modal"),
+    labelId: titleId,
+    initialFocus: area,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The one question that stops a summary being filed as a quote.
+// ---------------------------------------------------------------------------
+
+function buildConfirmBanner(row, clientId) {
+  const qId = uid("cfm");
+  const guess = sourceKindLabel(row.kind).toLowerCase();
+  const banner = h(`<div class="src-confirm" role="group" aria-labelledby="${qId}">
+    <div class="src-confirm-q" id="${qId}">Is this word for word, or an AI summary?</div>
+    <div class="src-confirm-sub">The file you brought in from ${esc(fmtSourceWhen(row))} looks like ${esc(guess)}, but Debrief is not sure enough to act on it. It will not read this until you say.</div>
+    <div class="src-confirm-btns">
+      <button type="button" class="btn btn-primary btn-compact" data-a="verbatim">Word for word</button>
+      <button type="button" class="btn btn-ghost btn-compact" data-a="summary">AI summary</button>
+    </div>
+  </div>`);
+  const buttons = Array.from(banner.querySelectorAll(".src-confirm-btns button"));
+  buttons.forEach(btn => {
+    btn.onclick = () => {
+      buttons.forEach(b => { b.disabled = true; });
+      confirmSource(row, clientId, btn.dataset.a === "verbatim", buttons);
+    };
+  });
+  return banner;
+}
+
+async function confirmSource(row, clientId, verbatim, buttons) {
+  try {
+    const r = await fetch("/api/sources/" + encodeURIComponent(row.source_id) + "/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_id: clientId,
+        verbatim: !!verbatim,
+        produced_by: String(row.produced_by || "unknown"),
+      }),
+    });
+    if (!r.ok) throw await failure(r);
+    await r.json().catch(() => ({}));
+    // Re-read rather than patch: the answer changes the kind, the rung, and
+    // whether a job is now queued, and the banner has to be gone afterwards.
+    await refreshSources(clientId);
+    announce(verbatim ? "Marked as word for word. Debrief is reading it now." : "Marked as an AI summary. Debrief will never quote from it.");
+    if (App.state === "clientRecord" && App.recordTab === "sources") render();
+  } catch (e) {
+    buttons.forEach(b => { b.disabled = false; });
+    toastError(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// One card per piece of material.
+// ---------------------------------------------------------------------------
+
+// The honest stage line: what is happening, or what happened, never a spinner
+// that means "something, somewhere". tone drives colour only.
+function sourceStage(row) {
+  const job = (row && row.job) || null;
+  const rungs = (row && row.rungs) || [];
+  const state = String((job && job.state) || "");
+  if (state === "queued") return { text: "Waiting its turn", tone: "wait" };
+  if (state === "running") {
+    const label = JOB_STAGE_LABEL[String(job.stage || "")] || "Working through it";
+    const total = Number(job.total) || 0;
+    const done = Number(job.done) || 0;
+    return {
+      text: total > 1 ? `${label} (${done} of ${total})` : label,
+      tone: "wait",
+      done, total,
+    };
+  }
+  if (state === "waiting") return { text: "Paused while you debrief", tone: "wait" };
+  if (rungs.indexOf(2) >= 0) return { text: "Ready to use in a debrief", tone: "good" };
+  if (state === "failed") {
+    const where = JOB_STAGE_PLAIN[String(job.stage || "")];
+    return {
+      text: where ? `Failed at ${where}. Earlier steps were kept.` : "Failed. Earlier steps were kept.",
+      tone: "bad",
+      error: String(job.error || ""),
+    };
+  }
+  if (state === "cancelled") return { text: "Stopped", tone: "wait" };
+  if (row && row.needs_confirmation) return { text: "Waiting on your answer above", tone: "wait" };
+  if (state === "done") return { text: "Finished without a session summary", tone: "bad" };
+  return { text: "Stored. Nothing is processing it yet.", tone: "wait" };
+}
+
+function sourceChips(row) {
+  const chips = [`<span class="src-chip">${esc(sourceKindLabel(row.kind))}</span>`];
+  const producer = SOURCE_PRODUCER_LABEL[String(row.produced_by || "")];
+  if (producer) chips.push(`<span class="src-chip">${esc(producer)}</span>`);
+  chips.push(row.verbatim
+    ? `<span class="src-chip strong">Word for word</span>`
+    : `<span class="src-chip strong">Summary</span>`);
+  const mins = Number(row.duration_min);
+  if (Number.isFinite(mins) && mins > 0) chips.push(`<span class="src-chip">${esc(mins + " " + plural(mins, "minute"))}</span>`);
+  if (row.partial) chips.push(`<span class="src-chip warn">Interrupted</span>`);
+  return chips.join("");
+}
+
+function buildSourceCard(row, clientId) {
+  const stage = sourceStage(row);
+  const card = h(`<div class="rcard src-card">
+    <div class="src-head">
+      <div class="src-headings">
+        <h3>${esc(fmtSourceWhen(row))}</h3>
+        <div class="src-chips">${sourceChips(row)}</div>
+      </div>
+    </div>
+    <div class="src-stage ${esc(stage.tone)}">${esc(stage.text)}</div>
+  </div>`);
+
+  if (stage.total > 1) {
+    const pct = Math.max(0, Math.min(100, Math.round((stage.done / stage.total) * 100)));
+    card.appendChild(h(`<div class="src-prog" aria-hidden="true"><span style="width:${pct}%"></span></div>`));
+  }
+  if (stage.error) card.appendChild(technicalDetails(stage.error));
+
+  const foot = h(`<div class="src-foot"></div>`);
+  if ((row.rungs || []).indexOf(2) >= 0) {
+    const view = h(`<button type="button" class="btn btn-ghost btn-compact">View session summary</button>`);
+    view.onclick = () => openDigestSheet(row, clientId);
+    foot.appendChild(view);
+  }
+  if (!row.has_audio && SOURCE_MEDIA_KINDS.has(String(row.kind || ""))) {
+    foot.appendChild(h(`<span class="src-note">No audio stored. The transcript and summary were kept.</span>`));
+  }
+
+  const menuWrap = h(`<div class="src-menu-wrap"></div>`);
+  const more = h(`<button type="button" class="iconbtn src-more" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for the session material from ${esc(fmtSourceWhen(row))}"><span aria-hidden="true">···</span></button>`);
+  more.onclick = () => toggleSourceMenu(menuWrap, more, row, clientId);
+  menuWrap.appendChild(more);
+  foot.appendChild(h(`<span class="grow"></span>`));
+  foot.appendChild(menuWrap);
+  card.appendChild(foot);
+  return card;
+}
+
+// The same contract as the document overflow menu: a real menu, Escape closes
+// it, tabbing out of either end closes it, focus comes back to the trigger.
+function toggleSourceMenu(wrap, trigger, row, clientId) {
+  const existing = wrap.querySelector(".overflow-menu");
+  if (existing) { closeSourceMenu(wrap, trigger); return; }
+  const menu = h(`<div class="overflow-menu" role="menu" aria-label="Actions for the session material from ${esc(fmtSourceWhen(row))}">
+    ${row.has_audio ? `<button type="button" role="menuitem" data-a="audio">Delete audio only</button>` : ""}
+    <button type="button" role="menuitem" class="danger" data-a="all">Delete recording</button>
+  </div>`);
+  wrap.appendChild(menu);
+  trigger.setAttribute("aria-expanded", "true");
+
+  const audioBtn = menu.querySelector('[data-a="audio"]');
+  if (audioBtn) audioBtn.onclick = () => {
+    closeSourceMenu(wrap, trigger);
+    confirmModal({
+      title: "Delete the audio only?",
+      body: "The audio file is removed from this Mac for good. The transcript and the session summary stay, so the note keeps its evidence trail.",
+      cancelLabel: "Keep it",
+      confirmLabel: "Delete audio",
+      danger: true,
+      onConfirm: () => deleteSource(row, clientId, true),
+    });
+  };
+  menu.querySelector('[data-a="all"]').onclick = () => {
+    closeSourceMenu(wrap, trigger);
+    confirmModal({
+      title: "Delete this recording?",
+      body: "Everything for this piece of session material goes to Trash, where it stays for 30 days before it is gone. Notes you have already filed are not touched.",
+      cancelLabel: "Keep it",
+      confirmLabel: "Delete recording",
+      danger: true,
+      onConfirm: () => deleteSource(row, clientId, false),
+    });
+  };
+
+  const closer = (e) => { if (!wrap.contains(e.target)) closeSourceMenu(wrap, trigger); };
+  const onKey = (e) => {
+    if (e.key === "Escape") { e.preventDefault(); closeSourceMenu(wrap, trigger, true); return; }
+    if (e.key !== "Tab") return;
+    const items = Array.from(menu.querySelectorAll("button"));
+    const last = items[items.length - 1];
+    if (!e.shiftKey && document.activeElement === last) closeSourceMenu(wrap, trigger);
+    else if (e.shiftKey && document.activeElement === items[0]) closeSourceMenu(wrap, trigger);
+  };
+  const onFocusOut = () => setTimeout(() => {
+    if (wrap.isConnected && !wrap.contains(document.activeElement)) closeSourceMenu(wrap, trigger);
+  }, 0);
+  wrap._menuTeardown = () => {
+    document.removeEventListener("click", closer);
+    document.removeEventListener("keydown", onKey, true);
+    wrap.removeEventListener("focusout", onFocusOut);
+  };
+  document.addEventListener("keydown", onKey, true);
+  wrap.addEventListener("focusout", onFocusOut);
+  setTimeout(() => document.addEventListener("click", closer), 0);
+  menu.querySelector("button").focus();
+}
+
+function closeSourceMenu(wrap, trigger, refocus) {
+  const menu = wrap.querySelector(".overflow-menu");
+  if (!menu) return;
+  if (wrap._menuTeardown) { wrap._menuTeardown(); wrap._menuTeardown = null; }
+  menu.remove();
+  if (trigger && trigger.isConnected) {
+    trigger.setAttribute("aria-expanded", "false");
+    if (refocus) trigger.focus();
+  }
+}
+
+async function deleteSource(row, clientId, audioOnly) {
+  const url = "/api/sources/" + encodeURIComponent(row.source_id)
+    + "?client_id=" + encodeURIComponent(clientId)
+    + (audioOnly ? "&audio_only=true" : "");
+  try {
+    const r = await fetch(url, { method: "DELETE" });
+    if (!r.ok) throw await failure(r);
+    await r.json().catch(() => ({}));
+    await refreshSources(clientId);
+    toast(audioOnly ? "Audio deleted. The transcript and summary were kept." : "Moved to Trash.");
+    if (App.state === "clientRecord" && App.recordTab === "sources") render();
+  } catch (e) { toastError(e); }
+}
+
+// ---------------------------------------------------------------------------
+// The session summary, read back.
+//
+// digest.json is what the code reads, so this sheet renders that rather than a
+// second copy of it. Every value is put on screen as text, never as markup.
+// ---------------------------------------------------------------------------
+
+function digestList(items, empty) {
+  const box = h(`<ul class="digest-list"></ul>`);
+  const rows = (items || []).filter(x => String(x == null ? "" : x).trim());
+  if (!rows.length) { return h(`<p class="digest-empty">${esc(empty)}</p>`); }
+  rows.forEach(x => box.appendChild(h(`<li>${esc(String(x))}</li>`)));
+  return box;
+}
+
+function digestSection(title, node) {
+  const sec = h(`<section class="digest-sec"><h5>${esc(title)}</h5></section>`);
+  sec.appendChild(node);
+  return sec;
+}
+
+function buildDigestBody(digest) {
+  const body = h(`<div class="digest-body"></div>`);
+  const mins = Number(digest.duration_min);
+  const meta = [
+    Number.isFinite(mins) && mins > 0 ? `${mins} ${plural(mins, "minute")}` : "Length not known",
+    digest.diarized ? "Speakers separated" : "Speakers not separated",
+  ].join(" · ");
+  body.appendChild(h(`<p class="digest-meta">${esc(meta)}</p>`));
+
+  const segments = (digest.segments || []).filter(s => s && typeof s === "object");
+  const timeline = h(`<div class="digest-timeline"></div>`);
+  if (!segments.length) timeline.appendChild(h(`<p class="digest-empty">No timeline was produced for this material.</p>`));
+  segments.forEach(s => {
+    const start = Number(s.start_min);
+    const stamp = Number.isFinite(start) ? `${start} min` : "";
+    timeline.appendChild(h(`<div class="digest-seg">
+      ${stamp ? `<span class="digest-when">${esc(stamp)}</span>` : ""}
+      <span class="digest-seg-body">
+        <b>${esc(String(s.topic || "Untitled"))}</b>
+        <span>${esc(String(s.summary || ""))}</span>
+      </span>
+    </div>`));
+  });
+  body.appendChild(digestSection("Timeline", timeline));
+
+  body.appendChild(digestSection("Themes", digestList(digest.themes, "None recorded.")));
+
+  const interventions = (digest.interventions_observed || []).filter(x => x && typeof x === "object");
+  body.appendChild(digestSection("Interventions observed", digestList(
+    interventions.map(x => {
+      const response = String(x.client_response || "").trim();
+      return String(x.name || "").trim() + (response ? `: ${response}` : "");
+    }),
+    "None recorded.",
+  )));
+
+  const statements = (digest.client_statements || []).filter(x => x && typeof x === "object");
+  body.appendChild(digestSection("Client statements", digestList(
+    statements.map(x => `"${String(x.quote || "").trim()}" (attribution ${String(x.attribution_confidence || "unknown")})`),
+    "No word for word client statements were captured from this material.",
+  )));
+
+  const riskBox = h(`<div></div>`);
+  if (digest.risk_language_present) {
+    riskBox.appendChild(h(`<p class="digest-risk">Language that may bear on risk appeared in this session. This is a flag for your attention, not an assessment.</p>`));
+    riskBox.appendChild(digestList((digest.risk_excerpts || []).map(x => `"${String(x).trim()}"`), "No word for word excerpt is available."));
+  } else {
+    riskBox.appendChild(h(`<p class="digest-empty">None noted.</p>`));
+  }
+  body.appendChild(digestSection("Risk language", riskBox));
+
+  body.appendChild(digestSection("Practices or homework", digestList(digest.practices_or_homework, "None recorded.")));
+  body.appendChild(digestSection("Unresolved threads", digestList(digest.unresolved_threads, "None recorded.")));
+  body.appendChild(digestSection("Notable shifts", digestList(digest.notable_shifts, "None recorded.")));
+  return body;
+}
+
+async function openDigestSheet(row, clientId) {
+  const titleId = uid("dlg");
+  const backdrop = h(`<div class="modal-backdrop"><div class="modal digest-modal">
+    <h4 id="${titleId}">Session summary</h4>
+    <p class="ac-lead">What Debrief heard in the material from ${esc(fmtSourceWhen(row))}. It is evidence for a note, never the note itself.</p>
+    <div class="digest-slot"><div class="panel processing"><div class="spinner"></div><div class="label">Opening the summary...</div></div></div>
+    <div class="confirm-actions"><button class="btn btn-primary" id="digestClose">Close</button></div>
+  </div></div>`);
+  let close = () => backdrop.remove();
+  backdrop.querySelector("#digestClose").onclick = () => close();
+  backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
+  close = openDialog({
+    backdrop,
+    sheet: backdrop.querySelector(".modal"),
+    labelId: titleId,
+    initialFocus: backdrop.querySelector("#digestClose"),
+  });
+
+  const slot = backdrop.querySelector(".digest-slot");
+  try {
+    const r = await fetch("/api/sources/" + encodeURIComponent(row.source_id) + "/digest?client_id=" + encodeURIComponent(clientId));
+    if (!r.ok) throw await failure(r);
+    const digest = await r.json();
+    if (!backdrop.isConnected) return;
+    slot.innerHTML = "";
+    slot.appendChild(buildDigestBody(digest || {}));
+  } catch (e) {
+    if (!backdrop.isConnected) return;
+    slot.innerHTML = "";
+    slot.appendChild(errorBanner(errOf(e)));
+  }
 }
 
 async function renameDocument(path, newTitle) {
@@ -2837,6 +3765,70 @@ const FEATURE_ROWS = [
 
 const STT_DOWNLOAD_HINT = "First transcription after switching may take a minute while the model downloads.";
 
+// Retention. 0 means keep until the clinician deletes it, which is the default,
+// so the sentence has to say what that actually accumulates.
+const RETENTION_TITLE = "Keeping recordings";
+const RETENTION_COPY = "Session audio stays on this Mac until you delete it. If you prefer, Debrief can delete audio automatically after a number of days. Transcripts and session summaries are always kept.";
+const RETENTION_DEFAULT_DAYS = 30;
+const RETENTION_MAX_DAYS = 3650;
+
+// A whole number of days, or 0 for keep. Anything unreadable reads as keep,
+// which is the option that never deletes anything by accident.
+function retentionDays(value) {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(n, RETENTION_MAX_DAYS);
+}
+
+// The radio pair plus its day count, used identically in the wizard and in
+// Settings. onChange gets 0 (keep) or a positive number of days.
+function buildRetentionControl(current, onChange) {
+  const group = uid("ret");
+  const numId = uid("retdays");
+  const days = retentionDays(current);
+  const box = h(`<div class="set-radios set-retention">
+    <label class="set-radio">
+      <input type="radio" name="${group}" value="keep" ${days ? "" : "checked"} />
+      <span class="set-radio-body">
+        <span class="set-radio-title">Keep until I delete it</span>
+        <span class="set-radio-desc">Audio stays here until you remove it yourself.</span>
+      </span>
+    </label>
+    <label class="set-radio">
+      <input type="radio" name="${group}" value="days" ${days ? "checked" : ""} />
+      <span class="set-radio-body">
+        <span class="set-radio-title">Delete audio automatically</span>
+        <span class="set-radio-desc">Audio older than the number of days below is deleted. Nothing else is touched.</span>
+      </span>
+    </label>
+    <div class="set-days"${days ? "" : " hidden"}>
+      <label class="set-days-label" for="${numId}">Delete audio after</label>
+      <input type="number" class="set-days-input" id="${numId}" min="1" max="${RETENTION_MAX_DAYS}" step="1" value="${days || RETENTION_DEFAULT_DAYS}" />
+      <span class="set-days-unit">days</span>
+    </div>
+  </div>`);
+
+  const [keepRadio, daysRadio] = box.querySelectorAll('input[type="radio"]');
+  const daysRow = box.querySelector(".set-days");
+  const num = box.querySelector(".set-days-input");
+  const value = () => Math.min(Math.max(parseInt(num.value, 10) || RETENTION_DEFAULT_DAYS, 1), RETENTION_MAX_DAYS);
+
+  // The day count only exists while it means something. Left on screen under
+  // "keep until I delete it" it reads as a deletion that is already scheduled.
+  keepRadio.onchange = () => { if (!keepRadio.checked) return; daysRow.hidden = true; onChange(0); };
+  daysRadio.onchange = () => { if (!daysRadio.checked) return; daysRow.hidden = false; onChange(value()); };
+  // The save waits for the field to be finished with, not for every keystroke
+  // on the way to "180".
+  num.onchange = () => {
+    const n = value();
+    num.value = String(n);
+    daysRadio.checked = true;
+    daysRow.hidden = false;
+    onChange(n);
+  };
+  return box;
+}
+
 // Turn an error body into one readable line for a toast or a modal, using the
 // same rules as the banners: a bare 500 never reaches the clinician verbatim.
 function apiErr(data, status) {
@@ -3074,6 +4066,19 @@ function renderSettings() {
   });
   cardD.appendChild(togBox);
   el.appendChild(cardD);
+
+  // ---- Card E: recording retention ----
+  const cardE = h(`<div class="panel setup-card ${ent(6)}">
+    <div class="setup-step-head"><h2>${esc(RETENTION_TITLE)}</h2><span class="set-saved" id="savedE"></span></div>
+    <p class="setup-note">${esc(RETENTION_COPY)}</p>
+  </div>`);
+  cardE.appendChild(buildRetentionControl(s.recording_retention_days, async (days) => {
+    try {
+      await postSettings({ recording_retention_days: days });
+      settingsSaved(cardE.querySelector("#savedE"), "Recording retention");
+    } catch (e) { toastError(e); }
+  }));
+  el.appendChild(cardE);
 }
 
 // ===========================================================================
@@ -3489,7 +4494,7 @@ function renderSetupWizard() {
   const s = App.status;
   el.appendChild(h(`<div class="setup-head ${ent(1)}">
     <h1>Welcome to Debrief</h1>
-    <p class="setup-lead">Six quick things and you are set up. Everything stays on this Mac.</p>
+    <p class="setup-lead">Seven quick things and you are set up. Everything stays on this Mac.</p>
     <p class="setup-privacy">${LOCK_SVG}<span>${PRIVACY_PROMISE}</span></p>
   </div>`));
   if (!s) {
@@ -3506,8 +4511,9 @@ function renderSetupWizard() {
   el.appendChild(renderWizardProfession());
   el.appendChild(renderWizardFormat());
   el.appendChild(renderWizardFeatures());
+  el.appendChild(renderWizardRetention());
   el.appendChild(renderSetupStep3());
-  const bar = h(`<div class="actions-bar ${ent(8)} setup-finish">
+  const bar = h(`<div class="actions-bar ${ent(9)} setup-finish">
     <div class="grow"></div>
     <button class="btn btn-primary" id="setupFinish">Finish setup</button>
   </div>`);
@@ -3574,6 +4580,9 @@ function ensureWizardState() {
     note_format: s.note_format || "DAP",
     features: Object.assign({ calendar: true, email: true, verify: true, assistant: true }, s.features || {}),
     stt_engine: s.stt_engine || "parakeet",
+    // 0 means keep. Seeded from the current setting, so a wizard finished
+    // without touching this card changes nothing.
+    recording_retention_days: retentionDays(s.recording_retention_days),
   };
 }
 
@@ -3699,6 +4708,18 @@ function renderWizardFeatures() {
   return card;
 }
 
+function renderWizardRetention() {
+  const w = App.wizard;
+  const card = h(`<div class="panel setup-card ${ent(7)}">
+    <div class="setup-step-head"><span class="setup-num">6</span><h2>${esc(RETENTION_TITLE)}</h2></div>
+    <p class="setup-note">${esc(RETENTION_COPY)}</p>
+  </div>`);
+  card.appendChild(buildRetentionControl(w.recording_retention_days, (days) => {
+    w.recording_retention_days = days;
+  }));
+  return card;
+}
+
 function renderSetupStep2(s) {
   const path = (s.vault && s.vault.path) || "";
   const card = h(`<div class="panel setup-card ${ent(3)}">
@@ -3725,9 +4746,9 @@ const PERM_ASKED = "We just asked macOS to show the permission prompt. Click All
 
 function renderSetupStep3() {
   App.setupPerms = App.setupPerms || { calendar: null, mail: null, screen: null };
-  const card = h(`<div class="panel setup-card ${ent(7)}">
+  const card = h(`<div class="panel setup-card ${ent(8)}">
     <div class="setup-step-head">
-      <span class="setup-num">6</span>
+      <span class="setup-num">7</span>
       <h2>Mac permissions</h2>
       <button class="setup-skip" id="permSkip">Skip for now</button>
     </div>
@@ -3787,6 +4808,7 @@ async function finishSetup() {
         note_format: w.note_format,
         features: w.features,
         stt_engine: w.stt_engine,
+        recording_retention_days: retentionDays(w.recording_retention_days),
       });
     } catch (e) { /* best effort; a bad value should not trap the user in setup */ }
   }

@@ -1156,6 +1156,7 @@
   .d6 { animation-delay: 410ms; }
   .d7 { animation-delay: 480ms; }
   .d8 { animation-delay: 550ms; }
+  .d9 { animation-delay: 620ms; }
 
   .backlink {
     background: none; border: none; color: var(--ink-soft); font: inherit; font-size: 13px;
@@ -2154,6 +2155,179 @@ select.set-select { appearance: none; -webkit-appearance: none; cursor: pointer;
 .import-saved-meta { font-size: 12.5px; color: var(--ink-soft); margin-top: 2px; font-variant-numeric: tabular-nums; }
 
 /* ==========================================================================
+   Session recordings: the Recordings tab, and the session evidence that shows
+   up on the record and review screens.
+
+   Nothing new is invented here. Consent and each piece of material are rcards,
+   provenance is a chip, the confirmation question borrows the amber the risk
+   nudge uses, and progress is the same 4px rail twice. The one loud element on
+   the tab is the question that has to be answered before Debrief reads a file.
+   ========================================================================== */
+.srcs { display: flex; flex-direction: column; gap: 16px; }
+
+.src-consent { padding: 16px 18px; }
+.src-consent-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.src-consent-head h3 { font-family: var(--font-serif); font-size: 16px; font-weight: 600; margin: 0; text-wrap: balance; }
+.src-consent-head .rchip { margin-top: 0; }
+.rchip.wait { background: rgba(150, 145, 127, 0.16); color: var(--ink-soft); }
+.src-consent-state { font-size: 14.5px; margin-top: 7px; text-wrap: pretty; }
+.src-consent-actions { margin-top: 12px; }
+.src-consent-note { font-size: 12.5px; color: var(--ink-soft); margin: 11px 0 0; text-wrap: pretty; }
+
+/* The drop zone. Dashed, like the "Add document" card, so it reads as a place
+   to put something rather than as a card that failed to load. */
+.srcdrop {
+  background: var(--panel-2); border: 1px dashed var(--line); border-radius: var(--radius);
+  padding: 17px 18px;
+  transition-property: border-color, background;
+  transition-duration: 150ms;
+  transition-timing-function: var(--ease);
+}
+.srcdrop.drop-active { border-color: var(--soft-sage); background: var(--accent-soft); }
+.srcdrop.off { border-style: solid; border-color: var(--divider); }
+.srcdrop-title { font-size: 14.5px; font-weight: 600; }
+.srcdrop-hint { font-size: 13px; color: var(--ink-soft); margin-top: 4px; text-wrap: pretty; }
+.srcdrop-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 13px; }
+.srcdrop-accepts { font-size: 12px; color: var(--ink-soft); margin-top: 11px; text-wrap: pretty; }
+
+.src-uploads:not(:empty) { display: flex; flex-direction: column; gap: 8px; margin-top: 13px; }
+.src-upl { background: var(--panel); border-radius: var(--radius-sm); box-shadow: var(--row-shadow); padding: 10px 12px; }
+.src-upl-top { display: flex; gap: 10px; align-items: baseline; }
+.src-upl-name { font-size: 13.5px; font-weight: 600; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.src-upl-state { font-size: 12.5px; color: var(--ink-soft); flex: none; font-variant-numeric: tabular-nums; }
+.src-upl-bar { height: 4px; border-radius: 99px; background: var(--line); margin-top: 8px; overflow: hidden; }
+.src-upl-bar span {
+  display: block; height: 100%; border-radius: 99px; background: var(--accent);
+  transition: width 200ms var(--ease);
+}
+.src-upl.failed { background: var(--red-soft); box-shadow: 0 0 0 1px rgba(179, 82, 74, 0.28), var(--lift-1); }
+.src-upl-err { font-size: 12.5px; color: var(--red); margin-top: 6px; text-wrap: pretty; overflow-wrap: anywhere; }
+.src-upl-dismiss { margin-top: 9px; }
+
+/* The one question that stops a summary being filed as a client's own words. */
+.src-confirm {
+  background: var(--amber-soft); border-radius: var(--radius);
+  box-shadow: var(--ring-amber), var(--lift-2);
+  border-left: 4px solid var(--amber-line);
+  padding: 15px 17px;
+}
+.src-confirm-q { font-family: var(--font-serif); font-size: 17px; font-weight: 600; color: var(--amber); text-wrap: balance; }
+.src-confirm-sub { font-size: 13.5px; line-height: 1.55; margin-top: 5px; text-wrap: pretty; }
+.src-confirm-btns { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 13px; }
+
+.src-list { display: flex; flex-direction: column; gap: 12px; }
+.src-card { padding: 15px 18px; }
+.src-head { display: flex; gap: 12px; align-items: flex-start; }
+.src-headings { flex: 1; min-width: 0; }
+.src-card h3 { font-family: var(--font-serif); font-size: 16px; font-weight: 600; margin: 0; text-wrap: balance; }
+.src-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.src-chip {
+  font-size: 11.5px; font-weight: 600; padding: 2.5px 9px; border-radius: 99px;
+  background: var(--bg); color: var(--ink-soft); box-shadow: var(--ring-hair);
+}
+.src-chip.strong { background: var(--accent-soft); color: var(--accent-ink); box-shadow: none; }
+.src-chip.warn { background: var(--amber-soft); color: var(--amber); box-shadow: none; }
+
+/* The stage line. It says what is happening or what happened, and the colour
+   only ever agrees with the words. */
+.src-stage { font-size: 13.5px; font-weight: 600; color: var(--ink-soft); margin-top: 12px; text-wrap: pretty; }
+.src-stage.good { color: var(--accent-ink); }
+.src-stage.bad { color: var(--red); }
+.src-prog { height: 4px; border-radius: 99px; background: var(--line); margin-top: 8px; overflow: hidden; }
+.src-prog span {
+  display: block; height: 100%; border-radius: 99px; background: var(--accent);
+  transition: width 300ms var(--ease);
+}
+.src-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 13px; }
+.src-foot .grow { flex: 1; }
+.src-note { font-size: 12.5px; color: var(--ink-soft); text-wrap: pretty; }
+.src-menu-wrap { position: relative; }
+.src-more { font-size: 15px; }
+
+/* Pasting a transcript, and reading a session summary back. */
+.paste-modal { max-width: 560px; }
+.paste-area { font-family: var(--font-sans); font-size: 14px; }
+.paste-kinds { margin-top: 13px; }
+
+.digest-modal { max-width: 620px; }
+.digest-slot { max-height: 58vh; overflow: auto; margin-top: 8px; }
+.digest-meta { font-size: 12.5px; color: var(--ink-soft); margin: 0 0 12px; }
+.digest-sec { margin-top: 15px; }
+.digest-sec h5 {
+  font-size: 11.5px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--accent-ink); margin: 0 0 6px;
+}
+.digest-list { margin: 0; padding-left: 18px; }
+.digest-list li { font-size: 13.5px; line-height: 1.5; margin-bottom: 4px; text-wrap: pretty; overflow-wrap: anywhere; }
+.digest-empty { font-size: 13.5px; color: var(--ink-soft); margin: 0; text-wrap: pretty; }
+.digest-seg { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.digest-seg:last-child { border-bottom: none; }
+.digest-when { flex: none; width: 54px; font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.digest-seg-body { display: flex; flex-direction: column; gap: 2px; font-size: 13.5px; line-height: 1.5; text-wrap: pretty; }
+.digest-risk {
+  font-size: 13.5px; color: var(--amber); background: var(--amber-soft);
+  border-radius: var(--radius-sm); padding: 9px 11px; margin: 0 0 9px; text-wrap: pretty;
+}
+
+/* Session evidence on the record and review screens. */
+.ev-pick {
+  width: 100%; max-width: 380px;
+  display: flex; align-items: flex-start; gap: 11px; cursor: pointer;
+  background: var(--panel); border-radius: var(--radius-row); box-shadow: var(--row-shadow);
+  padding: 12px 14px;
+  transition-property: box-shadow;
+  transition-duration: 150ms;
+  transition-timing-function: var(--ease);
+}
+.ev-pick:hover { box-shadow: var(--ring-sage), var(--lift-1); }
+.ev-pick:focus-within { box-shadow: var(--ring), var(--lift-1); }
+.ev-pick input { margin-top: 2px; width: 17px; height: 17px; flex: none; accent-color: var(--accent); }
+.ev-pick-body { display: flex; flex-direction: column; gap: 2px; }
+.ev-pick-title { font-size: 13.5px; font-weight: 600; text-wrap: balance; }
+.ev-pick-desc { font-size: 12.5px; color: var(--ink-soft); text-wrap: pretty; }
+
+.ev-badge-row { margin-top: 16px; }
+.ev-badge {
+  display: inline-flex; align-items: center; font-size: 11.5px; font-weight: 700;
+  padding: 3px 10px; border-radius: 99px; background: var(--accent-soft); color: var(--accent-ink);
+}
+.actions-list .ev-callout {
+  background: var(--panel-2); border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 1px rgba(168, 188, 161, 0.85);
+  padding: 12px 14px; font-size: 13.5px; line-height: 1.55; text-wrap: pretty;
+}
+
+/* Where the recording and the debrief do not agree. Amber, like every other
+   thing on this screen that asks for the clinician's judgment, and with no
+   buttons at all: nothing here is resolvable by the app. */
+.ev-conflicts {
+  background: var(--amber-soft);
+  box-shadow: var(--ring-amber), var(--lift-2);
+  border-left: 4px solid var(--amber-line);
+}
+.ev-conflicts h2 { font-family: var(--font-serif); font-size: 17px; font-weight: 600; color: var(--amber); margin: 0 0 4px; text-wrap: balance; }
+.ev-conflicts-note { font-size: 13px; color: var(--ink); margin: 0 0 10px; text-wrap: pretty; }
+.ev-conflicts ul { margin: 0; padding-left: 18px; }
+.ev-conflicts li { font-size: 13.5px; line-height: 1.55; margin-bottom: 6px; text-wrap: pretty; overflow-wrap: anywhere; }
+.ev-conflicts li:last-child { margin-bottom: 0; }
+
+/* Retention: the radio pair plus its day count. */
+.set-days { display: flex; align-items: center; gap: 9px; margin-top: 10px; padding-left: 4px; flex-wrap: wrap; }
+/* display:flex would otherwise beat the hidden attribute and show a day count
+   under "keep until I delete it", which reads as a deletion already scheduled. */
+.set-days[hidden] { display: none; }
+.set-days-label { font-size: 13px; color: var(--ink-soft); }
+.set-days-input {
+  width: 92px; font: inherit; font-size: 14px; padding: 8px 10px;
+  border: none; border-radius: var(--radius-sm); background: var(--panel);
+  box-shadow: var(--ring-hair-strong); color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.set-days-input:hover { box-shadow: 0 0 0 1px rgba(95, 122, 97, 0.22); }
+.set-days-input:focus { outline: none; box-shadow: var(--ring); }
+.set-days-unit { font-size: 13px; color: var(--ink-soft); }
+
+/* ==========================================================================
    Reduced motion.
 
    Last in the file on purpose: every rule it neutralises is declared above it,
@@ -2199,6 +2373,12 @@ select.set-select { appearance: none; -webkit-appearance: none; cursor: pointer;
     transition-property: opacity;
     transform: none !important;
     filter: none !important;
+  }
+
+  /* Progress rails jump to their new length instead of sliding to it. */
+  .src-prog span,
+  .src-upl-bar span {
+    transition: none !important;
   }
 
   /* Travel. Hover lifts, the "Saved" rise, and the affordance that slides in. */
