@@ -14,7 +14,7 @@ import json
 
 import pytest
 
-from debrief import compiler, formats
+from debrief import compiler, doctext, formats
 
 
 @pytest.fixture()
@@ -71,14 +71,14 @@ def test_extract_docx_via_textutil(monkeypatch):
         assert "-stdout" in cmd
         return FakeProc()
 
-    monkeypatch.setattr(compiler.subprocess, "run", fake_run)
+    monkeypatch.setattr(doctext.subprocess, "run", fake_run)
     out = compiler.extract_document_text(b"PK\x03\x04fake docx", "template.docx")
     assert "Subjective" in out["text"]
     assert out["pdf_unsupported"] is False
 
 
 def test_extract_pdf_unsupported_when_no_pdftotext(monkeypatch):
-    monkeypatch.setattr(compiler.shutil, "which", lambda name: None)
+    monkeypatch.setattr(doctext.shutil, "which", lambda name: None)
     out = compiler.extract_document_text(b"%PDF-1.4 fake", "template.pdf")
     assert out["pdf_unsupported"] is True
     assert out["text"] == ""
@@ -86,14 +86,14 @@ def test_extract_pdf_unsupported_when_no_pdftotext(monkeypatch):
 
 
 def test_extract_pdf_via_pdftotext_when_present(monkeypatch):
-    monkeypatch.setattr(compiler.shutil, "which", lambda name: "/usr/bin/pdftotext")
+    monkeypatch.setattr(doctext.shutil, "which", lambda name: "/usr/bin/pdftotext")
 
     class FakeProc:
         returncode = 0
         stdout = b"Goal\nReality\nOptions\nWay forward\n"
         stderr = b""
 
-    monkeypatch.setattr(compiler.subprocess, "run", lambda cmd, **kw: FakeProc())
+    monkeypatch.setattr(doctext.subprocess, "run", lambda cmd, **kw: FakeProc())
     out = compiler.extract_document_text(b"%PDF-1.4 fake", "template.pdf")
     assert out["pdf_unsupported"] is False
     assert "Reality" in out["text"]
