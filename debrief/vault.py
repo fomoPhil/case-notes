@@ -1052,16 +1052,31 @@ def write_session_note(
         parts.append(f"{transcript.strip()}\n\n")
         parts.append("</details>\n")
     elif meta.get("source_id"):
-        # A note drafted from session material with no debrief behind it. The
+        # A note drafted from stored material with no debrief behind it. The
         # absence is stated rather than left as a missing section: a reader
         # months later needs to know that nobody dictated this and where the
         # material it was written from actually lives. Nothing renders here for
         # any other note, so a note filed the ordinary way is unchanged.
+        #
+        # What the material WAS decides the sentence. Calling an article the
+        # clinician saved "session material" would put a claim in a permanent
+        # clinical record that its own frontmatter contradicts, and the record
+        # is the thing that outlives every screen in this app.
+        from . import sources as _sources  # lazy: sources imports this module
+
+        where = f"Recordings/{client_id}/{meta['source_id']}/"
         parts.append("\n## Debrief\n\n")
-        parts.append(
-            "No debrief was recorded. This note was drafted from the session "
-            f"material filed at Recordings/{client_id}/{meta['source_id']}/.\n"
-        )
+        if str(meta.get("source_kind") or "") in _sources.REFERENCE_KINDS:
+            parts.append(
+                "No debrief was recorded. This note was drafted from reference "
+                f"material filed at {where}. There was no session recording "
+                "behind it.\n"
+            )
+        else:
+            parts.append(
+                "No debrief was recorded. This note was drafted from the "
+                f"session material filed at {where}.\n"
+            )
 
     # Archived dictation audio: Obsidian embed renders an inline player.
     if audio_name:

@@ -687,6 +687,10 @@ def test_plan_from_a_reference_source_records_material_not_a_session(
     assert plan["evidence_conflicts"] == []
     assert "records what was shared" in plan["source_note"]
     assert plan["source"]["kind"] == "reference_document"
+    # The status says what the material is, in the same word the debrief path
+    # uses for it. The material was still read, so digest_used stands.
+    assert plan["source_status"] == "reference"
+    assert plan["digest_used"] is True
 
     # The reference door, not the evidence door.
     assert extract_calls[0]["digest"] is None
@@ -714,6 +718,7 @@ def test_a_reference_source_with_a_stripped_session_digest_still_drafts(
     plan = pipeline.plan_from_source(CLIENT, SID)
 
     assert plan["no_debrief"] is True
+    assert plan["source_status"] == "reference"
     assert extract_calls[0]["reference"] is not None
     prompt = _user_prompt(stub_model)
     assert "REFERENCE MATERIAL" in prompt
@@ -721,6 +726,34 @@ def test_a_reference_source_with_a_stripped_session_digest_still_drafts(
     # The safe descriptive fields came through under the reference headings.
     assert "- Breathing before bed" in prompt
     assert "- Sleep" in prompt
+
+
+def test_a_reference_draft_never_carries_a_quote_the_model_invented(
+    scratch_vault, monkeypatch
+):
+    """The material holds nobody's words, so a quote in the note came from
+    nowhere. Stated in code after the model answers, like every other quote
+    guarantee in this codebase."""
+    _seed_source(**_reference_source())
+    _seed_digest(_reference_digest())
+
+    def hallucinating(messages, schema=None, max_tokens=None, temperature=None):
+        return {
+            "note": {
+                "data": "The clinician shared a talk on the nervous system.",
+                "assessment": "a",
+                "plan": "p",
+                "client_quotes": ["I never feel safe anywhere"],
+            },
+            "actions": [],
+            "unsupported_requests": [],
+            "next_session_suggestions": [],
+        }
+
+    monkeypatch.setattr(llm, "chat", hallucinating)
+
+    plan = pipeline.plan_from_source(CLIENT, SID)
+    assert plan["note"]["client_quotes"] == []
 
 
 def test_draft_conflicts_pass_through_and_rule_three_still_applies(
@@ -891,6 +924,36 @@ def test_executing_a_drafted_plan_files_an_honest_note(scratch_vault, stub_model
     # Nothing was booked or drafted, because a recording asks for nothing.
     assert result["actions"] == []
     assert result["actions_taken"] == ["note-filed"]
+
+
+def test_filing_a_reference_draft_never_calls_it_session_material(
+    scratch_vault, stub_model
+):
+    """The permanent record has to agree with its own frontmatter.
+
+    A note whose frontmatter says reference_document and whose body says it was
+    drafted from session material is a contradiction that outlives every screen
+    in this app, so the body branches on what the material actually was.
+    """
+    _seed_source(session_date=dt.date(2026, 7, 21), **_reference_source())
+    _seed_digest(_reference_digest())
+
+    plan = pipeline.plan_from_source(CLIENT, SID)
+    result = pipeline.execute_plan(plan, verify=False)
+
+    note_path = result["note_path"]
+    assert note_path, result["errors"]
+    text = open(note_path, encoding="utf-8").read()
+
+    assert "source_kind: reference_document" in text
+    assert "source_verbatim: false" in text
+    assert "session_date: '2026-07-21'" in text
+    assert "drafted from reference material filed at" in text
+    assert f"Recordings/{CLIENT}/{SID}/." in text
+    assert "There was no session recording behind it." in text
+    # The words the record must never contain about an article.
+    assert "session material" not in text
+    assert "## Session Transcript" not in text
 
 
 def test_a_debriefed_note_still_embeds_its_transcript(scratch_vault, stub_model):

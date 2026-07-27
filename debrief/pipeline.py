@@ -592,6 +592,10 @@ def transcribe_and_extract(
         if reference or ladder._is_reference_digest(digest):
             digest = None
             reference = True
+        # The whole vocabulary, in one place: ready | processing | missing |
+        # reference. plan_from_source uses the same four words for the same
+        # four things, so a screen reading source_status never has to ask which
+        # door the plan came through.
         if reference:
             source_status = "reference"
             source_note = _SOURCE_REFERENCE_NOTE
@@ -910,9 +914,16 @@ def plan_from_source(client_id: str, source_id: str) -> dict:
     timings["extract"] = round(time.perf_counter() - t0, 2)
 
     note = extraction.get("note", {}) or {}
-    evidence_conflicts = (
-        [] if reference else _collect_evidence_conflicts(extraction, note, digest)
-    )
+    if reference:
+        evidence_conflicts: list[str] = []
+        # Stated, not derived. The reference block carries no client statement
+        # and _reference_block refuses any digest that could, so a quote in this
+        # note came from nowhere: the model made it up. Everywhere else in this
+        # codebase a guarantee about quotes is finished in code after the model
+        # has answered, and this is that line for the reference path.
+        note["client_quotes"] = []
+    else:
+        evidence_conflicts = _collect_evidence_conflicts(extraction, note, digest)
     # Rule 7, stated rather than derived: this path never has a debrief, so it
     # never has an action. The extraction's own list goes with them.
     extraction["actions"] = []
@@ -962,7 +973,13 @@ def plan_from_source(client_id: str, source_id: str) -> dict:
             "kind": meta.get("kind"),
             "verbatim": bool(meta.get("verbatim")),
         },
-        "source_status": "ready",
+        # source_status describes what the material IS and whether it was
+        # usable, and it means the same thing on both roads into a plan:
+        # ready | processing | missing | reference. A reference draft is
+        # "reference" here exactly as it is on the debrief path, and
+        # digest_used stays true because the material was read; what differs is
+        # the door it came through, which source_note says in words.
+        "source_status": "reference" if reference else "ready",
         "evidence_conflicts": evidence_conflicts,
         "no_debrief": True,
     }
