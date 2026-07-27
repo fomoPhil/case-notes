@@ -14,7 +14,8 @@ produces:
 
 Media is large and the clinical text folders stay lean and greppable, so this
 tree is separate from Clients/. It is also one directory to exclude from cloud
-sync or delete wholesale. Nothing here ever writes into Private/.
+sync or delete wholesale. Nothing here ever touches the psychotherapy-notes
+folder that the vault keeps walled off from every model and every feature.
 
 Every write is atomic (temp file plus os.replace, the same helper the vault uses),
 so an interrupted write can never leave a reader a half file. The rungs are their
@@ -391,8 +392,11 @@ def sweep_retention(now: _dt.datetime) -> int:
         cid, sid = entry["client_id"], entry["source_id"]
         if not delete_audio(cid, sid):
             continue
-        meta = read_meta(cid, sid) or {}
-        meta["audio_deleted_at"] = stamp
-        write_meta(cid, sid, meta)
+        # Only annotate meta that can still be read. Writing a fresh dict here
+        # would replace the source's whole provenance with one timestamp.
+        meta = read_meta(cid, sid)
+        if meta is not None:
+            meta["audio_deleted_at"] = stamp
+            write_meta(cid, sid, meta)
         removed += 1
     return removed
