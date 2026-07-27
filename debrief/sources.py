@@ -100,6 +100,17 @@ TEXT_KINDS = {
     "clinician_notes",
 }
 
+# The kinds that are a recording rather than a document. There is nothing for a
+# clinician to confirm about these: a microphone is word for word by definition.
+MEDIA_KINDS = {"live_recording", "uploaded_audio", "uploaded_video"}
+
+# Said in one place, because the confirm route refuses this before calling in
+# and reclassify refuses it again on arrival. Two copies of a sentence drift.
+MEDIA_CONFIRM_MESSAGE = (
+    "That source is a recording, so there is nothing to confirm: what the "
+    "microphone captured is word for word."
+)
+
 
 # ---------------------------------------------------------------------------
 # The Source record
@@ -992,6 +1003,105 @@ def ingest_text(text: str, client_id: str, kind: str) -> tuple[Source, bool]:
 
     source = _store_text(client_id, source_id, kind, produced_by, captured_at, consent_ref, text)
     return source, False
+
+
+def reclassify(client_id: str, source_id: str, verbatim: bool, produced_by: str) -> Source:
+    """Rewrite a stored text source under the clinician's answer. Returns it.
+
+    This is the other half of needs_confirmation. The classifier guessed, the
+    source was stored with that guess and no work was queued, and now a human
+    has said what the material actually is. Their answer wins outright: it is
+    the only source of truth this module has that is not a heuristic.
+
+    Everything is rebuilt from source-text.md, which is retained for every text
+    source precisely so this is possible without the file being re-uploaded.
+
+        verbatim True   the material is word for word, so it is a transcript
+                        file and its rung 0 archive is parsed out of the text
+        verbatim False  the material is somebody's write up, so it carries no
+                        transcript, and any rung 0 or rung 1 a previous guess
+                        wrote is removed with it
+
+    produced_by decides which write up it is. "clinician" means the clinician's
+    own notes; anything else means a meeting tool wrote it. That distinction is
+    not cosmetic: the kind is written into the filed note's frontmatter, and
+    labelling a clinician's own observations as a third party's summary is a
+    false statement about authorship in a clinical record. It also matters that
+    prose with no structure classifies as clinician_notes at 0.5 confidence,
+    which is under CONFIRM_BELOW, so every set of typed notes arrives here.
+
+    Rung 2 goes in both directions. A digest carries provenance in its bones:
+    built as verbatim it may quote the client, built as a summary it may not, so
+    a digest built under the old answer is stale evidence and stale evidence in
+    a clinical record is worse than none. Deleting it is safe because rung 2 is
+    regenerable; the caller queues the ladder, which rebuilds it under the rules
+    that now apply. What is never deleted is the material itself: source-text.md
+    and any audio are the only copies of what arrived.
+
+    Raises SourceError when there is no such source, when the source is a
+    recording (nothing to confirm), or when the stored text has gone.
+    """
+    try:
+        meta = recstore.read_meta(client_id, source_id)
+    except ValueError as exc:
+        raise SourceError(str(exc)) from exc
+    if not meta:
+        raise SourceError(f"there is no stored source {source_id} for this client.")
+
+    meta = dict(meta)
+    meta["id"] = source_id
+    meta["client_id"] = client_id
+    try:
+        stored = Source.from_meta(meta)
+    except (ValueError, TypeError) as exc:
+        raise SourceError(f"the provenance for this source could not be read: {exc}") from exc
+
+    if stored.kind in MEDIA_KINDS:
+        raise SourceError(MEDIA_CONFIRM_MESSAGE)
+
+    producer = str(produced_by or "").strip()
+    if producer not in PRODUCERS:
+        raise SourceError(
+            f"{producer or '(none)'} is not somewhere session material comes from. "
+            f"Expected one of: {', '.join(sorted(PRODUCERS))}."
+        )
+
+    text = recstore.read_source_text(client_id, source_id)
+    if not (text or "").strip():
+        raise SourceError(
+            "The stored text for that source has gone, so it cannot be reclassified. "
+            "Bring the file in again."
+        )
+
+    if verbatim:
+        kind = "transcript_file"
+    elif producer == "clinician":
+        kind = "clinician_notes"
+    else:
+        kind = "third_party_summary"
+
+    recstore.delete_rung(client_id, source_id, 2)
+    if verbatim:
+        _, turns = parse_transcript(text)
+        recstore.write_rung(client_id, source_id, 0, render_turns(turns))
+        duration = _duration_min(turns)
+    else:
+        # A summary has no transcript rungs. Whatever a verbatim guess wrote at
+        # rung 0 or rung 1 is a transcript of material nobody said.
+        recstore.delete_rung(client_id, source_id, 1)
+        recstore.delete_rung(client_id, source_id, 0)
+        turns, duration = [], None
+
+    return _store(
+        client_id,
+        source_id,
+        kind,
+        producer,
+        stored.captured_at,
+        stored.consent_ref,
+        turns=turns,
+        duration_min=duration,
+    )
 
 
 def _store_text(

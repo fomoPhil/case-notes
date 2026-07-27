@@ -320,6 +320,36 @@ def delete_audio(client_id: str, source_id: str) -> bool:
     return True
 
 
+def delete_rung(client_id: str, source_id: str, rung: int) -> bool:
+    """Remove one built rung. Returns False when it was not there.
+
+    Only for rungs that can be built again from what is still on disk, which is
+    what makes this safe: rung 1 is rebuilt from rung 0 and rung 2 from rung 1
+    or the source text. The originals, source.* and source-text.md, are never
+    touched here, and there is no helper that removes them: losing the material
+    itself is delete_audio or delete_source, both of which say so.
+
+    The caller is the confirm flow. When a clinician answers "this is an AI
+    write up, not word for word", a digest built under the old provenance is
+    stale evidence, and stale evidence in a clinical record is worse than no
+    evidence. Rung 2 goes as a pair, digest.json and its digest.md rendering, so
+    the human view can never outlive the artifact it was rendered from.
+    """
+    if rung not in RUNG_FILES:
+        raise ValueError(f"unknown rung: {rung!r}. Rungs are 0, 1, and 2.")
+    directory = source_dir(client_id, source_id)
+    names = [RUNG_FILES[rung]] + ([_DIGEST_MD] if rung == 2 else [])
+    removed = False
+    for name in names:
+        path = directory / name
+        try:
+            path.unlink()
+            removed = True
+        except OSError:
+            continue
+    return removed
+
+
 def delete_source(client_id: str, source_id: str) -> bool:
     """Move a whole source folder to the vault trash. False when it is not there.
 

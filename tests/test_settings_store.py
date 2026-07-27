@@ -55,6 +55,7 @@ def test_defaults_when_no_file(store):
         "verify": True,
         "assistant": True,
     }
+    assert settings["recording_retention_days"] == 0
     assert settings["version"] == 1
 
 
@@ -142,3 +143,20 @@ def test_validate_patch_rejects_wrong_types(store):
 
 def test_validate_patch_accepts_good_features(store):
     store.validate_patch({"features": {"calendar": True, "email": False}})
+
+
+def test_retention_setting_validates(store):
+    # 0 means keep until the clinician deletes it; any positive whole number of
+    # days is a window. Everything else would silently disable the sweep or make
+    # it delete audio it should have kept.
+    store.validate_patch({"recording_retention_days": 0})
+    store.validate_patch({"recording_retention_days": 30})
+    for bad in (
+        {"recording_retention_days": -1},
+        {"recording_retention_days": True},  # bool is an int subclass; reject it
+        {"recording_retention_days": "30"},
+        {"recording_retention_days": 1.5},
+        {"recording_retention_days": None},
+    ):
+        with pytest.raises(ValueError):
+            store.validate_patch(bad)
