@@ -51,6 +51,14 @@ UPLOAD_REJECTED_MESSAGE = (
     "it as JPG, or set Camera to Most Compatible in Settings."
 )
 _PROTECTED_NAMES = {"_Profile.md", "Treatment-Plan.md"}
+# A client's record structure: these folders hold the record, they are not
+# content, so they never go to the trash as a unit.
+_CLIENT_STRUCTURE_NAMES = {"Sessions", "Documents"}
+# The only trees whose second level is content rather than structure: a session
+# recording source lives at Recordings/<client>/<source>, and a client's own
+# folders sit under Clients/<id>/. Everywhere else, a second-level folder is
+# part of the vault's shape (Templates/Worksheets, Interventions/<topic>).
+_FOLDER_CONTENT_TREES = {"Recordings", "Clients"}
 _TRASH_DIRNAME = "_Trash"
 _CACHE_DIRNAME = ".cache"
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -579,8 +587,10 @@ def _reject_untrashable_folder(target: Path) -> None:
     Folder trashing exists for leaf content (a session recording source is a
     folder of several files), never for structure. Off limits: the vault root,
     any top-level vault folder, anything inside _Trash, _Settings, or Private,
-    and a client's own root folder. Messages are plain because the API hands
-    them straight to the user.
+    a client's own root folder, a client's Sessions or Documents folder, and any
+    second-level folder outside the two trees whose second level is content
+    rather than structure. Messages are plain because the API hands them
+    straight to the user.
     """
     root = VAULT_DIR.resolve()
     resolved = target.resolve()
@@ -598,9 +608,20 @@ def _reject_untrashable_folder(target: Path) -> None:
         )
     if len(parts) == 1:
         raise VaultPathError(f"{top} is a main vault folder, so it cannot be moved to trash.")
-    if top == "Clients" and len(parts) == 2:
+    if top == "Clients":
+        if len(parts) == 2:
+            raise VaultPathError(
+                f"{parts[1]} is a client's own folder. "
+                "Move the documents inside it to trash instead."
+            )
+        if len(parts) == 3 and parts[2] in _CLIENT_STRUCTURE_NAMES:
+            raise VaultPathError(
+                f"{parts[2]} holds a client's record. "
+                "Move the items inside it to trash instead."
+            )
+    elif len(parts) == 2 and top not in _FOLDER_CONTENT_TREES:
         raise VaultPathError(
-            f"{parts[1]} is a client's own folder. Move the documents inside it to trash instead."
+            f"{top}/{parts[1]} is a structural folder, so it cannot be moved to trash."
         )
 
 
@@ -691,9 +712,18 @@ def restore(token: str) -> str:
 
 
 def _folder_file_count(folder: Path) -> int:
-    """Count the files inside a trashed folder, at any depth."""
+    """Count the files inside a trashed folder, at any depth.
+
+    Hidden files and hidden subfolders do not count: a .DS_Store the Finder
+    dropped in is not something the user put there, so it must not inflate the
+    number the UI shows.
+    """
     try:
-        return sum(1 for p in folder.rglob("*") if p.is_file())
+        return sum(
+            1
+            for p in folder.rglob("*")
+            if p.is_file() and not any(part.startswith(".") for part in p.relative_to(folder).parts)
+        )
     except OSError:
         return 0
 

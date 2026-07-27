@@ -254,23 +254,37 @@ def test_trash_directory_roundtrip(records):
 
 
 def test_trash_directory_refuses_protected_roots(records):
-    # These two are created on demand in real use, so make them exist first.
-    (records.VAULT_DIR / "_Trash").mkdir(parents=True, exist_ok=True)
-    (records.VAULT_DIR / "_Settings").mkdir(parents=True, exist_ok=True)
-    for rel in ("", ".", "_Trash", "_Settings", "Private", "Clients/C-0001"):
-        with pytest.raises(ValueError):
+    # These three are created on demand in real use, so make them exist first.
+    for folder in ("_Trash", "_Settings", "Clients/C-0001/Documents"):
+        (records.VAULT_DIR / folder).mkdir(parents=True, exist_ok=True)
+    refused = (
+        "",
+        ".",
+        "_Trash",
+        "_Settings",
+        "Private",
+        "Clients/C-0001",
+        "Clients/C-0001/Sessions",
+        "Clients/C-0001/Documents",
+        "Templates/Worksheets",
+    )
+    for rel in refused:
+        with pytest.raises(records.VaultPathError):
             records.trash(rel)
+    assert (records.VAULT_DIR / "Clients" / "C-0001" / "Sessions").is_dir(), "nothing moved"
 
     # A bucket already sitting in the trash must not be trashable again.
     _seed_recording_folder(records)
     token = records.trash(_RECORDING_REL)
-    with pytest.raises(ValueError):
+    with pytest.raises(records.VaultPathError):
         records.trash(f"_Trash/{token}")
     assert (records.VAULT_DIR / "_Trash" / token).is_dir()
 
 
 def test_list_trash_labels_directory_with_file_count(records):
-    _seed_recording_folder(records)
+    src = _seed_recording_folder(records)
+    # Finder litter must not inflate the count the UI shows.
+    (src / ".DS_Store").write_bytes(b"\x00\x00 finder litter")
     folder_token = records.trash(_RECORDING_REL)
     meta = records.save_upload("C-0001", "scan.pdf", b"%PDF-1.7 x")
     file_token = records.trash(meta["path"])
