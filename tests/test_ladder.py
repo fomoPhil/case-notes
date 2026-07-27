@@ -18,6 +18,7 @@ Three groups carry the clinical weight:
 from __future__ import annotations
 
 import datetime as dt
+import itertools
 import json
 
 import pytest
@@ -207,11 +208,11 @@ def _install(monkeypatch, fake: FakeLLM) -> FakeLLM:
     return fake
 
 
-def _seed_rungs(rung0: str | None = None, rung1: str | None = None) -> None:
+def _seed_rungs(rung0: str | None = None, rung1: str | None = None, sid: str = SID) -> None:
     if rung0 is not None:
-        recstore.write_rung(CLIENT, SID, 0, rung0)
+        recstore.write_rung(CLIENT, sid, 0, rung0)
     if rung1 is not None:
-        recstore.write_rung(CLIENT, SID, 1, rung1)
+        recstore.write_rung(CLIENT, sid, 1, rung1)
 
 
 def _render(turns) -> str:
@@ -557,9 +558,17 @@ def test_rule3_undiarized_forces_low_confidence(scratch_vault, monkeypatch):
     assert digest["diarized"] is False
 
 
+_ATTRIBUTION_RUNS = itertools.count(1)
+
+
 def _statements(monkeypatch, quotes, rung0=None, rung1=None, client_ctx=None, **src):
-    """Build a digest whose reduce returns `quotes`, every one claimed as high."""
-    _seed_rungs(rung0=rung0 or _timed_rung0(), rung1=rung1 or TRANSCRIPT)
+    """Build a digest whose reduce returns `quotes`, every one claimed as high.
+
+    Each call gets its own source id so a test can compare two transcripts
+    without the second one finding the first one's digest already on disk.
+    """
+    sid = f"{SID}-{next(_ATTRIBUTION_RUNS)}"
+    _seed_rungs(rung0=rung0 or _timed_rung0(), rung1=rung1 or TRANSCRIPT, sid=sid)
     reduce = _reduce_reply(
         client_statements=[
             {"quote": quote, "start_min": 0, "attribution_confidence": "high"}
@@ -567,7 +576,9 @@ def _statements(monkeypatch, quotes, rung0=None, rung1=None, client_ctx=None, **
         ]
     )
     _install(monkeypatch, FakeLLM(reduce_reply=lambda: reduce))
-    digest = ladder.build(_source(**src), CLIENT_CTX if client_ctx is None else client_ctx)
+    digest = ladder.build(
+        _source(id=sid, **src), CLIENT_CTX if client_ctx is None else client_ctx
+    )
     return {item["quote"]: item["attribution_confidence"] for item in digest["client_statements"]}
 
 
@@ -626,6 +637,64 @@ def test_attribution_low_for_generic_speaker_labels(scratch_vault, monkeypatch):
         rung1=" ".join(text for _, _, text in turns),
     )
     assert marks == {"I have not been sleeping since the move": "low"}
+
+
+def _shared_name_turns(therapist_label: str, client_label: str):
+    return [
+        (0, therapist_label, "So how has the week been."),
+        (600, client_label, "I have not been sleeping since the move."),
+        (1200, therapist_label, "We tried the breathing exercise together."),
+        (1800, client_label, "I still think I am the problem in that house."),
+    ]
+
+
+def test_attribution_low_when_both_voices_share_the_client_name(
+    scratch_vault, monkeypatch
+):
+    """A clinician and a client called Sam make every label meaningless.
+
+    Matching a label against the client's name only says something if a label
+    that did not match could have existed. When every labelled turn in the room
+    matches, the transcript has stopped distinguishing the two people, and a
+    quote the clinician spoke would be filed as the client's own words.
+    """
+    for therapist_label, client_label, client_name in (
+        ("Sam", "Sam", "Sam Bowen-Ortiz"),
+        ("Sam", "Sam Bowen-Ortiz", "Sam Bowen-Ortiz"),
+    ):
+        turns = _shared_name_turns(therapist_label, client_label)
+        marks = _statements(
+            monkeypatch,
+            ["I have not been sleeping since the move"],
+            rung0=_render(turns),
+            rung1=" ".join(text for _, _, text in turns),
+            client_ctx={"name": client_name},
+        )
+        assert marks == {"I have not been sleeping since the move": "low"}, (
+            f"{therapist_label} and {client_label} are not distinguishable"
+        )
+
+
+def test_attribution_high_when_the_clinician_is_named_too(scratch_vault, monkeypatch):
+    """The gate is a real second voice, not a ban on named clinicians."""
+    turns = _shared_name_turns("Dr Reyes", "Dana Ruiz")
+    marks = _statements(
+        monkeypatch,
+        ["I have not been sleeping since the move"],
+        rung0=_render(turns),
+        rung1=" ".join(text for _, _, text in turns),
+    )
+    assert marks == {"I have not been sleeping since the move": "high"}
+
+    # And the clinician's own line in that same transcript still cannot be
+    # attributed to the client.
+    clinician_line = "We tried the breathing exercise together"
+    assert _statements(
+        monkeypatch,
+        [clinician_line],
+        rung0=_render(turns),
+        rung1=" ".join(text for _, _, text in turns),
+    ) == {clinician_line: "low"}
 
 
 def test_attribution_low_without_a_client_name_in_context(scratch_vault, monkeypatch):

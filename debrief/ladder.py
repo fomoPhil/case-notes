@@ -484,6 +484,22 @@ def _client_names(client_ctx: dict | None) -> set[str]:
     return {candidate for candidate in candidates if candidate}
 
 
+def _has_other_voice(turns: list[dict], names: set[str]) -> bool:
+    """True when some labelled turn belongs to somebody who is not the client.
+
+    Matching a label against the client's name only means anything if a label
+    that does NOT match could have existed. When a clinician and their client
+    share a first name, every "Sam:" in the transcript matches, and a label
+    stops carrying any information about who spoke. The transcript has to prove
+    it can tell the two apart before any of it is allowed to attribute a quote.
+    """
+    return any(
+        _normalize(str(turn.get("speaker") or "").strip()) not in names
+        for turn in turns
+        if str(turn.get("speaker") or "").strip()
+    )
+
+
 def _attribution_check(
     quote: str, source: Source, turns: list[dict] | None, client_ctx: dict | None
 ) -> str:
@@ -493,12 +509,15 @@ def _attribution_check(
     time it reads the transcript there is nobody's name attached to anything,
     and a sentence the clinician spoke reads exactly like one the client did.
 
-    So the claim is checked, not believed. "high" survives only when all three
-    hold: the quote is found inside exactly one turn of the rung 0 archive, that
-    turn carries a speaker label, and the label is the client's own name.
-    Anything else, including a quote that spans two turns, a quote that appears
-    in several, a generic "Speaker 1" label, and a quote that correction has
-    changed enough that it no longer matches the raw turn, comes back "low".
+    So the claim is checked, not believed. "high" survives only when all four
+    hold: the transcript contains at least one labelled turn belonging to
+    somebody other than the client, the quote is found inside exactly one turn
+    of the rung 0 archive, that turn carries a speaker label, and the label is
+    the client's own name. Anything else, including a quote that spans two
+    turns, a quote that appears in several, a generic "Speaker 1" label, a room
+    where the clinician and the client share a first name, and a quote that
+    correction has changed enough that it no longer matches the raw turn, comes
+    back "low".
 
     Failing toward "low" is the whole point. An unattributed observation can be
     corrected later. A quote in the wrong person's mouth cannot.
@@ -506,7 +525,7 @@ def _attribution_check(
     if not source.diarized or not turns:
         return _SAFE_CONFIDENCE
     names = _client_names(client_ctx)
-    if not names:
+    if not names or not _has_other_voice(turns, names):
         return _SAFE_CONFIDENCE
     needle = _normalize(quote).strip()
     if not needle:
