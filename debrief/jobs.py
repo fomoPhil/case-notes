@@ -118,18 +118,27 @@ _QUEUE_POLL_SECONDS = 0.25
 
 
 def _now() -> str:
-    """The current UTC time, to the second, in ISO form."""
-    return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat()
+    """The current UTC time in ISO form, microseconds included.
+
+    The microseconds are load-bearing rather than decorative. Two jobs made in
+    the same second are ordinary here: a source is uploaded and reclassified in
+    one gesture, which cancels one job and queues another. Timestamps that stop
+    at the second make those two indistinguishable, and "newest first" then
+    falls back to a random suffix, so a caller asking which job is current can
+    be handed the one that was just cancelled.
+    """
+    return _dt.datetime.now(_dt.timezone.utc).isoformat()
 
 
 def _new_id() -> str:
-    """A job id: UTC timestamp plus a short random suffix.
+    """A job id: UTC timestamp to the microsecond, plus a short random suffix.
 
     The timestamp makes ids sort by creation, which is what "newest first" in
-    list_jobs is built on. The suffix is what makes two jobs submitted in the
-    same second two jobs rather than one overwriting the other.
+    list_jobs is built on, and the microseconds are what keep that true inside
+    a single second. The suffix is what makes two jobs created in the same
+    microsecond two jobs rather than one overwriting the other.
     """
-    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
     return f"{stamp}-{secrets.token_hex(3)}"
 
 
@@ -713,10 +722,11 @@ def status(job_id: str) -> dict | None:
 def list_jobs(client_id: str | None = None) -> list[dict]:
     """Every job, newest first, optionally narrowed to one client.
 
-    Newest first is by created_at, with the id breaking a tie, because an id
-    carries the time only to the second and two jobs submitted in the same
-    second would otherwise be ordered by their random suffix. An unreadable
-    record is skipped: a listing must never be taken down by one bad file.
+    Newest first is by created_at, with the id breaking a tie. Both carry
+    microseconds, so two jobs made a moment apart order by which came first
+    rather than by their random suffixes, and a caller taking the first row for
+    a source gets the job that is actually current. An unreadable record is
+    skipped: a listing must never be taken down by one bad file.
     """
     directory = _jobs_dir()
     if not directory.is_dir():

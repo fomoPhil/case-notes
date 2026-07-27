@@ -1350,13 +1350,17 @@ def test_flip_to_reference_drops_the_stale_digest_and_rebuilds(client):
     assert row["needs_confirmation"] is False
 
     # The job building the session digest is stopped, and a fresh one queued.
-    # Asserted through the live job list rather than the row's job pointer:
-    # two jobs submitted in the same second sort by a random suffix, so which
-    # one _newest_job_for picks is a coin toss and not this route's promise.
+    # Both jobs are made in the same second, so this is also where the row's
+    # job pointer has to be right: it names the work that is actually running,
+    # and pointing it at the job just cancelled would have the UI report a dead
+    # job forever, with no poll able to correct it.
     assert row["cancelled_jobs"] == [first_job]
     assert app_module.jobs.status(first_job)["state"] == "cancelled"
     assert row["job_id"] and row["job_id"] != first_job
     assert row["job_error"] is None
+    assert row["job"] is not None
+    assert row["job"]["id"] == row["job_id"], "the row points at the new job, not the dead one"
+    assert row["job"]["state"] != "cancelled"
     live = [
         job
         for job in app_module.jobs.list_jobs(CLIENT)

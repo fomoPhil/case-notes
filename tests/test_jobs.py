@@ -293,7 +293,7 @@ def test_submit_persists_record_and_returns_sortable_id(scratch_vault, no_worker
     job_id = jobs.submit("ladder", _payload(), priority=3)
     after = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%S")
 
-    assert re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]{6}", job_id), job_id
+    assert re.fullmatch(r"\d{8}-\d{6}-\d{6}-[0-9a-f]{6}", job_id), job_id
     assert before <= job_id[:15] <= after, "the id carries the time it was made"
 
     path = scratch_vault / ".debrief_staging" / "jobs" / f"{job_id}.json"
@@ -317,6 +317,26 @@ def test_submit_persists_record_and_returns_sortable_id(scratch_vault, no_worker
     other = jobs.submit("ladder", _payload(OTHER_SID))
     assert other != job_id
     assert jobs.status(other)["payload"]["source_id"] == OTHER_SID
+
+
+def test_jobs_made_in_the_same_second_still_order_by_creation(scratch_vault, no_worker):
+    """Order inside one second is creation order, not the luck of a suffix.
+
+    Cancelling one job and queueing its replacement happens in a single gesture,
+    so the two land in the same second routinely. A caller asking which job is
+    current has to be handed the new one every time, not half the time.
+    """
+    made = [jobs.submit("ladder", _payload(f"s-{index}")) for index in range(12)]
+
+    assert len(set(made)) == len(made), "no two jobs share an id"
+    assert sorted(made) == made, "ids sort in the order they were created"
+
+    stamps = [jobs.status(job_id)["created_at"] for job_id in made]
+    assert sorted(stamps) == stamps, "created_at rises with every job"
+    assert all(re.search(r"\.\d{6}", stamp) for stamp in stamps), "to the microsecond"
+
+    listed = [row["id"] for row in jobs.list_jobs()]
+    assert listed == list(reversed(made)), "the listing is newest first, exactly"
 
 
 def test_status_of_an_unknown_job_is_none(scratch_vault, no_worker):
