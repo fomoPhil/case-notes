@@ -1023,6 +1023,13 @@ async def api_document_email(request: Request) -> JSONResponse:
 
 def _reveal_sync(rel_path: str) -> None:
     target = records._guard(rel_path)
+    # A folder is opened, not revealed. "open -R" on a folder selects it inside
+    # its parent, which answers a question nobody asked: somebody who asks for
+    # a recording's folder wants to see what is in it. The guard has already
+    # run, so this can only ever be a folder inside the vault.
+    if target.is_dir():
+        subprocess.run(["open", str(target)], check=False)
+        return
     if not target.is_file():
         raise FileNotFoundError(rel_path)
     reveal_target = target
@@ -1043,7 +1050,9 @@ def _open_sync(rel_path: str) -> None:
 
 @app.post("/api/reveal")
 async def api_reveal(request: Request) -> JSONResponse:
-    """Reveal a file in Finder (open -R). Markdown reveals its rendered PDF."""
+    """Show something in Finder. A file is revealed (open -R), and markdown
+    reveals its rendered PDF; a folder is opened, so its contents are what the
+    clinician actually gets. Paths are vault relative, and "." is the vault."""
     body = await request.json()
     path = body.get("path")
     _guard_or_400(path)

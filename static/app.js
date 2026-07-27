@@ -2367,7 +2367,7 @@ function buildDocCard(doc, d) {
   renameBtn.onclick = () => inlineRenameCard(card, doc, d);
   dlBtn.onclick = () => { if (isMd || doc.path.toLowerCase().endsWith(".pdf")) downloadPdf(doc.path); else post("/api/open", { path: doc.path }); };
   emailBtn.onclick = () => emailDocument(d.client_id, doc.path);
-  revealBtn.onclick = () => revealPath(doc.path);
+  revealBtn.onclick = () => revealPath(parentFolder(doc.path));
   wrap.appendChild(card);
   wrap.appendChild(acts);
   return wrap;
@@ -2470,20 +2470,34 @@ function isReferenceSource(row) {
 const SOURCE_UNCONFIRMED = "Debrief is not sure what this material is yet. Answer the question above first, so the note says where it came from and means it.";
 
 // The files a source keeps, by name. Mirrors RUNG_FILES and its neighbours in
-// debrief/recstore.py. meta.json is the one file every source has, which is why
-// it anchors a reveal: /api/reveal opens a file's folder, and this is the file
-// that is always there to open the source's folder with.
+// debrief/recstore.py.
 const SOURCE_FILES = {
   corrected: "transcript.md",
   raw: "transcript-raw.md",
   original: "source-text.md",
-  digest: "digest.json",
-  meta: "meta.json",
 };
 
 function sourcePath(clientId, sourceId, file) {
   return `Recordings/${clientId}/${sourceId}/${file}`;
 }
+
+// The folder everything for one piece of material lives in. Reveal opens it,
+// so this is what every reveal on this screen asks for.
+function sourceFolder(clientId, sourceId) {
+  return `Recordings/${clientId}/${sourceId}`;
+}
+
+// The folder something sits in, for a reveal that should show the real file
+// rather than the rendered PDF a markdown reveal opens.
+function parentFolder(path) {
+  const parts = String(path || "").split("/");
+  parts.pop();
+  return parts.join("/") || VAULT_ROOT_PATH;
+}
+
+// The vault itself. "." is the one relative path that names the root, and the
+// server's guard resolves it to exactly that and no further.
+const VAULT_ROOT_PATH = ".";
 const SOURCE_PRODUCER_LABEL = {
   debrief: "Recorded in Debrief",
   zoom: "From Zoom",
@@ -2649,6 +2663,12 @@ function sourcesFingerprint(rows) {
       row.needs_confirmation ? 1 : 0,
       row.has_audio ? 1 : 0,
       (row.rungs || []).join("."),
+      // Everything else the card draws. A date corrected in another window, a
+      // flip to reference material, a note connected somewhere else: each of
+      // them changes this card, so each of them has to reach it.
+      row.kind || "",
+      row.session_date || "",
+      (row.linked_notes || []).join(","),
       job.state || "", job.stage || "", job.done || 0, job.total || 0, job.error || "",
     ].join("~");
   }).join("|");
@@ -2999,6 +3019,10 @@ async function uploadSources(files, clientId) {
   // reason, and another client's batch is none of this one's business.
   const finished = new Set(batch.filter(u => u.state === "done").map(u => u.id));
   App.uploads = (App.uploads || []).filter(u => !finished.has(u.id));
+  // Back to "session recording" for the next drop. This is what this drop was,
+  // not a setting: a "reference" left ticked from ten minutes ago is how a
+  // session recording gets filed as an article nobody will ever look for.
+  App.sourceUploadKind = "session";
   await refreshSources(clientId);
   if (brought) announce(brought === 1 ? "One file was brought in." : `${brought} files were brought in.`);
   if (failed) announce(failed === 1 ? "One file could not be brought in." : `${failed} files could not be brought in.`, true);
@@ -3339,7 +3363,10 @@ function toggleSourceMenu(wrap, trigger, row, clientId) {
   // about this material into a clinical record. The reason travels with the
   // disabled item rather than being discovered by clicking it.
   const blocked = !!row.needs_confirmation;
-  const blockedAttrs = blocked ? ` disabled title="${esc(SOURCE_UNCONFIRMED)}" aria-describedby="${uid("why")}"` : "";
+  // One id, minted once, on the sentence itself further down. Pointing at an
+  // id nothing carries is the same as saying nothing.
+  const whyId = uid("why");
+  const blockedAttrs = blocked ? ` disabled title="${esc(SOURCE_UNCONFIRMED)}" aria-describedby="${whyId}"` : "";
   const menu = h(`<div class="overflow-menu" role="menu" aria-label="Actions for the material from ${esc(sourceHeadline(row))}">
     <button type="button" role="menuitem" data-a="connect"${blockedAttrs}>Connect to a session note</button>
     <button type="button" role="menuitem" data-a="draft"${blockedAttrs}>Draft a note from this</button>
@@ -3350,7 +3377,7 @@ function toggleSourceMenu(wrap, trigger, row, clientId) {
   </div>`);
   wrap.appendChild(menu);
   trigger.setAttribute("aria-expanded", "true");
-  if (blocked) menu.appendChild(h(`<div class="overflow-why">${esc(SOURCE_UNCONFIRMED)}</div>`));
+  if (blocked) menu.appendChild(h(`<div class="overflow-why" id="${whyId}">${esc(SOURCE_UNCONFIRMED)}</div>`));
 
   const connectBtn = menu.querySelector('[data-a="connect"]');
   if (!blocked) connectBtn.onclick = () => { closeSourceMenu(wrap, trigger); openConnectSheet(row, clientId); };
@@ -3371,9 +3398,7 @@ function toggleSourceMenu(wrap, trigger, row, clientId) {
   };
   menu.querySelector('[data-a="reveal"]').onclick = () => {
     closeSourceMenu(wrap, trigger);
-    // The folder, by way of the one file every source has. Finder opens a
-    // file's folder, and there is no other way to ask it for the folder.
-    revealPath(sourcePath(clientId, row.source_id, SOURCE_FILES.meta));
+    revealPath(sourceFolder(clientId, row.source_id));
   };
 
   const audioBtn = menu.querySelector('[data-a="audio"]');
@@ -3457,11 +3482,11 @@ async function deleteSource(row, clientId, audioOnly) {
 // Reveal in Finder.
 //
 // One call, one shape, everywhere something on screen exists as bytes on disk.
-// /api/reveal opens a FILE's folder and refuses a folder outright, so every
-// caller here names a real file.
+// A file is revealed inside its folder, a folder is opened; the callers here
+// ask for folders, because "where is this" is a question about a folder.
 // ---------------------------------------------------------------------------
 
-async function revealPath(path, whenMissing) {
+async function revealPath(path) {
   try {
     const r = await fetch("/api/reveal", {
       method: "POST",
@@ -3470,7 +3495,7 @@ async function revealPath(path, whenMissing) {
     });
     if (!r.ok) throw await failure(r);
   } catch (e) {
-    toast(whenMissing || errText(e), null, true);
+    toastError(e);
   }
 }
 
@@ -3785,7 +3810,7 @@ async function openDigestSheet(row, clientId) {
   let close = () => backdrop.remove();
   backdrop.querySelector("#digestClose").onclick = () => close();
   backdrop.querySelector("#digestReveal").onclick = () =>
-    revealPath(sourcePath(clientId, row.source_id, SOURCE_FILES.digest));
+    revealPath(sourceFolder(clientId, row.source_id));
   backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
   close = openDialog({
     backdrop,
@@ -3899,7 +3924,7 @@ function openWordForWord(row, clientId) {
   paintTabs(available);
   backdrop.querySelector("#wordClose").onclick = () => close();
   backdrop.querySelector("#wordReveal").onclick = () =>
-    revealPath(sourcePath(clientId, row.source_id, SOURCE_FILES.meta));
+    revealPath(sourceFolder(clientId, row.source_id));
   backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
   close = openDialog({
     backdrop,
@@ -4344,7 +4369,7 @@ function renderLibrary() {
       </div>
     </div>`);
     card.querySelector(".lib-send").onclick = () => pickClientThen(cid => emailDocument(cid, it.path));
-    card.querySelector(".iconbtn").onclick = () => revealPath(it.path);
+    card.querySelector(".iconbtn").onclick = () => revealPath(parentFolder(it.path));
     card.querySelector(".libcard-open").onclick = () => openDocument(it.path, { section: which === "reference" ? "Reference" : "Worksheets", title: it.title });
     grid.appendChild(card);
   });
@@ -4861,7 +4886,7 @@ function renderSettings() {
     }
   }
   const revealVault = h(`<button class="btn btn-ghost btn-compact set-import-btn">Reveal in Finder</button>`);
-  revealVault.onclick = () => revealPath(VAULT_ANCHOR_FILE, VAULT_REVEAL_FALLBACK);
+  revealVault.onclick = () => revealPath(VAULT_ROOT_PATH);
   cardF.appendChild(revealVault);
   el.appendChild(cardF);
 
@@ -4875,12 +4900,6 @@ function renderSettings() {
   cardG.appendChild(devBtn);
   el.appendChild(cardG);
 }
-
-// The vault root is a folder, and /api/reveal opens a file's folder rather than
-// a folder itself. The setup marker sits directly in the vault root, so opening
-// it opens exactly the folder the clinician asked for.
-const VAULT_ANCHOR_FILE = ".debrief_setup_done";
-const VAULT_REVEAL_FALLBACK = "Debrief could not open that folder. The path is above: copy it, then use Go, Go to Folder in Finder.";
 
 // ===========================================================================
 // The developer panel.
@@ -4970,7 +4989,7 @@ function buildDevBody(status, jobsPayload) {
   vaultBox.appendChild(devRow("Folder", vault.path));
   vaultBox.appendChild(devRow("Writable", vault.writable ? "yes" : "no"));
   const reveal = h(`<button type="button" class="btn btn-ghost btn-compact dev-reveal">Reveal in Finder</button>`);
-  reveal.onclick = () => revealPath(VAULT_ANCHOR_FILE, VAULT_REVEAL_FALLBACK);
+  reveal.onclick = () => revealPath(VAULT_ROOT_PATH);
   vaultBox.appendChild(reveal);
   body.appendChild(devSection("Your records folder", vaultBox));
 

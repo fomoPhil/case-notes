@@ -264,6 +264,38 @@ def test_reveal_and_open_mocked(client, monkeypatch):
     assert any("-R" in c for c in calls), "reveal should use open -R"
 
 
+def test_reveal_opens_a_folder_rather_than_selecting_it(client, monkeypatch):
+    """A source's folder is what the clinician asked for, so it is opened.
+
+    Revealing it would select the folder inside Recordings/<client>/ and show
+    them everything except the thing they wanted. The guard still runs first,
+    so this is a folder inside the vault or it is nothing.
+    """
+    tc, vault_dir = client
+    calls = []
+    monkeypatch.setattr(app_module.subprocess, "run", lambda *a, **k: calls.append(a[0]))
+
+    source_dir = vault_dir / "Recordings" / "C-0001" / "2026-07-27-1325"
+    source_dir.mkdir(parents=True)
+    (source_dir / "meta.json").write_text("{}", encoding="utf-8")
+
+    resp = tc.post("/api/reveal", json={"path": "Recordings/C-0001/2026-07-27-1325"})
+    assert resp.status_code == 200, resp.text
+    assert calls[-1] == ["open", str(source_dir)]
+    assert "-R" not in calls[-1], "a folder is opened, not revealed inside its parent"
+
+    # The vault root is a folder too, and "." is how a browser can name it.
+    assert tc.post("/api/reveal", json={"path": "."}).status_code == 200
+    assert calls[-1] == ["open", str(vault_dir.resolve())]
+
+    # None of which loosens the guard.
+    escape = tc.post("/api/reveal", json={"path": "../.."})
+    assert escape.status_code == 400
+    assert tc.post("/api/reveal", json={"path": "Recordings/../../etc"}).status_code == 400
+    assert tc.post("/api/reveal", json={"path": "/etc"}).status_code == 400
+    assert len(calls) == 2, "a refused path never reaches Finder"
+
+
 # ---------------------------------------------------------------------------
 # Trash round-trip + search + library
 # ---------------------------------------------------------------------------
