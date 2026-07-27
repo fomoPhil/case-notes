@@ -2328,6 +2328,159 @@ select.set-select { appearance: none; -webkit-appearance: none; cursor: pointer;
 .set-days-unit { font-size: 13px; color: var(--ink-soft); }
 
 /* ==========================================================================
+   The source trust loop: session dates, word for word, connections, reference
+   material, and the developer panel.
+
+   Same materials as everything above: rcards, chips, the dialog shell, the
+   overflow menu, the setup card. The only new visual idea is the monospace
+   block that shows a transcript, and it is deliberately plain: it is evidence,
+   not a document.
+   ========================================================================== */
+
+.src-when-row { display: flex; align-items: center; gap: 6px; min-height: 26px; }
+.src-when { flex: 1; min-width: 0; }
+.src-date-edit-btn { flex: none; }
+.src-added { font-size: 12.5px; color: var(--ink-soft); margin-top: 2px; }
+
+.src-date-edit { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%; }
+.src-date-input {
+  font: inherit; font-size: 14px; padding: 7px 10px;
+  border: none; border-radius: var(--radius-sm); background: var(--panel);
+  box-shadow: var(--ring-hair-strong); color: var(--ink);
+}
+.src-date-input:focus { outline: none; box-shadow: var(--ring); }
+.src-date-err { font-size: 12.5px; color: var(--red); margin-top: 7px; text-wrap: pretty; }
+
+.src-chip.ref { background: var(--accent-soft); color: var(--accent-ink); box-shadow: none; }
+
+.src-links { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+.src-links-label { font-size: 12px; color: var(--ink-soft); }
+.src-link-chip {
+  font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer;
+  padding: 4px 11px; border-radius: 99px; border: none;
+  background: var(--panel-2); color: var(--accent-ink); box-shadow: var(--ring-hair);
+  transition-property: box-shadow, background;
+  transition-duration: 150ms;
+  transition-timing-function: var(--ease);
+}
+.src-link-chip:hover { background: var(--accent-soft); box-shadow: var(--ring-sage); }
+.src-link-chip:focus-visible { outline: none; box-shadow: var(--ring); }
+
+/* The reason a menu item is unavailable, said in the menu rather than found by
+   clicking. */
+.overflow-menu button[disabled] { color: var(--ink-faint); cursor: not-allowed; }
+.overflow-menu button[disabled]:hover { background: none; }
+.overflow-why {
+  font-size: 12px; color: var(--ink-soft); line-height: 1.45;
+  padding: 6px 10px 4px; max-width: 240px; text-wrap: pretty;
+  border-top: 1px solid var(--line); margin-top: 4px;
+}
+
+/* What is this material: asked at the door, in the upload zone. */
+.srcdrop-kinds { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 13px; }
+.srcdrop-kind {
+  display: flex; align-items: flex-start; gap: 9px; cursor: pointer;
+  flex: 1 1 210px; padding: 10px 12px; border-radius: var(--radius-sm);
+  background: var(--panel); box-shadow: var(--row-shadow);
+}
+.srcdrop-kind:hover { box-shadow: var(--ring-sage), var(--lift-1); }
+.srcdrop-kind:has(input:checked) { background: var(--accent-soft); box-shadow: 0 0 0 1px rgba(168,188,161,0.85), var(--lift-1); }
+.srcdrop-kind:focus-within { box-shadow: var(--ring), var(--lift-1); }
+.srcdrop-kind input { margin-top: 2px; width: 16px; height: 16px; flex: none; accent-color: var(--accent); }
+.srcdrop-kind-title { display: block; font-size: 13.5px; font-weight: 600; }
+.srcdrop-kind-desc { display: block; font-size: 12px; color: var(--ink-soft); margin-top: 1px; text-wrap: pretty; }
+.srcdrop.off .srcdrop-kind { opacity: 0.75; }
+
+/* Word for word. */
+.word-modal { max-width: 680px; }
+.word-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.word-tab {
+  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  padding: 7px 13px; border-radius: 99px; border: none;
+  background: var(--panel-2); color: var(--ink-soft); box-shadow: var(--ring-hair);
+  transition-property: background, color, box-shadow;
+  transition-duration: 150ms;
+  transition-timing-function: var(--ease);
+}
+.word-tab:hover { color: var(--ink); }
+.word-tab.on { background: var(--accent-soft); color: var(--accent-ink); box-shadow: 0 0 0 1px rgba(168,188,161,0.85); }
+.word-tab:focus-visible { outline: none; box-shadow: var(--ring); }
+.word-note { font-size: 12.5px; color: var(--ink-soft); margin: 9px 0 0; text-wrap: pretty; }
+.word-slot { margin-top: 10px; }
+.word-text {
+  margin: 0; max-height: 46vh; overflow: auto;
+  background: var(--panel-2); border-radius: var(--radius-sm); box-shadow: var(--ring-hair);
+  padding: 13px 15px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px; line-height: 1.65; color: var(--ink);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.word-text:focus-visible { outline: none; box-shadow: var(--ring); }
+
+/* Connecting material to a filed note. */
+.connect-modal { max-width: 560px; }
+.connect-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; max-height: 42vh; overflow: auto; }
+.connect-pick {
+  display: flex; flex-direction: column; gap: 2px; text-align: left; cursor: pointer;
+  font: inherit; border: none; border-radius: var(--radius-sm);
+  background: var(--panel); box-shadow: var(--row-shadow); padding: 11px 13px;
+  transition-property: box-shadow, background;
+  transition-duration: 150ms;
+  transition-timing-function: var(--ease);
+}
+.connect-pick:hover { box-shadow: var(--ring-sage), var(--lift-1); background: var(--accent-soft); }
+.connect-pick:focus-visible { outline: none; box-shadow: var(--ring), var(--lift-1); }
+.connect-pick-title { font-size: 14px; font-weight: 600; text-wrap: balance; }
+.connect-pick-meta { font-size: 12.5px; color: var(--ink-soft); }
+.connect-empty { font-size: 13.5px; color: var(--ink-soft); margin: 12px 0 0; text-wrap: pretty; }
+.connect-chosen { margin-top: 12px; display: flex; flex-direction: column; gap: 2px; }
+.connect-chosen-label { font-size: 12px; color: var(--ink-soft); }
+.connect-chosen-title { font-size: 15px; font-weight: 600; text-wrap: balance; }
+.connect-amend-label { font-size: 12.5px; color: var(--ink-soft); margin-top: 14px; }
+.connect-amend {
+  margin: 7px 0 0; padding: 12px 14px;
+  background: var(--panel-2); border-radius: var(--radius-sm);
+  box-shadow: var(--ring-hair); border-left: 3px solid var(--soft-sage);
+  font-size: 13.5px; line-height: 1.6; text-wrap: pretty; overflow-wrap: anywhere;
+}
+
+/* The reference summary borrows the session summary's shape and drops the
+   sections that would describe a session. */
+.digest-title { font-family: var(--font-serif); font-size: 16px; font-weight: 600; margin: 0 0 6px; text-wrap: balance; }
+.digest-para { font-size: 13.5px; line-height: 1.6; margin: 0; text-wrap: pretty; }
+
+/* The developer panel. */
+.dev-modal { max-width: 640px; }
+.dev-slot { max-height: 58vh; overflow: auto; margin-top: 8px; }
+.dev-sec { margin-top: 16px; }
+.dev-sec:first-child { margin-top: 4px; }
+.dev-sec h5 {
+  font-size: 11.5px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--accent-ink); margin: 0 0 7px;
+}
+.dev-chiprow { margin-bottom: 8px; }
+.dev-row { display: flex; gap: 12px; align-items: baseline; padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.dev-row:last-child { border-bottom: none; }
+.dev-k { flex: none; width: 108px; color: var(--ink-soft); }
+.dev-v { flex: 1; min-width: 0; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+.dev-reveal { margin-top: 10px; }
+.dev-jobs { display: flex; flex-direction: column; gap: 7px; }
+.dev-job {
+  background: var(--panel-2); border-radius: var(--radius-sm); box-shadow: var(--ring-hair);
+  padding: 9px 11px; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline;
+  font-size: 12.5px;
+}
+.dev-job-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink-soft); }
+.dev-job-kind { font-weight: 600; }
+.dev-job-state { color: var(--ink-soft); }
+.dev-job details.tech { width: 100%; }
+.dev-worker { margin: 0 0 10px; }
+
+/* The reveal icon, in the icon-button rows that were text glyphs until now. */
+.iconbtn svg { width: 15px; height: 15px; display: block; }
+.lib-row .iconbtn { flex: none; }
+
+/* ==========================================================================
    Reduced motion.
 
    Last in the file on purpose: every rule it neutralises is declared above it,
