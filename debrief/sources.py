@@ -224,6 +224,8 @@ _OTTER_HEADER_RE = re.compile(
 
 _INT_LINE_RE = re.compile(r"^\s*\d+\s*$")
 
+_URL_OPENERS = ("http://", "https://", "www.")
+
 # How a transcription tool signs its work at the foot of an export.
 _CREDIT_OPENERS = (
     "transcribed by",
@@ -355,20 +357,33 @@ def _looks_like_srt(text: str) -> bool:
     return False
 
 
+def _utterance_header(line: str) -> tuple[str, float] | None:
+    """(speaker, seconds) when a line is an utterance header, else None.
+
+    The name filter is what separates a header from a sentence. "Dana Ruiz 0:03"
+    is a header; "I finally gave up around 2:30" is a client still talking, and
+    the only difference in shape is that a name is short. Every caller goes
+    through here so that judgement is made in exactly one place.
+    """
+    match = _OTTER_HEADER_RE.match(line.rstrip())
+    if not match:
+        return None
+    name = match.group("name").strip()
+    if not name or len(name.split()) > 4:
+        return None
+    seconds = _seconds(match.group("ts") or match.group("ts2") or "")
+    if seconds is None:
+        return None
+    return name, seconds
+
+
 def _otter_headers(text: str) -> list[tuple[int, str, float]]:
     """Every Otter style utterance header: (line index, speaker, seconds)."""
     found: list[tuple[int, str, float]] = []
     for i, line in enumerate(text.splitlines()):
-        match = _OTTER_HEADER_RE.match(line.rstrip())
-        if not match:
-            continue
-        name = match.group("name").strip()
-        if not name or len(name.split()) > 4:
-            continue
-        seconds = _seconds(match.group("ts") or match.group("ts2") or "")
-        if seconds is None:
-            continue
-        found.append((i, name, seconds))
+        header = _utterance_header(line)
+        if header is not None:
+            found.append((i, header[0], header[1]))
     return found
 
 
@@ -403,15 +418,23 @@ def _is_credit_line(line: str) -> bool:
     """True for the credits a transcription tool staples to the end of a file.
 
     "Transcribed by https://otter.ai" and its cousins. Nobody said these words,
-    so they must never fold into the last speaker's turn.
+    so they must never fold into a speaker's turn.
+
+    A web address alone is not enough to convict: clients name websites out loud
+    ("I kept opening www.headspace.com at three in the morning"), and treating
+    that as credits would drop the rest of what they said. So the line has to
+    open with the credit, or be short and standalone enough that it is plainly
+    not a sentence somebody spoke.
     """
     stripped = line.strip()
     if not stripped:
         return False
     low = stripped.lower()
-    if any(marker in low for marker in ("http://", "https://", "www.")):
+    if low.startswith(_CREDIT_OPENERS) or low.startswith(_URL_OPENERS):
         return True
-    return low.startswith(_CREDIT_OPENERS)
+    if not any(marker in low for marker in _URL_OPENERS):
+        return False
+    return len(stripped) < 60 and len(stripped.split()) <= 5
 
 
 def _ends_accumulation(line: str) -> bool:
@@ -420,10 +443,10 @@ def _ends_accumulation(line: str) -> bool:
     A speaker's answer often runs to several paragraphs, so a blank line alone
     proves nothing. These three do: another utterance header, a heading off the
     generated-write-up vocabulary, or a tool's credits. Everything else is still
-    the person talking.
+    the person talking, and the benefit of the doubt goes to the person.
     """
     return bool(
-        _OTTER_HEADER_RE.match(line.rstrip())
+        _utterance_header(line) is not None
         or _heading_label(line) in _SUMMARY_HEADINGS
         or _is_credit_line(line)
     )
@@ -536,22 +559,27 @@ def _parse_timestamped_speakers(text: str) -> list[dict]:
 def _parse_speaker_turns(text: str) -> list[dict]:
     """Parse "Therapist: ..." style turns, with continuation lines folded in.
 
-    Stops at the same three markers as the timestamped reader, so a footer or a
-    trailing summary never becomes the tail of somebody's last sentence.
+    Stops at the same three markers as the timestamped reader, and stops the same
+    way: per turn, not per document. A marker closes the turn it appears in and
+    the next labelled line opens a new one, so a stray heading in the middle of a
+    session can cost at most the lines between it and the next speaker, never the
+    rest of the transcript.
     """
     turns: list[dict] = []
+    folding = True
     for line in text.splitlines():
         if not line.strip():
             continue
-        if turns and _ends_accumulation(line):
-            break
         speaker, body = _split_speaker(line)
         if speaker:
             turns.append(_turn(None, None, speaker, body))
-        elif turns:
-            turns[-1]["text"] = (turns[-1]["text"] + " " + line.strip()).strip()
-        else:
+            folding = True
+        elif not turns:
             turns.append(_turn(None, None, None, line))
+        elif _ends_accumulation(line):
+            folding = False
+        elif folding:
+            turns[-1]["text"] = (turns[-1]["text"] + " " + line.strip()).strip()
     return turns
 
 

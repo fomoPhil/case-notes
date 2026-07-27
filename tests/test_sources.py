@@ -622,6 +622,133 @@ def test_ingest_otter_verbatim_txt_enters_rung0_with_turns(consented_vault, tmp_
     assert "otter.ai" not in raw, "the archive holds what was said, not the export footer"
 
 
+# A perfectly ordinary session transcript that happens to contain the two things
+# a stop marker can be mistaken for: a sentence ending in a clock time, and a
+# client saying a web address out loud. Seven turns, and every one of them must
+# survive.
+SPOKEN_CLOCK_AND_URL = """Therapist: Where would you like to start today?
+
+Client: The evenings, still. Last night was one of the bad ones.
+I finally gave up around 2:30
+and went downstairs to sit with the dog until it got light.
+
+Therapist: What were you doing until then?
+
+Client: Lying there mostly. I kept opening www.headspace.com at three in the morning, which does not help.
+
+Therapist: What happens when you open it?
+
+Client: Nothing. I read the first screen and put the phone back down again.
+
+Therapist: That sounds exhausting.
+"""
+
+
+def test_a_sentence_ending_in_a_clock_time_does_not_end_the_transcript():
+    """"I finally gave up around 2:30" is a sentence, not a speaker header.
+
+    The header shape is a short name followed by a time. A continuation line that
+    happens to end in a clock time is neither, and treating it as one truncated
+    the transcript from seven turns to two.
+    """
+    _, turns = sources.parse_transcript(SPOKEN_CLOCK_AND_URL)
+
+    assert len(turns) == 7
+    assert [turn["speaker"] for turn in turns] == [
+        "Therapist",
+        "Client",
+        "Therapist",
+        "Client",
+        "Therapist",
+        "Client",
+        "Therapist",
+    ]
+    assert turns[1]["text"] == (
+        "The evenings, still. Last night was one of the bad ones. "
+        "I finally gave up around 2:30 "
+        "and went downstairs to sit with the dog until it got light."
+    ), "the line is the client still talking, so it belongs to the client's turn"
+    assert len(sources.render_turns(turns).strip().splitlines()) == 7
+
+    # The line really does have the shape a header check keys on: a short run of
+    # words then a bare clock time at the end. Only the name filter tells them
+    # apart, so pin that the raw pattern would have been fooled.
+    assert sources._OTTER_HEADER_RE.match("I finally gave up around 2:30") is not None
+    assert sources._utterance_header("I finally gave up around 2:30") is None
+    assert sources._utterance_header("Dana Ruiz 2:30") == ("Dana Ruiz", 150.0)
+
+
+def test_a_spoken_url_stays_inside_the_turn():
+    """A client naming a website is speech. A tool signing its export is not."""
+    _, turns = sources.parse_transcript(SPOKEN_CLOCK_AND_URL)
+    assert "www.headspace.com at three in the morning" in turns[3]["text"]
+
+    # Short enough to be mistaken for a credits line, still a sentence.
+    _, short = sources.parse_transcript(
+        "Therapist: And overnight?\n"
+        "\n"
+        "Client: Same as ever.\n"
+        "I kept opening www.headspace.com at 3am.\n"
+        "\n"
+        "Therapist: Did it help?\n"
+        "\n"
+        "Client: Not once.\n"
+    )
+    assert len(short) == 4
+    assert "www.headspace.com at 3am." in short[1]["text"]
+
+    # The real thing still ends accumulation.
+    assert sources._is_credit_line("Transcribed by https://otter.ai") is True
+    assert sources._is_credit_line("Transcribed by Rev.com") is True
+    assert sources._is_credit_line("https://otter.ai") is True
+
+
+def test_a_mid_transcript_heading_costs_only_its_own_turn():
+    """A stop marker ends one turn, never the rest of the session.
+
+    Some exports drop a generated section into the middle of the dialogue.
+    Stopping the whole parse there threw away every exchange that followed, which
+    is the larger loss by far.
+    """
+    text = (
+        "Therapist: Where would you like to start today?\n"
+        "\n"
+        "Client: The evenings, still.\n"
+        "\n"
+        "Summary\n"
+        "The client reported poor sleep and low mood this week.\n"
+        "\n"
+        "Therapist: What happens in the evenings?\n"
+        "\n"
+        "Client: I sit with it until it gets light.\n"
+    )
+    _, turns = sources.parse_transcript(text)
+
+    assert len(turns) == 4, "the exchanges after the heading survive"
+    assert [turn["speaker"] for turn in turns] == [
+        "Therapist",
+        "Client",
+        "Therapist",
+        "Client",
+    ]
+    assert turns[1]["text"] == "The evenings, still."
+    assert turns[-1]["text"] == "I sit with it until it gets light."
+    joined = " ".join(turn["text"] for turn in turns)
+    assert "reported poor sleep" not in joined, "the generated line is still kept out"
+
+
+def test_ingest_keeps_every_turn_of_a_plain_dialogue(consented_vault, tmp_path):
+    src = tmp_path / "session.txt"
+    src.write_text(SPOKEN_CLOCK_AND_URL, encoding="utf-8")
+
+    source, _ = sources.ingest_file(src, CLIENT)
+
+    raw = recstore.read_rung(CLIENT, source.id, 0)
+    assert len(raw.strip().splitlines()) == 7, "every turn reaches the archive"
+    assert "went downstairs to sit with the dog" in raw
+    assert "put the phone back down again" in raw
+
+
 def test_multi_paragraph_turn_is_not_truncated():
     """A long answer split over paragraphs is one turn, complete.
 
