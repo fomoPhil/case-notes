@@ -32,17 +32,28 @@ rule, and overwrites the model afterwards without asking:
                                            even offer the model a field to put a
                                            timestamp in.
     every quote                            must be found in the transcript, after
-                                           whitespace, curly quote, and invisible
-                                           character normalisation, or it is
-                                           dropped and counted
+                                           whitespace, curly quote, accent, and
+                                           invisible character normalisation, or
+                                           it is dropped and counted
     quotes at all                          only from a word for word source
-    attribution confidence                 "low" whenever speakers were not
-                                           separated, and "low" for any value
-                                           outside the two the schema allows
+    attribution confidence                 never taken from the model. A quote is
+                                           the client's only when it sits inside
+                                           exactly one rung 0 turn, that turn is
+                                           labelled, and the label is this
+                                           client's name. Everything else is
+                                           "low", including a source with no
+                                           speaker separation at all.
 
-Those four rules are spec section 6 rules 2 and 3 and the grounding requirement.
-They are enforced here, in code, after the model returns. A prompt is guidance.
-This is the part that has to hold.
+Those rules are spec section 6 rules 2 and 3 and the grounding requirement. They
+are enforced here, in code, after the model returns. A prompt is guidance. This
+is the part that has to hold.
+
+Rules 2 and 3 are properties of the source, and a source can be reclassified
+after its digest was written (the spec's confirm flow exists for exactly that).
+So enforce_provenance runs on every hand out, not once at build: on the freshly
+assembled digest, on a stored one being loaded, and on one build finds already
+on disk. A source whose provenance cannot be read is treated as not word for
+word, and its quotes go.
 
 Risk language is flagged for a human to look at. It is never assessed, never
 scored, and never turned into a determination. That stays with the clinician.
@@ -364,13 +375,37 @@ _DASH_MAP = {ord(ch): "-" for ch in "\u2010\u2011\u2012\u2013\u2014\u2015\u2043\
 # Invisible characters. None of them is whitespace by str.isspace, so each one
 # would otherwise survive normalisation and break an honest substring match, or
 # hide a difference in a dishonest one.
-_INVISIBLE = frozenset("\u200b\u200c\u200d\u2060\ufeff\u00ad\u180e\u200e\u200f")
+_INVISIBLE = frozenset(
+    "\u200b\u200c\u200d\u200e\u200f"
+    "\u2060\u2061\u2062\u2063\u2064"
+    "\u00ad\u180e\ufeff"
+)
+
+
+def _clusters(text: str):
+    """Yield (position, cluster) pairs: a base character plus its combining marks.
+
+    Normalisation has to see a whole cluster at once. An accent written as a
+    letter followed by a combining mark only composes into the precomposed
+    character when both are normalised together; one character at a time leaves
+    the mark stranded, and the same word typed the two legal ways would fail to
+    match itself.
+    """
+    start = 0
+    length = len(text)
+    while start < length:
+        end = start + 1
+        while end < length and unicodedata.combining(text[end]):
+            end += 1
+        yield start, text[start:end]
+        start = end
 
 
 def _normalize_with_index(text: str) -> tuple[str, list[int]]:
     """Normalise text for comparison, keeping a map back to the original.
 
-    Compatibility normalisation folds the exotic spaces, invisible characters are
+    Compatibility normalisation runs over whole combining clusters, so a
+    decomposed accent matches its precomposed twin. Invisible characters are
     dropped, curly quotes and every width of dash are flattened, runs of
     whitespace collapse to one space, and the result is casefolded. index[i] is
     the position in `text` that produced the normalised character at i, so a
@@ -379,10 +414,11 @@ def _normalize_with_index(text: str) -> tuple[str, list[int]]:
     chars: list[str] = []
     index: list[int] = []
     space_pending = False
-    for position, raw in enumerate(text or ""):
-        if raw in _INVISIBLE:
+    for position, cluster in _clusters(text or ""):
+        cluster = "".join(char for char in cluster if char not in _INVISIBLE)
+        if not cluster:
             continue
-        piece = unicodedata.normalize("NFKC", raw).translate(_QUOTE_MAP).translate(_DASH_MAP)
+        piece = unicodedata.normalize("NFKC", cluster).translate(_QUOTE_MAP).translate(_DASH_MAP)
         for char in piece:
             if char.isspace():
                 space_pending = bool(chars)
@@ -429,6 +465,60 @@ class _Grounding:
 # ---------------------------------------------------------------------------
 # Small shared helpers
 # ---------------------------------------------------------------------------
+
+
+def _client_names(client_ctx: dict | None) -> set[str]:
+    """The normalised names a transcript might label the client's turns with.
+
+    The full name and the first name, nothing looser. A surname alone is left
+    out because it is the clinician's own name that most often shares one, and a
+    wrong match here is the failure this whole check exists to prevent.
+    """
+    name = str((client_ctx or {}).get("name") or "").strip()
+    if not name:
+        return set()
+    parts = name.split()
+    candidates = {_normalize(name)}
+    if parts:
+        candidates.add(_normalize(parts[0]))
+    return {candidate for candidate in candidates if candidate}
+
+
+def _attribution_check(
+    quote: str, source: Source, turns: list[dict] | None, client_ctx: dict | None
+) -> str:
+    """Decide whether a quote may be attributed to the client. "high" or "low".
+
+    The model cannot answer this. Rung 1 has speaker labels stripped, so by the
+    time it reads the transcript there is nobody's name attached to anything,
+    and a sentence the clinician spoke reads exactly like one the client did.
+
+    So the claim is checked, not believed. "high" survives only when all three
+    hold: the quote is found inside exactly one turn of the rung 0 archive, that
+    turn carries a speaker label, and the label is the client's own name.
+    Anything else, including a quote that spans two turns, a quote that appears
+    in several, a generic "Speaker 1" label, and a quote that correction has
+    changed enough that it no longer matches the raw turn, comes back "low".
+
+    Failing toward "low" is the whole point. An unattributed observation can be
+    corrected later. A quote in the wrong person's mouth cannot.
+    """
+    if not source.diarized or not turns:
+        return _SAFE_CONFIDENCE
+    names = _client_names(client_ctx)
+    if not names:
+        return _SAFE_CONFIDENCE
+    needle = _normalize(quote).strip()
+    if not needle:
+        return _SAFE_CONFIDENCE
+
+    matches = [turn for turn in turns if needle in _normalize(turn.get("text") or "")]
+    if len(matches) != 1:
+        return _SAFE_CONFIDENCE
+    speaker = str(matches[0].get("speaker") or "").strip()
+    if not speaker:
+        return _SAFE_CONFIDENCE
+    return "high" if _normalize(speaker) in names else _SAFE_CONFIDENCE
 
 
 def _report(
@@ -609,6 +699,7 @@ def build_digest(
     client_ctx: dict,
     timed_lines: list[tuple[float, str]] | None = None,
     progress: Callable[[str, int, int], None] | None = None,
+    turns: list[dict] | None = None,
 ) -> dict:
     """Map-reduce a transcript into the digest. No disk io.
 
@@ -617,6 +708,10 @@ def build_digest(
     Code then overwrites every field it owns, drops every quote it cannot find in
     the transcript, and applies the provenance rules. progress is reported under
     the "digesting" stage, once per window plus once for the reduce.
+
+    turns, when given, are the rung 0 turns the corrected text came from. They
+    are what an attributed quote is checked against, since the corrected text no
+    longer says who spoke. Without them no quote can be attributed.
 
     Raises LadderError when there is nothing to distil or the reduce call fails.
     """
@@ -659,7 +754,7 @@ def build_digest(
     reduced = _run_reduce(maps, source, context)
     _report(progress, "digesting", total_steps, total_steps)
 
-    return _assemble(reduced, maps, source, joined)
+    return _assemble(reduced, maps, source, joined, turns, client_ctx)
 
 
 def _segments_from_maps(maps: list[dict]) -> list[dict]:
@@ -703,23 +798,72 @@ def _intervention_minutes(maps: list[dict]) -> dict[str, int | None]:
     return minutes
 
 
-def _assemble(reduced: dict, maps: list[dict], source: Source, text: str) -> dict:
+def enforce_provenance(digest: dict, source: Source | None) -> dict:
+    """Apply the provenance rules to a digest. Run on every hand out, not once.
+
+    Rule 2 (a source that is not word for word may never carry an attributed
+    quote or an excerpt) and rule 3 (no speaker separation means no attribution)
+    are properties of the source, and a source's provenance can change after the
+    digest was written. The spec's confirm flow exists exactly for that: a
+    clinician taps to say an import is a meeting tool's summary rather than a
+    transcript. A digest enforced only at build time would keep serving quotes
+    from material nobody actually said, which is the records failure this whole
+    feature is built to prevent.
+
+    So this runs when the digest is built, when a stored digest is loaded, and
+    when build finds one already on disk. An unknown source fails toward rule 2:
+    with no provenance to check, the quotes go.
+
+    The attribution check itself is deliberately not rerun here. It reads the
+    rung 0 turns, which a retention sweep may have outlived, and the confidences
+    in a stored digest were already checked against them at build time.
+    """
+    digest = dict(digest or {})
+    if source is None or not source.verbatim:
+        digest["client_statements"] = []
+        digest["risk_excerpts"] = []
+        return digest
+
+    statements: list[dict] = []
+    for item in digest.get("client_statements") or []:
+        if not isinstance(item, dict):
+            continue
+        item = dict(item)
+        confidence = str(item.get("attribution_confidence") or "").strip().casefold()
+        if confidence not in _CONFIDENCE_VALUES or not source.diarized:
+            confidence = _SAFE_CONFIDENCE
+        item["attribution_confidence"] = confidence
+        statements.append(item)
+    digest["client_statements"] = statements
+    return digest
+
+
+def _assemble(
+    reduced: dict,
+    maps: list[dict],
+    source: Source,
+    text: str,
+    turns: list[dict] | None,
+    client_ctx: dict | None,
+) -> dict:
     """Turn the reduce output into the digest, enforcing every rule in code.
 
     Nothing the model said about a code-owned field survives this function.
     """
     grounding = _Grounding(text)
     dropped = 0
+    over_cap = 0
+    statements: list[dict] = []
+    excerpts: list[str] = []
 
-    # Rule 2. A source that is not word for word may never produce an attributed
-    # quote or an excerpt, because a paraphrase filed as somebody's words stays
-    # in the record forever. The risk flag survives; the quotes do not.
-    if not source.verbatim:
-        statements: list[dict] = []
-        excerpts: list[str] = []
-    else:
-        statements, dropped_statements = _ground_statements(
-            reduced.get("client_statements"), grounding, maps, source
+    # A source that is not word for word has no quotes to ground in the first
+    # place, so the work is skipped rather than done and then thrown away. That
+    # also keeps the dropped counts honest: they report the model inventing,
+    # never the provenance rule doing its job. enforce_provenance below is what
+    # actually holds the rule.
+    if source.verbatim:
+        statements, dropped, over_cap = _ground_statements(
+            reduced.get("client_statements"), grounding, maps, source, turns, client_ctx
         )
         candidates = _string_list(reduced.get("risk_excerpts"))
         if not candidates:
@@ -732,7 +876,7 @@ def _assemble(reduced: dict, maps: list[dict], source: Source, text: str) -> dic
                 ]
             )
         excerpts, dropped_excerpts = _ground_excerpts(candidates, grounding)
-        dropped = dropped_statements + dropped_excerpts
+        dropped += dropped_excerpts
 
     map_risk = any(
         bool(_string_list((entry["result"] or {}).get("risk_language")))
@@ -740,7 +884,7 @@ def _assemble(reduced: dict, maps: list[dict], source: Source, text: str) -> dic
         if isinstance(entry["result"], dict)
     )
 
-    return {
+    digest = {
         "source_id": source.id,
         "duration_min": source.duration_min,
         "diarized": bool(source.diarized),
@@ -754,7 +898,9 @@ def _assemble(reduced: dict, maps: list[dict], source: Source, text: str) -> dic
         "unresolved_threads": _string_list(reduced.get("unresolved_threads")),
         "notable_shifts": _string_list(reduced.get("notable_shifts")),
         "_dropped_ungrounded": dropped,
+        "_dropped_over_cap": over_cap,
     }
+    return enforce_provenance(digest, source)
 
 
 def _interventions(value, maps: list[dict]) -> list[dict]:
@@ -795,17 +941,28 @@ def _quote_minute(position: int, maps: list[dict]) -> int | None:
 
 
 def _ground_statements(
-    value, grounding: _Grounding, maps: list[dict], source: Source
-) -> tuple[list[dict], int]:
+    value,
+    grounding: _Grounding,
+    maps: list[dict],
+    source: Source,
+    turns: list[dict] | None,
+    client_ctx: dict | None,
+) -> tuple[list[dict], int, int]:
     """Keep only the quotes that are actually in the transcript.
 
-    A quote the model composed rather than copied is dropped and counted, so the
-    UI can say how many rather than quietly showing fewer. Rule 3 applies here
-    too: with speakers not separated, every attribution is low confidence,
-    because guessing who spoke is the one mistake that cannot be walked back.
+    Returns the statements, the count dropped for not being in the transcript,
+    and the count held back by the list cap. The two are counted apart because
+    they mean different things: one is the model inventing, the other is this
+    module abbreviating, and a single number would let the second hide inside
+    the first.
+
+    Every "high" the model claimed is re-derived from the rung 0 turns rather
+    than believed. Rule 3, the outer guard for a source with no speaker
+    separation at all, is applied later in enforce_provenance.
     """
     kept: list[dict] = []
     dropped = 0
+    over_cap = 0
     seen: set[str] = set()
     for item in value if isinstance(value, (list, tuple)) else []:
         if not isinstance(item, dict):
@@ -821,9 +978,14 @@ def _ground_statements(
             dropped += 1
             continue
         seen.add(key)
+        if len(kept) >= _MAX_LIST_ITEMS:
+            over_cap += 1
+            continue
         confidence = str(item.get("attribution_confidence") or "").strip().casefold()
-        if confidence not in _CONFIDENCE_VALUES or not source.diarized:
+        if confidence not in _CONFIDENCE_VALUES:
             confidence = _SAFE_CONFIDENCE
+        if confidence == "high":
+            confidence = _attribution_check(quote, source, turns, client_ctx)
         kept.append(
             {
                 "quote": quote,
@@ -831,9 +993,7 @@ def _ground_statements(
                 "attribution_confidence": confidence,
             }
         )
-        if len(kept) >= _MAX_LIST_ITEMS:
-            break
-    return kept, dropped
+    return kept, dropped, over_cap
 
 
 def _ground_excerpts(candidates: list[str], grounding: _Grounding) -> tuple[list[str], int]:
@@ -856,15 +1016,26 @@ def _ground_excerpts(candidates: list[str], grounding: _Grounding) -> tuple[list
 _STAMP_RE = re.compile(r"^\[(\d{1,3}:\d{2}(?::\d{2})?)\]\s*")
 
 
-def _read_rung0(raw: str) -> tuple[list[tuple[float, str]], str]:
-    """Split the rung 0 archive into its timestamps and its plain words.
+# How much of a file has to carry speaker labels before a leading "Word: " is
+# read as one. Below this, a label has to recur to count.
+_SPEAKER_LINE_RATIO = 0.5
+
+
+def _read_rung0(raw: str) -> tuple[list[dict], str]:
+    """Split the rung 0 archive back into its turns, and into its plain words.
 
     Correction wants the words on their own: a stamp or a speaker label in the
-    stream is noise the model would try to correct. The stamps are kept here
-    instead, so the digest can still say when something was said.
+    stream is noise the model would try to correct. Both are kept here instead,
+    the stamps so the digest can say when something was said, the speakers so an
+    attributed quote can be checked against who actually said it.
+
+    A leading "Word: " is only a speaker label when the file says it is. It has
+    to recur, or labels have to structure most of the file. Otherwise a
+    clinician's line ("Remember: breathe before bed") would lose its first word
+    on the way into rung 1, and the words in the clinical record would no longer
+    be the words that were spoken.
     """
-    timed: list[tuple[float, str]] = []
-    plain: list[str] = []
+    rows: list[tuple[float | None, str | None, str, str]] = []
     for line in (raw or "").splitlines():
         stripped = line.strip()
         if not stripped:
@@ -874,23 +1045,47 @@ def _read_rung0(raw: str) -> tuple[list[tuple[float, str]], str]:
         if match:
             seconds = sources._seconds(match.group(1))
             stripped = stripped[match.end() :].strip()
-        _, body = sources._split_speaker(stripped)
-        body = body.strip()
-        if not body:
+        name, body = sources._split_speaker(stripped)
+        rows.append((seconds, name, body, stripped))
+
+    counts: dict[str, int] = {}
+    for _, name, _, _ in rows:
+        if name:
+            counts[name] = counts.get(name, 0) + 1
+
+    # A session has a small closed cast, each of whom speaks many times, so the
+    # labels that recur are the speakers and a singleton is somebody's sentence.
+    # Only when no cast emerges at all (a two line exchange, where nobody has
+    # had a chance to recur) does a densely labelled file get the benefit of the
+    # doubt.
+    recurring = {name for name, count in counts.items() if count >= 2}
+    if len(recurring) >= 2:
+        speakers = recurring
+    elif bool(rows) and sum(counts.values()) / len(rows) >= _SPEAKER_LINE_RATIO:
+        speakers = set(counts)
+    else:
+        speakers = recurring
+
+    turns: list[dict] = []
+    for seconds, name, body, whole in rows:
+        if name and name in speakers:
+            speaker, text = name, body
+        else:
+            speaker, text = None, whole
+        text = text.strip()
+        if not text:
             continue
-        plain.append(body)
-        if seconds is not None:
-            timed.append((seconds, body))
-    return timed, "\n".join(plain)
+        turns.append({"start": seconds, "speaker": speaker, "text": text})
+    return turns, "\n".join(turn["text"] for turn in turns)
 
 
-def _source_text(client_id: str, source_id: str) -> str | None:
-    """The document text of a source that entered at rung 2, or None."""
-    try:
-        path = recstore.source_dir(client_id, source_id) / recstore._SOURCE_TEXT
-        return path.read_text(encoding="utf-8")
-    except (OSError, ValueError):
-        return None
+def _timed_lines(turns: list[dict]) -> list[tuple[float, str]]:
+    """The turns that carry a timestamp, as (seconds, text)."""
+    return [
+        (float(turn["start"]), turn["text"])
+        for turn in turns
+        if turn.get("start") is not None
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -898,8 +1093,30 @@ def _source_text(client_id: str, source_id: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _stored_source(client_id: str, source_id: str) -> Source | None:
+    """The source's provenance as a Source, or None when it cannot be read.
+
+    None is not a shrug. Every caller treats it as "assume the material is not
+    word for word", which is the only safe reading of provenance that is missing
+    or broken.
+    """
+    meta = recstore.read_meta(client_id, source_id)
+    if not meta:
+        return None
+    try:
+        return sources.Source.from_meta(meta)
+    except (ValueError, TypeError):
+        return None
+
+
 def load_digest(client_id: str, source_id: str) -> dict | None:
-    """The stored digest, or None when it is missing or unreadable."""
+    """The stored digest, or None when it is missing or unreadable.
+
+    The provenance rules are applied on the way out, against the provenance on
+    disk now rather than the provenance at the time it was written. A source
+    reclassified as a meeting tool's summary stops handing out quotes from the
+    next read, without the digest having to be rebuilt.
+    """
     try:
         raw = recstore.read_rung(client_id, source_id, 2)
     except ValueError:
@@ -910,7 +1127,9 @@ def load_digest(client_id: str, source_id: str) -> dict | None:
         data = json.loads(raw)
     except ValueError:
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    return enforce_provenance(data, _stored_source(client_id, source_id))
 
 
 def _write_digest(client_id: str, source_id: str, digest: dict) -> None:
@@ -956,14 +1175,16 @@ def build(
     if 2 in present:
         existing = load_digest(client_id, source_id)
         if existing is not None:
-            return existing
+            # Against this call's source, which is more current than the meta
+            # load_digest just read it against.
+            return enforce_provenance(existing, source)
         # digest.json is there but unreadable, so rung 2 is not actually done.
         present.discard(2)
 
     if source.entry_rung != 0:
         # Nobody said these words, so there is no transcript to build. The
         # document text is the whole input and the digest is the only rung.
-        text = _source_text(client_id, source_id)
+        text = recstore.read_source_text(client_id, source_id)
         if not (text or "").strip():
             raise SourceError(
                 "There is no stored text for this source, so there is nothing to "
@@ -998,7 +1219,7 @@ def build(
 
     # Read back from disk, never from the variable above: this is the same code
     # path a resumed run takes.
-    timed_lines, plain = _read_rung0(recstore.read_rung(client_id, source_id, 0) or "")
+    turns, plain = _read_rung0(recstore.read_rung(client_id, source_id, 0) or "")
 
     if 1 not in present:
         if not plain.strip():
@@ -1017,7 +1238,12 @@ def build(
     corrected = recstore.read_rung(client_id, source_id, 1) or ""
     _boundary(between_rungs)
     digest = build_digest(
-        corrected, source, client_ctx, timed_lines=timed_lines, progress=progress
+        corrected,
+        source,
+        client_ctx,
+        timed_lines=_timed_lines(turns),
+        progress=progress,
+        turns=turns,
     )
     _write_digest(client_id, source_id, digest)
     return digest
@@ -1112,11 +1338,18 @@ def render_digest_md(digest: dict) -> str:
         lines.append("No word for word client statements were captured from this source.")
 
     dropped = digest.get("_dropped_ungrounded") or 0
+    over_cap = digest.get("_dropped_over_cap") or 0
     if dropped:
         lines += [
             "",
             f"{dropped} candidate quote(s) were dropped because those words were "
             "not found in the transcript.",
+        ]
+    if over_cap:
+        lines += [
+            "",
+            f"{over_cap} further quote(s) were held back because this digest "
+            f"lists at most {_MAX_LIST_ITEMS}. The transcript has them all.",
         ]
 
     lines += ["", "## Risk language", ""]

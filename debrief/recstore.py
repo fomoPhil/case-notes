@@ -223,6 +223,20 @@ def read_rung(client_id: str, source_id: str, rung: int) -> str | None:
         return None
 
 
+def read_source_text(client_id: str, source_id: str) -> str | None:
+    """The document text of a source, or None when there is none stored.
+
+    This is the whole input for a source that enters at rung 2: a meeting tool's
+    write up or the clinician's own notes, where there is no transcript to build
+    because nobody said those words.
+    """
+    path = source_dir(client_id, source_id) / _SOURCE_TEXT
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
 def audio_path(client_id: str, source_id: str) -> Path | None:
     """The stored source.* audio file, or None when there is none."""
     directory = source_dir(client_id, source_id)

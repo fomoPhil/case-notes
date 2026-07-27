@@ -99,14 +99,22 @@ def _notes_source(**overrides) -> sources.Source:
     )
 
 
-# The transcript every test grounds against. Short, real sentences, so a quote
-# either is in here or plainly is not.
-TRANSCRIPT = (
-    "I have not been sleeping since the move. "
-    "Every night I lie there and run the same argument again. "
-    "We tried the breathing exercise together and it did settle a little. "
-    "I still think I am the problem in that house."
-)
+# The client this vault is about. Attribution is decided by matching a turn's
+# speaker label against this name, so it has to be real context, not a blank.
+CLIENT_CTX = {"name": "Dana Ruiz"}
+
+# The turns every test grounds against: (seconds, speaker, text). Short, real
+# sentences, so a quote either is in here or plainly is not. The clinician and
+# the client each speak twice, which is what tells the rung 0 reader that these
+# are speaker labels rather than words somebody said.
+TURNS = [
+    (0, "Therapist", "So how has the week been."),
+    (600, "Dana Ruiz", "I have not been sleeping since the move."),
+    (1200, "Therapist", "We tried the breathing exercise together and it did settle a little."),
+    (1800, "Dana Ruiz", "I still think I am the problem in that house."),
+]
+
+TRANSCRIPT = " ".join(text for _, _, text in TURNS)
 
 
 def _map_reply(**overrides) -> dict:
@@ -206,14 +214,28 @@ def _seed_rungs(rung0: str | None = None, rung1: str | None = None) -> None:
         recstore.write_rung(CLIENT, SID, 1, rung1)
 
 
+def _render(turns) -> str:
+    """The rung 0 archive, in the shape sources.render_turns writes."""
+    return "".join(
+        f"[{seconds // 60:02d}:{seconds % 60:02d}] "
+        + (f"{speaker}: " if speaker else "")
+        + f"{text}\n"
+        for seconds, speaker, text in turns
+    )
+
+
 def _timed_rung0() -> str:
     """A rung 0 archive with the stamps and speaker labels render_turns writes."""
-    return (
-        "[00:00] Therapist: I have not been sleeping since the move.\n"
-        "[10:00] Client: Every night I lie there and run the same argument again.\n"
-        "[20:00] Therapist: We tried the breathing exercise together and it did settle a little.\n"
-        "[30:00] Client: I still think I am the problem in that house.\n"
-    )
+    return _render(TURNS)
+
+
+def _seed_meta(source: sources.Source) -> None:
+    """Write the provenance a real source always has beside its rungs.
+
+    load_digest reads this to decide whether a stored digest may still hand out
+    quotes, so a test that round-trips a digest through disk needs it.
+    """
+    recstore.write_meta(source.client_id, source.id, source.to_meta())
 
 
 def _long_text(sentences: int, words: int = 60) -> str:
@@ -354,14 +376,15 @@ def test_entry_rung2_skips_rungs_0_and_1(scratch_vault, monkeypatch):
 
 def test_build_returns_existing_digest_without_calling_the_model(scratch_vault, monkeypatch):
     _seed_rungs(rung0=_timed_rung0(), rung1=TRANSCRIPT)
+    _seed_meta(_source())
     _install(monkeypatch, FakeLLM())
-    first = ladder.build(_source(), {})
+    first = ladder.build(_source(), CLIENT_CTX)
 
     def _boom(*args, **kwargs):
         raise AssertionError("rung 2 is already on disk, nothing should be rebuilt")
 
     monkeypatch.setattr(ladder.llm, "chat", _boom)
-    assert ladder.build(_source(), {}) == first
+    assert ladder.build(_source(), CLIENT_CTX) == first
 
 
 # ---------------------------------------------------------------------------
@@ -525,19 +548,92 @@ def test_rule3_undiarized_forces_low_confidence(scratch_vault, monkeypatch):
     )
     _install(monkeypatch, FakeLLM(reduce_reply=lambda: reduce))
 
-    digest = ladder.build(_source(diarized=False), {})
+    # Both quotes sit in turns labelled with this client's own name, so the
+    # attribution check would pass them. Rule 3 is the outer guard, and it wins.
+    digest = ladder.build(_source(diarized=False), CLIENT_CTX)
 
     assert len(digest["client_statements"]) == 2
     assert {item["attribution_confidence"] for item in digest["client_statements"]} == {"low"}
     assert digest["diarized"] is False
 
 
+def _statements(monkeypatch, quotes, rung0=None, rung1=None, client_ctx=None, **src):
+    """Build a digest whose reduce returns `quotes`, every one claimed as high."""
+    _seed_rungs(rung0=rung0 or _timed_rung0(), rung1=rung1 or TRANSCRIPT)
+    reduce = _reduce_reply(
+        client_statements=[
+            {"quote": quote, "start_min": 0, "attribution_confidence": "high"}
+            for quote in quotes
+        ]
+    )
+    _install(monkeypatch, FakeLLM(reduce_reply=lambda: reduce))
+    digest = ladder.build(_source(**src), CLIENT_CTX if client_ctx is None else client_ctx)
+    return {item["quote"]: item["attribution_confidence"] for item in digest["client_statements"]}
+
+
 def test_diarized_source_keeps_high_confidence(scratch_vault, monkeypatch):
-    """The counterpart to rule 3: separated speakers may still be attributed."""
-    _seed_rungs(rung0=_timed_rung0(), rung1=TRANSCRIPT)
-    _install(monkeypatch, FakeLLM())
-    digest = ladder.build(_source(diarized=True), {})
-    assert digest["client_statements"][0]["attribution_confidence"] == "high"
+    """The counterpart to rule 3: a client turn, named, may still be attributed."""
+    marks = _statements(monkeypatch, ["I have not been sleeping since the move"])
+    assert marks == {"I have not been sleeping since the move": "high"}
+
+
+def test_attribution_low_when_the_clinician_said_it(scratch_vault, monkeypatch):
+    """The failure this check exists for.
+
+    The words are in the transcript, the source is diarized, and the model calls
+    it a high confidence client statement. But the turn carrying those words is
+    the clinician's, and rung 1 has no labels left for the model to have noticed.
+    Only the rung 0 turns can settle it, so they do.
+    """
+    quote = "We tried the breathing exercise together and it did settle a little"
+    assert _statements(monkeypatch, [quote]) == {quote: "low"}
+
+
+def test_attribution_matches_the_client_first_name(scratch_vault, monkeypatch):
+    turns = [
+        (0, "Therapist", "So how has the week been."),
+        (600, "Dana", "I have not been sleeping since the move."),
+        (1200, "Therapist", "We tried the breathing exercise together."),
+        (1800, "Dana", "I still think I am the problem in that house."),
+    ]
+    marks = _statements(
+        monkeypatch,
+        ["I have not been sleeping since the move"],
+        rung0=_render(turns),
+        rung1=" ".join(text for _, _, text in turns),
+    )
+    assert marks == {"I have not been sleeping since the move": "high"}
+
+
+def test_attribution_low_when_a_quote_spans_two_turns(scratch_vault, monkeypatch):
+    """Contiguous in the transcript, but nobody said it. Two people did."""
+    spanning = "So how has the week been. I have not been sleeping since the move"
+    assert _statements(monkeypatch, [spanning]) == {spanning: "low"}
+
+
+def test_attribution_low_for_generic_speaker_labels(scratch_vault, monkeypatch):
+    """Speaker 1 is not a person. Nothing ties it to this client, so nothing does."""
+    turns = [
+        (0, "Speaker 1", "So how has the week been."),
+        (600, "Speaker 2", "I have not been sleeping since the move."),
+        (1200, "Speaker 1", "We tried the breathing exercise together."),
+        (1800, "Speaker 2", "I still think I am the problem in that house."),
+    ]
+    marks = _statements(
+        monkeypatch,
+        ["I have not been sleeping since the move"],
+        rung0=_render(turns),
+        rung1=" ".join(text for _, _, text in turns),
+    )
+    assert marks == {"I have not been sleeping since the move": "low"}
+
+
+def test_attribution_low_without_a_client_name_in_context(scratch_vault, monkeypatch):
+    """No name to compare a label against means no attribution can be earned."""
+    marks = _statements(
+        monkeypatch, ["I have not been sleeping since the move"], client_ctx={}
+    )
+    assert marks == {"I have not been sleeping since the move": "low"}
 
 
 def test_grounding_drops_invented_quotes(scratch_vault, monkeypatch):
@@ -679,7 +775,7 @@ def test_render_digest_md_readable_no_em_dash(scratch_vault, monkeypatch):
         themes=["Sleep", "Self blame"],
     )
     _install(monkeypatch, FakeLLM(reduce_reply=lambda: reduce))
-    digest = ladder.build(_source(), {})
+    digest = ladder.build(_source(), CLIENT_CTX)
 
     rendered = ladder.render_digest_md(digest)
 
@@ -736,8 +832,9 @@ def test_load_digest_roundtrip_and_missing_none(scratch_vault, monkeypatch):
     assert ladder.load_digest("../escape", SID) is None
 
     _seed_rungs(rung0=_timed_rung0(), rung1=TRANSCRIPT)
+    _seed_meta(_source())
     _install(monkeypatch, FakeLLM())
-    digest = ladder.build(_source(), {})
+    digest = ladder.build(_source(), CLIENT_CTX)
 
     assert ladder.load_digest(CLIENT, SID) == digest
 
@@ -803,6 +900,188 @@ def test_build_digest_rejects_empty_text(scratch_vault, monkeypatch):
     _install(monkeypatch, FakeLLM())
     with pytest.raises(ladder.LadderError):
         ladder.build_digest("   ", _source(), {})
+
+
+# ---------------------------------------------------------------------------
+# Provenance is re-checked every time a digest is handed out
+# ---------------------------------------------------------------------------
+
+
+def _reclassified_meta() -> None:
+    """Rewrite meta as the spec's confirm flow would: it is an AI summary."""
+    recstore.write_meta(
+        CLIENT,
+        SID,
+        _source(
+            kind="third_party_summary",
+            verbatim=False,
+            entry_rung=2,
+            produced_by="granola",
+        ).to_meta(),
+    )
+
+
+def test_reclassifying_a_source_stops_its_stored_digest_serving_quotes(
+    scratch_vault, monkeypatch
+):
+    """The confirm flow has to reach digests that were already written.
+
+    A source imported as a transcript, digested with quotes, and then confirmed
+    by the clinician as a meeting tool's summary must stop handing those quotes
+    out. Enforcing the rule only at build time would leave a file full of
+    attributed statements that nobody actually said, which is the records
+    failure this feature exists to prevent.
+    """
+    _seed_rungs(rung0=_timed_rung0(), rung1=TRANSCRIPT)
+    _seed_meta(_source())
+    reduce = _reduce_reply(
+        risk_language_present=True,
+        risk_excerpts=["I still think I am the problem in that house"],
+    )
+    _install(monkeypatch, FakeLLM(reduce_reply=lambda: reduce))
+
+    built = ladder.build(_source(), CLIENT_CTX)
+    assert built["client_statements"] and built["risk_excerpts"]
+
+    _reclassified_meta()
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("nothing should be rebuilt, only re-enforced")
+
+    monkeypatch.setattr(ladder.llm, "chat", _boom)
+
+    reclassified = _source(
+        kind="third_party_summary", verbatim=False, entry_rung=2, produced_by="granola"
+    )
+    for digest in (ladder.load_digest(CLIENT, SID), ladder.build(reclassified, CLIENT_CTX)):
+        assert digest["client_statements"] == []
+        assert digest["risk_excerpts"] == []
+        # The flag and everything else the digest knows survive.
+        assert digest["risk_language_present"] is True
+        assert digest["themes"] == ["Sleep", "Self blame"]
+
+
+def test_unreadable_provenance_fails_toward_stripping_quotes(scratch_vault, monkeypatch):
+    """No provenance is not a shrug. It is a reason not to hand out quotes."""
+    _seed_rungs(rung0=_timed_rung0(), rung1=TRANSCRIPT)
+    _seed_meta(_source())
+    _install(monkeypatch, FakeLLM())
+    assert ladder.build(_source(), CLIENT_CTX)["client_statements"]
+
+    (recstore.source_dir(CLIENT, SID) / "meta.json").write_text("{broken", encoding="utf-8")
+    assert ladder.load_digest(CLIENT, SID)["client_statements"] == []
+
+    (recstore.source_dir(CLIENT, SID) / "meta.json").unlink()
+    assert ladder.load_digest(CLIENT, SID)["client_statements"] == []
+
+
+def test_enforce_provenance_coerces_a_stored_confidence(scratch_vault):
+    """A digest edited on disk still cannot smuggle a value past the vocabulary."""
+    stored = {
+        "client_statements": [
+            {"quote": "a", "start_min": 0, "attribution_confidence": "certain"},
+            {"quote": "b", "start_min": 1, "attribution_confidence": "high"},
+        ],
+        "risk_excerpts": ["x"],
+    }
+    kept = ladder.enforce_provenance(stored, _source(diarized=True))
+    assert [item["attribution_confidence"] for item in kept["client_statements"]] == [
+        "low",
+        "high",
+    ]
+    forced = ladder.enforce_provenance(stored, _source(diarized=False))
+    assert {item["attribution_confidence"] for item in forced["client_statements"]} == {"low"}
+    # The input is never mutated in place.
+    assert stored["client_statements"][1]["attribution_confidence"] == "high"
+
+
+# ---------------------------------------------------------------------------
+# Normalisation and the rung 0 reader
+# ---------------------------------------------------------------------------
+
+
+def test_grounding_matches_a_decomposed_accent(scratch_vault, monkeypatch):
+    """The same word typed the two legal ways has to match itself."""
+    precomposed = "I still cannot sit through a caf\u00e9 without checking the door."
+    decomposed = "I still cannot sit through a cafe\u0301 without checking the door"
+    assert precomposed != decomposed + "."
+
+    _seed_rungs(rung0=precomposed, rung1=precomposed)
+    reduce = _reduce_reply(
+        client_statements=[
+            {"quote": decomposed, "start_min": 0, "attribution_confidence": "low"}
+        ]
+    )
+    _install(monkeypatch, FakeLLM(reduce_reply=lambda: reduce))
+
+    digest = ladder.build(_source(), CLIENT_CTX)
+    assert [item["quote"] for item in digest["client_statements"]] == [decomposed]
+    assert digest["_dropped_ungrounded"] == 0
+
+
+def test_a_lone_leading_word_before_a_colon_survives_into_rung_1(scratch_vault, monkeypatch):
+    """"Remember: breathe" is a sentence, not a speaker.
+
+    The rung 0 reader strips speaker labels so correction sees only words. A
+    label recurs across a session; a clinician's line that happens to open with
+    a word and a colon does not, and eating its first word would put different
+    words in the clinical record from the ones that were spoken.
+    """
+    turns = [
+        (0, "Therapist", "So how has the week been."),
+        (300, "Dana Ruiz", "I have not been sleeping since the move."),
+        (600, "Therapist", "We tried the breathing exercise together."),
+        (900, "Dana Ruiz", "It did settle a little that time."),
+        (1200, None, "Remember: breathe before bed."),
+        (1500, "Therapist", "Say more about the argument."),
+        (1800, "Dana Ruiz", "I still think I am the problem in that house."),
+    ]
+    _seed_rungs(rung0=_render(turns))
+    _install(monkeypatch, FakeLLM())
+
+    ladder.build(_source(), CLIENT_CTX)
+
+    rung1 = recstore.read_rung(CLIENT, SID, 1)
+    assert "Remember: breathe before bed." in rung1
+    # The real speaker labels are still stripped, and the stamps with them.
+    assert "Therapist:" not in rung1
+    assert "Dana Ruiz:" not in rung1
+    assert "[00:00]" not in rung1
+
+
+# ---------------------------------------------------------------------------
+# The two ways a quote can fail to make the digest
+# ---------------------------------------------------------------------------
+
+
+def test_quotes_over_the_cap_are_counted_apart_from_invented_ones(
+    scratch_vault, monkeypatch
+):
+    """Abbreviating is not the same failure as fabricating, so it gets its own count."""
+    sentences = [f"Line number {n} about the week and the work." for n in range(30)]
+    transcript = " ".join(sentences)
+    _seed_rungs(rung0=transcript, rung1=transcript)
+
+    quotes = [sentence.rstrip(".") for sentence in sentences[:25]]
+    quotes.append("Line number ninety nine about a week that never happened")
+    reduce = _reduce_reply(
+        client_statements=[
+            {"quote": quote, "start_min": 0, "attribution_confidence": "low"}
+            for quote in quotes
+        ]
+    )
+    _install(monkeypatch, FakeLLM(reduce_reply=lambda: reduce))
+
+    digest = ladder.build(_source(), CLIENT_CTX)
+
+    assert len(digest["client_statements"]) == 20
+    assert digest["_dropped_over_cap"] == 5
+    assert digest["_dropped_ungrounded"] == 1
+
+    rendered = ladder.render_digest_md(digest)
+    assert "1 candidate quote(s) were dropped" in rendered
+    assert "5 further quote(s) were held back" in rendered
+    assert "\u2014" not in rendered
 
 
 def test_ladder_never_names_the_walled_off_folder():
