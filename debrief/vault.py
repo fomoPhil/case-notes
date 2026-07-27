@@ -940,7 +940,11 @@ def write_session_note(
           next_session_suggestions (list[str]),
           audio_filename (truthy -> the note references audio/<stem>.m4a and
           renders a ## Dictation Audio embed; the caller then places the
-          converted m4a at Sessions/audio/<returned stem>.m4a).
+          converted m4a at Sessions/audio/<returned stem>.m4a),
+          source_id / source_kind / source_verbatim (the session recording this
+          note drew evidence from; written to frontmatter so the record points
+          at its evidence. The recording's transcript itself never enters the
+          note).
     """
     session_date = meta.get("session_date") or _dt.date.today()
     fmt = meta.get("format", "DAP")
@@ -990,6 +994,13 @@ def write_session_note(
     }
     if audio_name:
         frontmatter["audio"] = f"audio/{audio_name}"
+
+    # Session-recording linkage: the note points at the evidence it was written
+    # from. A link, never the material: the transcript stays in Recordings/ and
+    # the clinical record stays the clinical record (spec section 6 rule 4).
+    for key in ("source_id", "source_kind", "source_verbatim"):
+        if meta.get(key) is not None:
+            frontmatter[key] = meta[key]
 
     # Body sections, driven by the plan's section list (## Heading per section).
     parts: list[str] = [_dump_frontmatter(frontmatter)]
