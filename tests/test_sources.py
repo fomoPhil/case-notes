@@ -1099,3 +1099,437 @@ def test_unstructured_fallback_filters_credits_and_headings():
     )
     plain2, turns2 = sources.parse_transcript(prose)
     assert "2:30" in plain2 and "headspace" in plain2
+
+
+# ---------------------------------------------------------------------------
+# The session date, which is not the capture date
+# ---------------------------------------------------------------------------
+
+
+def test_session_date_defaults_to_the_capture_date(consented_vault, monkeypatch, tmp_path):
+    """Every ingest path writes one, and it is the day the material arrived.
+
+    Right far more often than it is wrong, and wrong in a way the clinician can
+    see and correct. captured_at is written alongside it and says something
+    different: when Debrief received the bytes.
+    """
+    pinned = dt.datetime(2026, 7, 25, 14, 30, 0)
+    monkeypatch.setattr(sources, "_now", lambda: pinned)
+
+    doc = tmp_path / "notes.md"
+    doc.write_text(fixture_text("clinician-notes.md"), encoding="utf-8")
+    audio = tmp_path / "session.m4a"
+    audio.write_bytes(b"fake m4a bytes")
+
+    for source, _ in (
+        sources.ingest_file(doc, CLIENT),
+        sources.ingest_file(audio, CLIENT),
+        sources.ingest_file(FIXTURES / "zoom.vtt", CLIENT),
+        sources.ingest_text("pasted words", CLIENT, "pasted_transcript"),
+    ):
+        assert source.session_date == dt.date(2026, 7, 25)
+        meta = recstore.read_meta(CLIENT, source.id)
+        assert meta["session_date"] == "2026-07-25"
+        assert meta["captured_at"] == "2026-07-25T14:30:00", "the two dates are separate"
+        assert sources.effective_session_date(source) == dt.date(2026, 7, 25)
+
+
+def test_set_session_date_corrects_in_both_directions(consented_vault, monkeypatch, tmp_path):
+    """A session is usually uploaded later, and occasionally prepared earlier.
+
+    Neither is Debrief's business to have an opinion about, so any date is
+    accepted and nothing else in the record moves.
+    """
+    pinned = dt.datetime(2026, 7, 25, 14, 30, 0)
+    monkeypatch.setattr(sources, "_now", lambda: pinned)
+    doc = tmp_path / "notes.md"
+    doc.write_text(fixture_text("clinician-notes.md"), encoding="utf-8")
+    source, _ = sources.ingest_file(doc, CLIENT)
+
+    # Last week's session, uploaded today.
+    meta = sources.set_session_date(CLIENT, source.id, "2026-07-21")
+    assert meta["session_date"] == "2026-07-21"
+    assert recstore.read_meta(CLIENT, source.id)["session_date"] == "2026-07-21"
+
+    # A date in the future is a correction too, not an error.
+    sources.set_session_date(CLIENT, source.id, "2099-12-31")
+    restored = sources.Source.from_meta(recstore.read_meta(CLIENT, source.id))
+    assert restored.session_date == dt.date(2099, 12, 31)
+    assert sources.effective_session_date(restored) == dt.date(2099, 12, 31)
+
+    # A date object is taken as it is.
+    sources.set_session_date(CLIENT, source.id, dt.date(2026, 1, 2))
+    after = recstore.read_meta(CLIENT, source.id)
+    assert after["session_date"] == "2026-01-02"
+
+    # And the rest of the provenance is exactly as it was.
+    assert after["captured_at"] == "2026-07-25T14:30:00"
+    assert after["kind"] == source.kind
+    assert after["verbatim"] == source.verbatim
+    assert after["consent_ref"] == source.consent_ref
+    assert after["needs_confirmation"] == source.needs_confirmation
+
+
+def test_set_session_date_refuses_anything_that_is_not_a_plain_iso_date(
+    consented_vault, tmp_path
+):
+    """One written form, because 07-08 is two different days in two countries.
+
+    A date that reads differently depending on who opens it is worse in a
+    clinical record than no date at all, so only YYYY-MM-DD is accepted and the
+    stored value is never changed by a refusal.
+    """
+    doc = tmp_path / "notes.md"
+    doc.write_text(fixture_text("clinician-notes.md"), encoding="utf-8")
+    source, _ = sources.ingest_file(doc, CLIENT)
+    before = recstore.read_meta(CLIENT, source.id)["session_date"]
+
+    for bad in (
+        "",
+        "   ",
+        None,
+        "25/07/2026",
+        "07/25/2026",
+        "July 25 2026",
+        "yesterday",
+        "2026-7-5",
+        "20260725",
+        "2026-W27-1",
+        "2026-13-01",
+        "2026-02-30",
+        "2026-07-25T10:00:00",
+        "2026-07-25 10:00",
+        "٢٠٢٦-٠٧-٢٥",  # the same date in another script
+        dt.datetime(2026, 7, 25, 10, 0),
+    ):
+        with pytest.raises(ValueError) as excinfo:
+            sources.set_session_date(CLIENT, source.id, bad)
+        assert "YYYY-MM-DD" in str(excinfo.value), f"{bad!r} got an unhelpful message"
+        assert not isinstance(excinfo.value, sources.SourceError)
+
+    assert recstore.read_meta(CLIENT, source.id)["session_date"] == before
+
+
+def test_set_session_date_on_a_source_that_is_not_there(consented_vault):
+    with pytest.raises(sources.SourceError):
+        sources.set_session_date(CLIENT, "2026-07-25-1430", "2026-07-01")
+    # An id that is not a single path segment is refused the same way, rather
+    # than reaching the filesystem at all.
+    with pytest.raises(sources.SourceError):
+        sources.set_session_date(CLIENT, "../escape", "2026-07-01")
+
+
+def test_session_date_round_trips_and_falls_back_to_the_capture_date():
+    """Old meta has no session_date, and it always meant the capture date."""
+    import json
+
+    source = sources.Source(**_source(session_date=dt.date(2026, 7, 20)))
+    meta = source.to_meta()
+    assert json.loads(json.dumps(meta)) == meta
+    assert meta["session_date"] == "2026-07-20"
+    assert sources.Source.from_meta(meta) == source
+    assert sources.effective_session_date(source) == dt.date(2026, 7, 20)
+
+    old = source.to_meta()
+    old.pop("session_date")
+    restored = sources.Source.from_meta(old)
+    assert restored.session_date is None
+    assert sources.effective_session_date(restored) == dt.date(2026, 7, 25)
+    assert sources.effective_session_date(old) == dt.date(2026, 7, 25)
+
+    # A stored date that cannot be read is not a source that cannot be read.
+    broken = source.to_meta()
+    broken["session_date"] = "sometime in July"
+    assert sources.Source.from_meta(broken).session_date is None
+    assert sources.effective_session_date(broken) == dt.date(2026, 7, 25)
+
+    # Nothing readable of either kind is the one case with no answer.
+    assert sources.effective_session_date({}) is None
+    assert sources.effective_session_date(None) is None
+
+
+def test_list_sources_carries_the_session_date(consented_vault, monkeypatch, tmp_path):
+    pinned = dt.datetime(2026, 7, 25, 14, 30, 0)
+    monkeypatch.setattr(sources, "_now", lambda: pinned)
+    doc = tmp_path / "notes.md"
+    doc.write_text(fixture_text("clinician-notes.md"), encoding="utf-8")
+    source, _ = sources.ingest_file(doc, CLIENT)
+
+    row = recstore.list_sources(CLIENT)[0]
+    assert row["session_date"] == "2026-07-25"
+
+    sources.set_session_date(CLIENT, source.id, "2026-07-21")
+    row = recstore.list_sources(CLIENT)[0]
+    assert row["session_date"] == "2026-07-21"
+    assert row["captured_at"] == "2026-07-25T14:30:00"
+    assert sources.effective_session_date(row) == dt.date(2026, 7, 21)
+
+
+# ---------------------------------------------------------------------------
+# Reference material, which is not a session with anybody
+# ---------------------------------------------------------------------------
+
+
+def test_reference_kinds_keep_the_invariant_table():
+    """Two kinds rather than one, so the verbatim-to-rung pairing still holds."""
+    assert sources.KIND_RULES["reference_recording"] == (True, 0)
+    assert sources.KIND_RULES["reference_document"] == (False, 2)
+    assert sources.REFERENCE_KINDS == {"reference_recording", "reference_document"}
+    assert sources.PRODUCERS == {
+        "debrief",
+        "zoom",
+        "otter",
+        "granola",
+        "clinician",
+        "unknown",
+    }
+
+    recording = sources.Source(**_source(kind="reference_recording", verbatim=True, entry_rung=0))
+    assert (recording.verbatim, recording.entry_rung) == (True, 0)
+    document = sources.Source(**_source(kind="reference_document", verbatim=False, entry_rung=2))
+    assert (document.verbatim, document.entry_rung) == (False, 2)
+
+    for wrong in (
+        {"kind": "reference_recording", "verbatim": False, "entry_rung": 0},
+        {"kind": "reference_recording", "verbatim": True, "entry_rung": 2},
+        {"kind": "reference_document", "verbatim": True, "entry_rung": 2},
+        {"kind": "reference_document", "verbatim": False, "entry_rung": 0},
+    ):
+        with pytest.raises(ValueError):
+            sources.Source(**_source(**wrong))
+
+
+def test_classify_never_guesses_reference():
+    """Nothing in the bytes can tell an article from notes about a client.
+
+    A wrong guess either hides a session's evidence or offers an article as
+    evidence about a person, so the classifier is never allowed to make it.
+    """
+    for path in sorted(FIXTURES.iterdir()):
+        kind, _, _, _ = sources.classify(path, path.read_text(encoding="utf-8"))
+        assert kind not in sources.REFERENCE_KINDS, f"{path.name} classified as reference"
+
+    for text in (
+        "An article about panic. Panic peaks and then falls on its own.",
+        "WEBVTT\n\n00:00:01.000 --> 00:00:04.000\nWelcome to this talk on trauma.\n",
+        "Speaker 1  0:03\nThis is a recording of a training webinar.\n",
+    ):
+        assert sources.classify(None, text)[0] not in sources.REFERENCE_KINDS
+
+
+def test_declared_reference_wins_and_asks_nothing(consented_vault, tmp_path):
+    """The clinician's statement about what material is for always settles it."""
+    prose = tmp_path / "panic-article.md"
+    prose.write_text(fixture_text("clinician-notes.md"), encoding="utf-8")
+
+    source, needs_confirmation = sources.ingest_file(
+        prose, CLIENT, declared_kind="reference_document"
+    )
+    assert (source.kind, source.verbatim, source.entry_rung) == ("reference_document", False, 2)
+    assert needs_confirmation is False, "there is nothing left to ask"
+    assert source.needs_confirmation is False
+    assert source.produced_by == "unknown", "an article is not the clinician's own notes"
+    directory = recstore.source_dir(CLIENT, source.id)
+    assert (directory / "source-text.md").is_file()
+    assert recstore.rungs_present(CLIENT, source.id) == set()
+
+    # A file the classifier would have been certain about goes the same way.
+    certain, needs_confirmation = sources.ingest_file(
+        FIXTURES / "zoom.vtt", CLIENT, declared_kind="reference_document"
+    )
+    assert certain.kind == "reference_document"
+    assert needs_confirmation is False
+
+
+def test_media_declared_reference_lands_on_the_recording_kind(
+    consented_vault, monkeypatch, tmp_path
+):
+    """The clinician says reference, the container says which reference kind."""
+    audio = tmp_path / "talk.m4a"
+    audio.write_bytes(b"fake m4a bytes")
+    source, needs_confirmation = sources.ingest_file(
+        audio, CLIENT, declared_kind="reference_document"
+    )
+    assert (source.kind, source.verbatim, source.entry_rung) == ("reference_recording", True, 0)
+    assert needs_confirmation is False
+    assert recstore.audio_path(CLIENT, source.id).name == "source.m4a"
+
+    monkeypatch.setattr(sources, "_run_ffmpeg", fake_ffmpeg([]))
+    video = tmp_path / "webinar.mp4"
+    video.write_bytes(b"fake mp4 bytes")
+    from_video, _ = sources.ingest_file(video, CLIENT, declared_kind="reference_recording")
+    assert from_video.kind == "reference_recording"
+    assert recstore.audio_path(CLIENT, from_video.id) is not None
+
+
+def test_text_declared_reference_recording_lands_on_the_document_kind(
+    consented_vault, tmp_path
+):
+    """The same correction from the other side: text has no audio to transcribe."""
+    chapter = tmp_path / "chapter.md"
+    chapter.write_text(fixture_text("clinician-notes.md"), encoding="utf-8")
+
+    source, needs_confirmation = sources.ingest_file(
+        chapter, CLIENT, declared_kind="reference_recording"
+    )
+    assert (source.kind, source.verbatim, source.entry_rung) == ("reference_document", False, 2)
+    assert needs_confirmation is False
+
+    # The ordinary refusal is untouched: a document still cannot be a recording.
+    with pytest.raises(sources.SourceError):
+        sources.ingest_file(chapter, CLIENT, declared_kind="uploaded_audio")
+
+
+def _seed_digest(source_id: str) -> None:
+    """A rung 2 pair on disk, as a finished ladder run would leave it."""
+    recstore.write_rung(
+        CLIENT, source_id, 2, '{"source_id": "x"}\n', rendered_md="# Session digest x\n"
+    )
+
+
+def test_flip_to_reference_drops_the_digest_and_keeps_everything_else(
+    consented_vault, tmp_path
+):
+    """The digest is the only thing a flip destroys, because it is the only
+    thing whose shape depended on the answer."""
+    source, _ = sources.ingest_file(FIXTURES / "zoom.vtt", CLIENT)
+    recstore.write_rung(CLIENT, source.id, 1, "corrected transcript")
+    _seed_digest(source.id)
+    sources.set_session_date(CLIENT, source.id, "2026-07-01")
+
+    flipped = sources.reclassify(CLIENT, source.id, reference=True)
+
+    assert flipped.kind == "reference_recording"
+    assert (flipped.verbatim, flipped.entry_rung) == (True, 0)
+    assert flipped.needs_confirmation is False
+    assert flipped.diarized is True, "who spoke is a fact about the bytes, not about the use"
+    assert flipped.session_date == dt.date(2026, 7, 1), "a corrected date survives a flip"
+    assert flipped.duration_min == source.duration_min
+
+    directory = recstore.source_dir(CLIENT, source.id)
+    assert recstore.rungs_present(CLIENT, source.id) == {0, 1}
+    assert not (directory / "digest.json").exists()
+    assert not (directory / "digest.md").exists(), "the rendering never outlives the digest"
+    assert (directory / "source-text.md").is_file(), "the material itself is never touched"
+    assert recstore.read_meta(CLIENT, source.id)["kind"] == "reference_recording"
+
+    # A second click must not cost another digest and another rebuild.
+    _seed_digest(source.id)
+    again = sources.reclassify(CLIENT, source.id, reference=True)
+    assert again == flipped
+    assert (directory / "digest.json").is_file()
+
+
+def test_flip_to_reference_works_on_a_recording(consented_vault, tmp_path):
+    """Confirming a recording is meaningless, but calling one reference is not."""
+    audio = tmp_path / "session.m4a"
+    audio.write_bytes(b"fake m4a bytes")
+    source, _ = sources.ingest_file(audio, CLIENT)
+
+    flipped = sources.reclassify(CLIENT, source.id, reference=True)
+    assert flipped.kind == "reference_recording"
+    assert recstore.audio_path(CLIENT, source.id) is not None
+    assert flipped.audio_path == source.audio_path
+
+
+def test_flip_back_from_reference_reads_the_answer_off_the_disk(
+    consented_vault, monkeypatch, tmp_path
+):
+    """Audio present means uploaded_audio, no audio means transcript_file.
+
+    The kind a source arrived as is gone once the flip overwrote it, and the
+    documented rule is what is actually on disk. A video comes back as
+    uploaded_audio, which is true of every byte Debrief kept.
+    """
+    monkeypatch.setattr(sources, "_run_ffmpeg", fake_ffmpeg([]))
+    video = tmp_path / "session.mp4"
+    video.write_bytes(b"fake mp4 bytes")
+    from_video, _ = sources.ingest_file(video, CLIENT)
+    assert from_video.kind == "uploaded_video"
+
+    sources.reclassify(CLIENT, from_video.id, reference=True)
+    back = sources.reclassify(CLIENT, from_video.id, reference=False)
+    assert back.kind == "uploaded_audio"
+    assert (back.verbatim, back.entry_rung) == (True, 0)
+
+    # No audio, so the transcript is what is there.
+    transcript, _ = sources.ingest_file(FIXTURES / "zoom.vtt", CLIENT)
+    sources.reclassify(CLIENT, transcript.id, reference=True)
+    back = sources.reclassify(CLIENT, transcript.id, reference=False)
+    assert back.kind == "transcript_file"
+    assert back.diarized is True
+    assert back.duration_min == transcript.duration_min
+
+    # A write up comes back a write up, and who produced it decides which.
+    granola = tmp_path / "granola-note.md"
+    granola.write_text(fixture_text("granola-note.md"), encoding="utf-8")
+    tool, _ = sources.ingest_file(granola, CLIENT)
+    assert tool.kind == "third_party_summary"
+    sources.reclassify(CLIENT, tool.id, reference=True)
+    assert recstore.read_meta(CLIENT, tool.id)["kind"] == "reference_document"
+    assert sources.reclassify(CLIENT, tool.id, reference=False).kind == "third_party_summary"
+
+    own, _ = sources.ingest_text(fixture_text("clinician-notes.md"), CLIENT, "clinician_notes")
+    sources.reclassify(CLIENT, own.id, reference=True)
+    assert sources.reclassify(CLIENT, own.id, reference=False).kind == "clinician_notes"
+
+
+def test_flip_back_never_resurrects_a_digest(consented_vault):
+    """Both directions delete rung 2, so no digest ever outlives its shape."""
+    source, _ = sources.ingest_file(FIXTURES / "zoom.vtt", CLIENT)
+    _seed_digest(source.id)
+    sources.reclassify(CLIENT, source.id, reference=True)
+    assert 2 not in recstore.rungs_present(CLIENT, source.id)
+
+    # A reference digest written while the source was reference material.
+    recstore.write_rung(
+        CLIENT, source.id, 2, '{"kind": "reference"}\n', rendered_md="# Reference digest\n"
+    )
+    sources.reclassify(CLIENT, source.id, reference=False)
+
+    directory = recstore.source_dir(CLIENT, source.id)
+    assert 2 not in recstore.rungs_present(CLIENT, source.id)
+    assert not (directory / "digest.md").exists()
+    assert recstore.rungs_present(CLIENT, source.id) == {0}
+
+
+def test_flipping_a_source_keeps_the_meta_this_module_does_not_own(
+    consented_vault, tmp_path
+):
+    """The retention stamp is a record of what happened, not a field to drop."""
+    audio = tmp_path / "session.m4a"
+    audio.write_bytes(b"fake m4a bytes")
+    source, _ = sources.ingest_file(audio, CLIENT)
+    meta = recstore.read_meta(CLIENT, source.id)
+    meta["audio_deleted_at"] = "2026-07-26T09:00:00"
+    recstore.write_meta(CLIENT, source.id, meta)
+
+    sources.reclassify(CLIENT, source.id, reference=True)
+
+    after = recstore.read_meta(CLIENT, source.id)
+    assert after["audio_deleted_at"] == "2026-07-26T09:00:00"
+    assert after["kind"] == "reference_recording"
+
+
+def test_reference_material_has_nothing_to_confirm(consented_vault, tmp_path):
+    """The word for word question is about session material, and this is not."""
+    doc = tmp_path / "notes.md"
+    doc.write_text(fixture_text("clinician-notes.md"), encoding="utf-8")
+    source, _ = sources.ingest_file(doc, CLIENT)
+    sources.reclassify(CLIENT, source.id, reference=True)
+
+    with pytest.raises(sources.SourceError) as excinfo:
+        sources.reclassify(CLIENT, source.id, True, "unknown")
+    assert "reference material" in str(excinfo.value)
+    assert recstore.read_meta(CLIENT, source.id)["kind"] == "reference_document"
+
+
+def test_reclassify_still_needs_a_word_for_word_answer(consented_vault, tmp_path):
+    """The confirm path takes a bool. Nothing else may be read as one."""
+    doc = tmp_path / "notes.md"
+    doc.write_text(fixture_text("clinician-notes.md"), encoding="utf-8")
+    source, _ = sources.ingest_file(doc, CLIENT)
+
+    with pytest.raises(sources.SourceError):
+        sources.reclassify(CLIENT, source.id, produced_by="clinician")
+    assert recstore.read_meta(CLIENT, source.id)["needs_confirmation"] is True

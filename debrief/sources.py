@@ -23,6 +23,21 @@ guess and flagged for the clinician to confirm with one tap. When a file looks
 like both a summary and a transcript, the guess is the non-verbatim one, because
 an unattributed observation is recoverable and a misattributed quote is not.
 
+Some material is not a session at all: an article, a training video, a talk the
+clinician saved to come back to. That is stored as reference material, which is
+two kinds for the same reason everything else is. reference_recording is word
+for word and enters at rung 0, reference_document is somebody's write up and
+enters at rung 2. Reference material is never evidence about a client, and
+nothing ever classifies itself as reference: only the clinician saying so, on
+the way in or afterwards, makes something reference material.
+
+A source carries two dates, and both are true. captured_at is when the bytes
+reached Debrief, and it is never editable, because it is the app's own record of
+what it received and when. session_date is when the session actually happened.
+It defaults to captured_at's date and can be corrected in either direction,
+because material is often brought in days later and a note dated by upload time
+is a note with the wrong date on it.
+
 Consent comes first on every path. Import is gated on a dated recording consent
 flag on the client profile, exactly as the record button is. The message when it
 is missing says what is missing and nothing else: the app takes no position on
@@ -78,9 +93,20 @@ KIND_RULES: dict[str, tuple[bool, int]] = {
     "pasted_transcript": (True, 0),
     "third_party_summary": (False, 2),
     "clinician_notes": (False, 2),
+    # Reference material, which is not a session with anybody. Two kinds rather
+    # than one, so the pairing above holds for it too: a talk that gets
+    # transcribed is word for word and enters at rung 0, an article is somebody
+    # else's prose and enters at rung 2. The UI shows both as one label.
+    "reference_recording": (True, 0),
+    "reference_document": (False, 2),
 }
 
 PRODUCERS = {"debrief", "zoom", "otter", "granola", "clinician", "unknown"}
+
+# The kinds that are not a session. Their digest is reference shaped, they are
+# never offered as evidence about a client, and nothing but a clinician's own
+# say so ever puts a source in here.
+REFERENCE_KINDS = {"reference_recording", "reference_document"}
 
 # What a file's extension alone is enough to decide.
 AUDIO_EXTS = {".m4a", ".mp3", ".wav", ".aac"}
@@ -110,6 +136,24 @@ MEDIA_CONFIRM_MESSAGE = (
     "That source is a recording, so there is nothing to confirm: what the "
     "microphone captured is word for word."
 )
+
+# Said in one place for the same reason. The word for word question is about
+# session material, and this source is not session material at all.
+REFERENCE_CONFIRM_MESSAGE = (
+    "That source is filed as reference material rather than a session, so there "
+    "is nothing to confirm about it. Treat it as a session recording first if "
+    "that is what it turned out to be."
+)
+
+# The one shape a session date is written in, everywhere. Fixed rather than
+# locale-aware on purpose: 07-08 is two different days on two sides of an
+# ocean, and a clinical record cannot hold a date that reads differently
+# depending on who opens it. date.fromisoformat would also take 20260725 and
+# 2026-W27-1, and neither is a thing a person types on purpose. The digits are
+# spelled out as 0 to 9 rather than as \d, which also matches every other
+# script's digits and would hand fromisoformat a string it cannot read.
+_SESSION_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_SESSION_DATE_SHAPE = "Write it as YYYY-MM-DD, for example 2026-07-25."
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +190,15 @@ class Source:
     # False so meta written before this existed reads as answered, which is the
     # right reading: nothing was ever pending on it.
     needs_confirmation: bool = False
+    # When the session actually happened, which is not the same question as
+    # when Debrief received the file. A clinician who uploads Tuesday's session
+    # on Friday needs the record to say Tuesday, and captured_at can never say
+    # it, because captured_at is the app's own statement about its own history
+    # and is never editable. None means the source has never said, and every
+    # caller reads it through effective_session_date, which falls back to
+    # captured_at's date. That is exactly what meta written before this field
+    # existed always meant.
+    session_date: _dt.date | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in KIND_RULES:
@@ -182,6 +235,7 @@ class Source:
             "audio_path": str(self.audio_path) if self.audio_path else None,
             "consent_ref": self.consent_ref,
             "needs_confirmation": bool(self.needs_confirmation),
+            "session_date": self.session_date.isoformat() if self.session_date else None,
         }
 
     @classmethod
@@ -216,7 +270,110 @@ class Source:
             audio_path=Path(audio) if audio else None,
             consent_ref=meta.get("consent_ref") or None,
             needs_confirmation=bool(meta.get("needs_confirmation")),
+            # Lenient on the way in: a session date that cannot be read reads as
+            # absent, and absent falls back to the capture date. Refusing to
+            # build the Source at all would take a whole source out of the
+            # listing over a field that is only ever a display convenience.
+            session_date=_read_session_date(meta.get("session_date")),
         )
+
+
+# ---------------------------------------------------------------------------
+# The session date
+# ---------------------------------------------------------------------------
+
+
+def parse_session_date(value) -> _dt.date:
+    """A session date, or ValueError carrying a message that is safe to show.
+
+    One written form, YYYY-MM-DD, and nothing else. A date object is taken as
+    it is; a datetime is refused rather than truncated, because a session date
+    is a day and accepting a time would quietly throw part of the value away.
+
+    Every date is allowed, past and future both. Clinicians correct in both
+    directions: material comes in late far more often than early, but a session
+    booked for tomorrow and prepared for today is an ordinary thing too. There
+    is no clinical reading of a date that this module is entitled to make.
+    """
+    if isinstance(value, _dt.datetime):
+        raise ValueError(f"A session date is a day, not a time. {_SESSION_DATE_SHAPE}")
+    if isinstance(value, _dt.date):
+        return value
+    text = str(value if value is not None else "").strip()
+    if not text:
+        raise ValueError(f"There is no session date here. {_SESSION_DATE_SHAPE}")
+    if not _SESSION_DATE_RE.fullmatch(text):
+        raise ValueError(f"{text} is not a date Debrief can read. {_SESSION_DATE_SHAPE}")
+    try:
+        return _dt.date.fromisoformat(text)
+    except ValueError:
+        raise ValueError(f"{text} is not a real date. {_SESSION_DATE_SHAPE}") from None
+
+
+def _read_session_date(value) -> _dt.date | None:
+    """A stored session date, or None when there is not a readable one."""
+    if isinstance(value, _dt.datetime):
+        return value.date()
+    if isinstance(value, _dt.date):
+        return value
+    try:
+        return parse_session_date(value)
+    except ValueError:
+        return None
+
+
+def effective_session_date(meta_or_source) -> _dt.date | None:
+    """When this source's session happened, falling back to its capture date.
+
+    Takes a Source, a meta dict, or a recstore.list_sources row. The fallback is
+    the point: a source stored before session_date existed, or one whose stored
+    date cannot be read, still has a date to show, and it is the one that was
+    true of it all along. None only when there is no readable date of either
+    kind, which means the record itself is broken.
+    """
+    if isinstance(meta_or_source, Source):
+        if meta_or_source.session_date:
+            return meta_or_source.session_date
+        captured = meta_or_source.captured_at
+        return captured.date() if isinstance(captured, _dt.datetime) else None
+
+    meta = meta_or_source or {}
+    stated = _read_session_date(meta.get("session_date"))
+    if stated:
+        return stated
+    captured = meta.get("captured_at")
+    if isinstance(captured, _dt.datetime):
+        return captured.date()
+    try:
+        return _dt.datetime.fromisoformat(str(captured)).date()
+    except (TypeError, ValueError):
+        return None
+
+
+def set_session_date(client_id: str, source_id: str, value) -> dict:
+    """Record when this source's session actually happened. Returns the meta.
+
+    The date is validated before anything is read from disk, and the rest of
+    meta.json is carried across untouched, so this can never be the call that
+    loses a source's provenance. captured_at in particular is copied, never
+    recomputed: the two dates answer different questions and only one of them is
+    the clinician's to change.
+
+    Raises ValueError for a date that cannot be read, and SourceError when there
+    is no such source.
+    """
+    session_date = parse_session_date(value)
+    try:
+        meta = recstore.read_meta(client_id, source_id)
+    except ValueError as exc:
+        raise SourceError(str(exc)) from exc
+    if not meta:
+        raise SourceError(f"there is no stored source {source_id} for this client.")
+
+    meta = dict(meta)
+    meta["session_date"] = session_date.isoformat()
+    recstore.write_meta(client_id, source_id, meta)
+    return meta
 
 
 # ---------------------------------------------------------------------------
@@ -700,6 +857,13 @@ def classify(path: Path | None, text: str) -> tuple[str, bool, str, float]:
     the answer is not verbatim and the clinician is asked. A confirmation tap
     costs a second. A generated sentence filed as a client quote is in the record
     for good.
+
+    No layer ever returns a reference kind, and no layer ever will. An article
+    about panic and a set of notes about a client's panic are the same shape on
+    the page, so nothing in the bytes can tell them apart, and guessing wrong
+    would either hide a session's evidence or offer an article as evidence about
+    a person. Only the clinician's own statement makes something reference
+    material: declared on the way in, or set afterwards through reclassify.
     """
     text = text or ""
 
@@ -879,11 +1043,23 @@ def _store(
     turns: list[dict] | None = None,
     duration_min: int | None = None,
     needs_confirmation: bool = False,
+    diarized: bool | None = None,
+    session_date: _dt.date | None = None,
+    carry: dict | None = None,
 ) -> Source:
     """Build the Source, write meta.json, and hand it back.
 
     Every ingest path ends here, so provenance is written exactly once and in
     exactly one shape.
+
+    diarized is normally read off the turns, and is passed in only by a rewrite
+    that has no turns to read but does know the answer. session_date defaults to
+    the day the material arrived, which is right far more often than it is
+    wrong and is correctable either way.
+
+    carry is the meta this write is replacing. Keys this module does not own,
+    the retention stamp among them, survive the rewrite instead of being dropped
+    by it: a source that changes kind has not stopped having a history.
     """
     verbatim, entry_rung = KIND_RULES[kind]
     turns = turns or []
@@ -896,13 +1072,16 @@ def _store(
         entry_rung=entry_rung,
         captured_at=captured_at,
         duration_min=duration_min,
-        diarized=any(turn.get("speaker") for turn in turns),
+        diarized=(
+            any(turn.get("speaker") for turn in turns) if diarized is None else bool(diarized)
+        ),
         partial=False,
         audio_path=audio_path,
         consent_ref=consent_ref,
         needs_confirmation=bool(needs_confirmation),
+        session_date=session_date or captured_at.date(),
     )
-    recstore.write_meta(client_id, source_id, source.to_meta())
+    recstore.write_meta(client_id, source_id, {**(carry or {}), **source.to_meta()})
     return source
 
 
@@ -953,7 +1132,15 @@ def ingest_file(path: Path, client_id: str, declared_kind: str | None = None) ->
 
     if ext in AUDIO_EXTS or ext in VIDEO_EXTS:
         natural = "uploaded_audio" if ext in AUDIO_EXTS else "uploaded_video"
-        if declared is not None and declared != natural:
+        kind = natural
+        if declared in REFERENCE_KINDS:
+            # "This is reference material" is a claim about what the material
+            # is for, and the clinician is the only one who can know it, so it
+            # always wins. Which of the two reference kinds it becomes is not
+            # theirs to pick: this file holds media, so it enters at rung 0 to
+            # be transcribed, whichever of the pair the UI happened to send.
+            kind = "reference_recording"
+        elif declared is not None and declared != natural:
             raise SourceError(
                 f"{src.name} is {natural.replace('_', ' ')}, so it cannot be filed "
                 f"as {declared.replace('_', ' ')}."
@@ -975,7 +1162,7 @@ def ingest_file(path: Path, client_id: str, declared_kind: str | None = None) ->
             _store(
                 client_id,
                 source_id,
-                natural,
+                kind,
                 "unknown",
                 captured_at,
                 consent_ref,
@@ -998,7 +1185,17 @@ def ingest_file(path: Path, client_id: str, declared_kind: str | None = None) ->
 
     kind, _, produced_by, confidence = classify(src, text)
     if declared is not None:
-        if declared not in TEXT_KINDS:
+        if declared in REFERENCE_KINDS:
+            # The media path's rule, arriving from the other side. Reference
+            # wins and the container decides the rung: there is no audio here
+            # to transcribe, so it is a document. produced_by goes back to
+            # unknown, because the classifier's guess was a guess about who
+            # wrote a session note, and this is not one. Calling an article the
+            # clinician's own notes would be a false statement about authorship.
+            kind = "reference_document"
+            produced_by = "unknown"
+            confidence = 1.0
+        elif declared not in TEXT_KINDS:
             # Declaring a document to be a recording would file text at a rung
             # that expects media, so the claim is refused rather than absorbed.
             raise SourceError(
@@ -1006,10 +1203,11 @@ def ingest_file(path: Path, client_id: str, declared_kind: str | None = None) ->
                 f"{declared.replace('_', ' ')}. Expected one of: "
                 f"{', '.join(sorted(TEXT_KINDS))}."
             )
-        kind = declared
-        confidence = 1.0
-        if kind == "clinician_notes":
-            produced_by = "clinician"
+        else:
+            kind = declared
+            confidence = 1.0
+            if kind == "clinician_notes":
+                produced_by = "clinician"
 
     needs_confirmation = confidence < CONFIRM_BELOW
     source_id = _reserve_source_id(client_id, captured_at)
@@ -1050,8 +1248,25 @@ def ingest_text(text: str, client_id: str, kind: str) -> tuple[Source, bool]:
     return source, False
 
 
-def reclassify(client_id: str, source_id: str, verbatim: bool, produced_by: str) -> Source:
-    """Rewrite a stored text source under the clinician's answer. Returns it.
+def reclassify(
+    client_id: str,
+    source_id: str,
+    verbatim: bool | None = None,
+    produced_by: str | None = None,
+    reference: bool | None = None,
+) -> Source:
+    """Rewrite a stored source under the clinician's answer. Returns it.
+
+    Two different answers arrive here, and which one this is depends on which
+    argument was given.
+
+        verbatim + produced_by   what the material IS: word for word, or
+                                 somebody's write up, and whose
+        reference                what the material is FOR: a session with this
+                                 client, or reference material that is not
+
+    The second is the flip described below and never touches the first. A
+    source's kind carries both facts, so both live in one function.
 
     This is the other half of needs_confirmation. The classifier guessed, the
     source was stored with that guess and no work was queued, and now a human
@@ -1101,8 +1316,18 @@ def reclassify(client_id: str, source_id: str, verbatim: bool, produced_by: str)
     except (ValueError, TypeError) as exc:
         raise SourceError(f"the provenance for this source could not be read: {exc}") from exc
 
+    if reference is not None:
+        return _flip_reference(client_id, source_id, stored, bool(reference), meta)
+
+    if stored.kind in REFERENCE_KINDS:
+        raise SourceError(REFERENCE_CONFIRM_MESSAGE)
     if stored.kind in MEDIA_KINDS:
         raise SourceError(MEDIA_CONFIRM_MESSAGE)
+    if not isinstance(verbatim, bool):
+        raise SourceError(
+            "Say whether the material is word for word (true) or somebody's "
+            "write up (false)."
+        )
 
     producer = str(produced_by or "").strip()
     if producer not in PRODUCERS:
@@ -1149,6 +1374,89 @@ def reclassify(client_id: str, source_id: str, verbatim: bool, produced_by: str)
         # Answered. The question stops being asked, on this screen and on every
         # later reload, because the flag it was asked from is on disk.
         needs_confirmation=False,
+        session_date=effective_session_date(stored),
+        carry=meta,
+    )
+
+
+def _natural_session_kind(client_id: str, source_id: str, stored: Source) -> str:
+    """What a reference source goes back to being when it is a session again.
+
+    The honest part first: the kind it arrived as is gone. meta.json holds one
+    kind, the flip to reference overwrote it, and no copy of the old one is
+    kept anywhere. Keeping a shadow copy would mean a second field that can
+    disagree with the first, and provenance that disagrees with itself is worse
+    than provenance that is merely coarse.
+
+    So the answer is read off the disk instead, which cannot be wrong about what
+    is actually there:
+
+        audio on disk           uploaded_audio
+        no audio                transcript_file
+        not word for word       clinician_notes when the producer is the
+                                clinician, third_party_summary otherwise
+
+    Two labels drift under this rule. A video comes back as uploaded_audio,
+    which is true of every byte Debrief retained, because the video itself is
+    never kept. A live_recording comes back as uploaded_audio too, and that one
+    really does lose something: the record stops saying it was recorded in this
+    app. Both are recoverable by re-importing, and neither can misattribute a
+    word to anybody, which is the line that matters.
+    """
+    if stored.verbatim:
+        if recstore.audio_path(client_id, source_id) is not None:
+            return "uploaded_audio"
+        return "transcript_file"
+    return "clinician_notes" if stored.produced_by == "clinician" else "third_party_summary"
+
+
+def _flip_reference(
+    client_id: str, source_id: str, stored: Source, to_reference: bool, meta: dict
+) -> Source:
+    """Move a source between session material and reference material.
+
+    Only the kind changes. Whether the material is word for word is a fact about
+    the bytes and survives the flip untouched, which is what makes the flip
+    cheap in both directions: rung 0 and rung 1 stay exactly as valid as they
+    were, the audio and the source text are never touched, and a word for word
+    source becomes reference_recording while a write up becomes
+    reference_document.
+
+    Rung 2 does not survive. A session digest and a reference digest are
+    different shapes with different rules: one may carry the client's own words,
+    the other may not mention a client at all. Handing out a digest built under
+    the other shape is the same failure as handing out a stale one, so it is
+    deleted and the caller queues the ladder to rebuild it. Rung 2 is
+    regenerable. That is the whole reason it is safe to delete.
+
+    Flipping in the direction a source is already pointing does nothing at all,
+    deliberately: a second click must not cost a digest and a rebuild.
+    """
+    already_reference = stored.kind in REFERENCE_KINDS
+    if already_reference == to_reference:
+        return stored
+
+    if to_reference:
+        kind = "reference_recording" if stored.verbatim else "reference_document"
+    else:
+        kind = _natural_session_kind(client_id, source_id, stored)
+
+    recstore.delete_rung(client_id, source_id, 2)
+    return _store(
+        client_id,
+        source_id,
+        kind,
+        stored.produced_by,
+        stored.captured_at,
+        stored.consent_ref,
+        audio_path=stored.audio_path,
+        duration_min=stored.duration_min,
+        # There is nothing left to ask. The clinician has just said what this
+        # material is, which is a stronger answer than the question wanted.
+        needs_confirmation=False,
+        diarized=stored.diarized,
+        session_date=effective_session_date(stored),
+        carry=meta,
     )
 
 

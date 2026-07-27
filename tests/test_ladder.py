@@ -1158,3 +1158,331 @@ def test_ladder_never_names_the_walled_off_folder():
     text = (config.REPO_ROOT / "debrief" / "ladder.py").read_text(encoding="utf-8")
     assert "Private" not in text
     assert "—" not in text
+
+
+# ---------------------------------------------------------------------------
+# Reference material: the same rungs, a digest that cannot hold a client
+# ---------------------------------------------------------------------------
+
+# A real sentence out of the transcript, so grounding would happily have kept it
+# in a session digest. Every reference test below asserts it is nowhere.
+REAL_QUOTE = "I still think I am the problem in that house"
+
+
+def _reference_source(**overrides) -> sources.Source:
+    """A talk the clinician saved: word for word, rung 0, and not a session."""
+    return _source(kind="reference_recording", produced_by="unknown", **overrides)
+
+
+def _reference_document_source(**overrides) -> sources.Source:
+    """An article the clinician saved: somebody's prose, entering at rung 2."""
+    return _source(
+        kind="reference_document",
+        verbatim=False,
+        entry_rung=2,
+        produced_by="unknown",
+        diarized=False,
+        duration_min=None,
+        **overrides,
+    )
+
+
+def _reference_reduce_reply(**overrides) -> dict:
+    reply = {
+        "source_id": "the-model-made-this-up",
+        "duration_min": 999,
+        "kind": "reference",
+        "title": "Working with panic, introductory talk",
+        "summary": "The talk describes what panic does in the body and why it passes.",
+        "segments": [{"start_min": 999, "end_min": 999, "topic": "wrong", "summary": "wrong"}],
+        "key_points": ["Panic peaks and then falls on its own"],
+        "practices_or_suggestions": ["Paced breathing before bed"],
+        "topics": ["Panic", "Interoception"],
+    }
+    reply.update(overrides)
+    return reply
+
+
+def test_reference_digest_shape_matches_its_schema(scratch_vault, monkeypatch):
+    _seed_rungs(rung0=_timed_rung0(), rung1=TRANSCRIPT)
+    _install(monkeypatch, FakeLLM(reduce_reply=_reference_reduce_reply))
+
+    digest = ladder.build(_reference_source(), CLIENT_CTX)
+
+    schema = ladder.REFERENCE_DIGEST_SCHEMA
+    for key in schema["required"]:
+        assert key in digest, f"the reference digest is missing {key}"
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == set(schema["properties"]), (
+        "every field in the reference schema must be required"
+    )
+    assert set(digest) == set(schema["properties"])
+
+    # There is nowhere in this shape to put a claim about a session.
+    text = json.dumps(schema)
+    for forbidden in ("quote", "client_statement", "risk", "intervention", "attribution"):
+        assert forbidden not in text, f"the reference schema must not offer a {forbidden} field"
+
+    # Code owns the same fields it always owns. The model lied about both.
+    assert digest["kind"] == "reference"
+    assert digest["source_id"] == SID
+    assert digest["duration_min"] == 52
+    assert [segment["topic"] for segment in digest["segments"]] == ["Sleep and rumination"]
+    assert digest["title"] == "Working with panic, introductory talk"
+    assert digest["key_points"] == ["Panic peaks and then falls on its own"]
+
+
+def test_reference_digest_strips_session_claims_the_model_returned(
+    scratch_vault, monkeypatch
+):
+    """The model answers with a client quote anyway. Code owns the shape.
+
+    This is rule 2's enforcement, one rung further out: not "which quotes may
+    this source carry" but "this source may not be about a person at all".
+    """
+    _seed_rungs(rung0=_timed_rung0(), rung1=TRANSCRIPT)
+    poisoned = _reference_reduce_reply(
+        client_statements=[
+            {"quote": REAL_QUOTE, "start_min": 0, "attribution_confidence": "high"}
+        ],
+        interventions_observed=[
+            {"name": "Paced breathing", "client_response": "Settled.", "start_min": 0}
+        ],
+        risk_language_present=True,
+        risk_excerpts=[REAL_QUOTE],
+        themes=["Sleep"],
+    )
+    _install(monkeypatch, FakeLLM(reduce_reply=lambda: poisoned))
+
+    digest = ladder.build(_reference_source(), CLIENT_CTX)
+
+    for field in (
+        "client_statements",
+        "interventions_observed",
+        "risk_language_present",
+        "risk_excerpts",
+        "themes",
+        "diarized",
+    ):
+        assert field not in digest, f"{field} has no place in a reference digest"
+    assert REAL_QUOTE not in json.dumps(digest)
+    # And the file on disk is the same digest, not a tidier view of it.
+    assert REAL_QUOTE not in (recstore.source_dir(CLIENT, SID) / "digest.json").read_text(
+        encoding="utf-8"
+    )
+    assert REAL_QUOTE not in (recstore.source_dir(CLIENT, SID) / "digest.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_a_reference_reduce_is_never_shown_a_quote(scratch_vault, monkeypatch):
+    """The windows still report quotes. They are dropped before the reduce.
+
+    A digest cannot contain words the call that wrote it never saw, which is a
+    stronger guarantee than deleting them afterwards.
+    """
+    _seed_rungs(rung0=_timed_rung0(), rung1=TRANSCRIPT)
+    fake = _install(
+        monkeypatch,
+        FakeLLM(
+            map_reply=lambda index: _map_reply(
+                quotes=[REAL_QUOTE], risk_language=[REAL_QUOTE]
+            ),
+            reduce_reply=_reference_reduce_reply,
+        ),
+    )
+
+    ladder.build(_reference_source(), CLIENT_CTX)
+
+    assert fake.reduce_calls == 1
+    reduce_prompt = fake.reduce_messages[0]
+    assert REAL_QUOTE not in reduce_prompt
+    for dropped in ("quotes", "risk_language", "interventions"):
+        assert dropped not in reduce_prompt
+    assert "practices_or_suggestions" in reduce_prompt
+
+
+def test_a_reference_build_is_never_told_about_the_client(scratch_vault, monkeypatch):
+    """A summary of an article is about the article. Nobody's history goes with it."""
+    _seed_rungs(rung0=_timed_rung0(), rung1=TRANSCRIPT)
+    fake = _install(monkeypatch, FakeLLM(reduce_reply=_reference_reduce_reply))
+
+    ladder.build(_reference_source(), {"name": "Dana Ruiz", "diagnosis": "panic disorder"})
+
+    assert fake.map_calls == 1 and fake.reduce_calls == 1
+    for prompt in fake.map_messages + fake.reduce_messages:
+        assert "Dana Ruiz" not in prompt
+        assert "panic disorder" not in prompt
+    assert "REFERENCE MATERIAL, PART 1 OF 1" in fake.map_messages[0]
+    assert "not a therapy session" in fake.map_messages[0]
+
+    # The session path still gets the context it needs.
+    _seed_rungs(rung0=_timed_rung0(), rung1=TRANSCRIPT, sid="session-1")
+    session_fake = _install(monkeypatch, FakeLLM())
+    ladder.build(_source(id="session-1"), CLIENT_CTX)
+    assert "Dana Ruiz" in session_fake.map_messages[0]
+
+
+def test_reference_document_digests_straight_from_its_text(scratch_vault, monkeypatch):
+    recstore.write_source_text(CLIENT, SID, TRANSCRIPT)
+    monkeypatch.setattr(
+        stt, "transcribe_timed", lambda *a, **k: pytest.fail("a document has no audio")
+    )
+    fake = _install(monkeypatch, FakeLLM(reduce_reply=_reference_reduce_reply))
+
+    digest = ladder.build(_reference_document_source(), CLIENT_CTX)
+
+    assert digest["kind"] == "reference"
+    assert digest["duration_min"] is None
+    assert recstore.rungs_present(CLIENT, SID) == {2}
+    assert fake.calls == ["map", "reduce"]
+
+
+def test_render_digest_md_renders_the_reference_shape(scratch_vault, monkeypatch):
+    _seed_rungs(rung0=_timed_rung0(), rung1=TRANSCRIPT)
+    _install(monkeypatch, FakeLLM(reduce_reply=_reference_reduce_reply))
+    digest = ladder.build(_reference_source(), CLIENT_CTX)
+
+    rendered = ladder.render_digest_md(digest)
+
+    assert "—" not in rendered and "–" not in rendered
+    assert rendered.startswith("# Reference digest: Working with panic, introductory talk")
+    assert f"Source {SID}." in rendered
+    assert "52 minutes" in rendered
+    assert "not a session with a client" in rendered
+    for heading in (
+        "## Summary",
+        "## Timeline",
+        "## Key points",
+        "## Practices or suggestions",
+        "## Topics",
+    ):
+        assert heading in rendered
+    assert "| Start | End | Topic | What it covers |" in rendered
+    assert "Panic peaks and then falls on its own" in rendered
+    assert "Paced breathing before bed" in rendered
+    assert "Interoception" in rendered
+    # None of the session headings are in here at all.
+    for absent in ("## Client statements", "## Risk language", "## Interventions observed"):
+        assert absent not in rendered
+    assert (recstore.source_dir(CLIENT, SID) / "digest.md").read_text(
+        encoding="utf-8"
+    ) == rendered
+
+
+def test_render_digest_md_survives_a_thin_reference_digest():
+    rendered = ladder.render_digest_md({"kind": "reference"})
+    assert rendered.startswith("# Reference digest: (untitled)")
+    assert "not known" in rendered
+    assert "None recorded." in rendered
+    assert "No segments were produced for this material." in rendered
+    assert "—" not in rendered
+
+
+def test_a_session_digest_still_renders_as_a_session_digest(scratch_vault, monkeypatch):
+    """The reference shape is picked by the digest's own kind, and only then."""
+    _seed_rungs(rung0=_timed_rung0(), rung1=TRANSCRIPT)
+    _install(monkeypatch, FakeLLM())
+    rendered = ladder.render_digest_md(ladder.build(_source(), CLIENT_CTX))
+
+    assert rendered.startswith(f"# Session digest {SID}")
+    assert "## Client statements" in rendered
+    assert "Reference" not in rendered
+
+
+def test_a_reference_digest_serves_no_session_claims_after_a_flip_back(
+    scratch_vault, monkeypatch
+):
+    """The source says session again. The digest is still a reference digest.
+
+    It never held a client statement, so it is served without one, and a field
+    added to the file by hand does not become one either.
+    """
+    _seed_rungs(rung0=_timed_rung0(), rung1=TRANSCRIPT)
+    _seed_meta(_reference_source())
+    _install(monkeypatch, FakeLLM(reduce_reply=_reference_reduce_reply))
+    ladder.build(_reference_source(), CLIENT_CTX)
+
+    _seed_meta(_source())  # the clinician flipped it back to a session recording
+
+    loaded = ladder.load_digest(CLIENT, SID)
+    assert loaded["kind"] == "reference"
+    assert loaded["title"] == "Working with panic, introductory talk"
+    for field in ladder._SESSION_CLAIM_FIELDS:
+        assert field not in loaded
+
+    path = recstore.source_dir(CLIENT, SID) / "digest.json"
+    tampered = json.loads(path.read_text(encoding="utf-8"))
+    tampered["client_statements"] = [
+        {"quote": REAL_QUOTE, "start_min": 0, "attribution_confidence": "high"}
+    ]
+    tampered["risk_excerpts"] = [REAL_QUOTE]
+    tampered["risk_language_present"] = True
+    # And under a name nobody thought to ban, which is why this is a whitelist.
+    tampered["quotes"] = [REAL_QUOTE]
+    path.write_text(json.dumps(tampered), encoding="utf-8")
+
+    loaded = ladder.load_digest(CLIENT, SID)
+    assert REAL_QUOTE not in json.dumps(loaded)
+    assert set(loaded) <= set(ladder.REFERENCE_DIGEST_SCHEMA["properties"])
+    for field in ladder._SESSION_CLAIM_FIELDS:
+        assert field not in loaded, "an emptied field is still an answer this shape may not give"
+
+
+def test_a_session_digest_stops_serving_claims_once_its_source_is_reference(
+    scratch_vault, monkeypatch
+):
+    """The crossing the other way, and the same direction of failure as rule 2."""
+    _seed_rungs(rung0=_timed_rung0(), rung1=TRANSCRIPT)
+    _seed_meta(_source())
+    reduce = _reduce_reply(
+        risk_language_present=True,
+        risk_excerpts=[REAL_QUOTE],
+    )
+    _install(monkeypatch, FakeLLM(reduce_reply=lambda: reduce))
+    built = ladder.build(_source(), CLIENT_CTX)
+    assert built["client_statements"] and built["risk_excerpts"]
+
+    _seed_meta(_reference_source())
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("nothing should be rebuilt, only re-enforced")
+
+    monkeypatch.setattr(ladder.llm, "chat", _boom)
+
+    for digest in (
+        ladder.load_digest(CLIENT, SID),
+        ladder.build(_reference_source(), CLIENT_CTX),
+    ):
+        assert digest["client_statements"] == []
+        assert digest["risk_excerpts"] == []
+        assert digest["interventions_observed"] == []
+        assert digest["risk_language_present"] is False
+        assert REAL_QUOTE not in json.dumps(digest)
+        # What the material was about is not a claim about anybody, so it stays.
+        assert digest["themes"] == ["Sleep", "Self blame"]
+        assert digest["segments"]
+
+
+def test_enforce_provenance_needs_no_source_to_strip_a_reference_digest():
+    """Provenance that cannot be read is a reason to hand out less, not more."""
+    reference = {
+        "kind": "reference",
+        "title": "A talk",
+        "client_statements": [{"quote": REAL_QUOTE, "attribution_confidence": "high"}],
+        "risk_excerpts": [REAL_QUOTE],
+    }
+    kept = ladder.enforce_provenance(reference, None)
+    assert kept == {"kind": "reference", "title": "A talk"}
+    # The input is never mutated in place.
+    assert reference["client_statements"][0]["quote"] == REAL_QUOTE
+
+
+def test_a_failed_reference_reduce_raises_laddererror(scratch_vault, monkeypatch):
+    def _reduce():
+        raise RuntimeError("LM Studio is not running")
+
+    _install(monkeypatch, FakeLLM(reduce_reply=_reduce))
+    with pytest.raises(ladder.LadderError) as excinfo:
+        ladder.build_digest(TRANSCRIPT, _reference_source(), {}, timed_lines=None)
+    assert "could not be assembled" in str(excinfo.value)

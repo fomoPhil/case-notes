@@ -20,6 +20,15 @@ Sources that arrive already interpreted (a meeting tool's write up, the
 clinician's own notes) enter at rung 2. There is no transcript of them to build,
 because nobody said those words.
 
+Material that is not a session at all (an article, a talk, a training video the
+clinician saved to come back to) climbs the same rungs and gets a different
+digest at the top. The reference shape has no field for a client statement, an
+intervention, or a risk flag; the quotes a map window produced are dropped
+before the reduce call ever sees them; the assembler builds the digest key by
+key rather than editing what the model returned; and enforce_provenance strips
+those fields on every hand out, in both directions, because a source can be
+flipped between session and reference after its digest was written.
+
 ## Who owns what
 
 The model reads text and reports what it sees. Code owns every number and every
@@ -79,6 +88,7 @@ from .sources import Source, SourceError
 _PROMPT_DIR = Path(__file__).resolve().parent.parent / "prompts"
 _MAP_PROMPT_PATH = _PROMPT_DIR / "digest_map.md"
 _REDUCE_PROMPT_PATH = _PROMPT_DIR / "digest_reduce.md"
+_REFERENCE_PROMPT_PATH = _PROMPT_DIR / "digest_reference.md"
 
 
 class LadderError(RuntimeError):
@@ -200,6 +210,68 @@ DIGEST_SCHEMA: dict = {
         "notable_shifts",
     ],
 }
+
+# The digest of material that is not a session. Same top two fields, because
+# they are still code's to fill, and then a different shape entirely: what the
+# material covers, what it teaches, what it suggests trying. There is no field
+# here for a client statement, an intervention, or a risk flag, and that is the
+# point. A model cannot report a client's words out of an article it was given,
+# and the assembler below builds this dict from scratch rather than editing the
+# model's, so a field the schema does not have cannot arrive by accident either.
+REFERENCE_DIGEST_SCHEMA: dict = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "source_id": {"type": "string"},
+        "duration_min": {"type": ["integer", "null"]},
+        "kind": {"type": "string", "enum": ["reference"]},
+        "title": {"type": "string"},
+        "summary": {"type": "string"},
+        "segments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "start_min": {"type": ["integer", "null"]},
+                    "end_min": {"type": ["integer", "null"]},
+                    "topic": {"type": "string"},
+                    "summary": {"type": "string"},
+                },
+                "required": ["start_min", "end_min", "topic", "summary"],
+            },
+        },
+        "key_points": {"type": "array", "items": {"type": "string"}},
+        "practices_or_suggestions": {"type": "array", "items": {"type": "string"}},
+        "topics": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "source_id",
+        "duration_min",
+        "kind",
+        "title",
+        "summary",
+        "segments",
+        "key_points",
+        "practices_or_suggestions",
+        "topics",
+    ],
+}
+
+# What a reference digest says it is, in its own body. The kind on the source
+# can change under a digest that is already written, so the digest carries its
+# own shape rather than being read through whatever meta says today.
+REFERENCE_KIND = "reference"
+
+# The fields that make a claim about a session: who said what, what was done to
+# whom, and whether anything said bears on risk. A reference digest carries none
+# of them, ever, by either of the two roads into enforce_provenance.
+_SESSION_CLAIM_FIELDS = (
+    "client_statements",
+    "interventions_observed",
+    "risk_language_present",
+    "risk_excerpts",
+)
 
 # The two attribution values the schema allows. Anything else becomes the safer
 # one: an unattributed observation is recoverable, a misattributed quote is not.
@@ -624,16 +696,59 @@ def _context_block(client_ctx: dict | None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _run_map(window_text: str, ordinal: int, total: int, context: str) -> dict | None:
+def _is_reference_source(source: Source | None) -> bool:
+    """True when this source is reference material rather than a session."""
+    return source is not None and source.kind in sources.REFERENCE_KINDS
+
+
+def _is_reference_digest(digest: dict | None) -> bool:
+    """True when this digest is the reference shape, by its own account."""
+    return str((digest or {}).get("kind") or "").strip().casefold() == REFERENCE_KIND
+
+
+def _map_user_message(window_text: str, ordinal: int, total: int, context: str) -> str:
+    """The map call's user turn for one window of a session."""
+    return (
+        f"CLIENT CONTEXT:\n{context}\n\n"
+        f"SESSION TRANSCRIPT, PART {ordinal} OF {total}:\n{window_text}\n\n"
+        "Produce the JSON object now."
+    )
+
+
+def _reference_map_user_message(window_text: str, ordinal: int, total: int) -> str:
+    """The map call's user turn for one window of reference material.
+
+    No client context, and not as an oversight. This is an article or a talk,
+    and the summary of it is about the material, not about anybody. Handing the
+    model a person's history alongside it invites a sentence connecting the two,
+    and that sentence would be a clinical claim about a real client that nobody
+    made and nothing supports.
+    """
+    return (
+        f"REFERENCE MATERIAL, PART {ordinal} OF {total}. This is something a "
+        "clinician saved to read or watch again. It is not a therapy session, "
+        "there is no client in it, and nobody in it is anybody's patient. "
+        "Report what the material itself says:\n"
+        f"{window_text}\n\n"
+        "Leave quotes, interventions, risk_language, unresolved_threads, and "
+        "notable_shifts empty: every one of them describes a session, and this "
+        "is not one. Put anything the material suggests trying in "
+        "practices_or_homework. Produce the JSON object now."
+    )
+
+
+def _run_map(
+    window_text: str, ordinal: int, total: int, context: str, reference: bool = False
+) -> dict | None:
     """Summarise one window. None when the call failed or answered with nothing.
 
     One bad window costs its segment, not the digest. The caller turns a None
     into a visible placeholder in the timeline.
     """
     user = (
-        f"CLIENT CONTEXT:\n{context}\n\n"
-        f"SESSION TRANSCRIPT, PART {ordinal} OF {total}:\n{window_text}\n\n"
-        "Produce the JSON object now."
+        _reference_map_user_message(window_text, ordinal, total)
+        if reference
+        else _map_user_message(window_text, ordinal, total, context)
     )
     try:
         result = llm.chat(
@@ -688,6 +803,75 @@ def _map_payload(maps: list[dict]) -> str:
             )
         blocks.append(block)
     return json.dumps(blocks, ensure_ascii=False, indent=2, default=str)
+
+
+def _reference_map_payload(maps: list[dict]) -> str:
+    """Serialise the map outputs for a reference reduce, in order.
+
+    Four fields per window and no others. The map schema still has a quotes
+    list and a risk_language list, because there is one map schema, and a model
+    told not to fill them may fill them anyway. They are dropped here rather
+    than at the end, so the words never reach the call that writes the digest.
+    A reference digest cannot contain a quote it was never shown.
+    """
+    blocks: list[dict] = []
+    for ordinal, entry in enumerate(maps, start=1):
+        result = entry["result"]
+        block: dict = {
+            "window": ordinal,
+            "start_min": entry["start_min"],
+            "end_min": entry["end_min"],
+        }
+        if result is None:
+            block["failed"] = True
+        else:
+            block.update(
+                {
+                    "topic": str(result.get("topic") or "").strip(),
+                    "summary": str(result.get("summary") or "").strip(),
+                    "practices_or_suggestions": _string_list(
+                        result.get("practices_or_homework")
+                    ),
+                }
+            )
+        blocks.append(block)
+    return json.dumps(blocks, ensure_ascii=False, indent=2, default=str)
+
+
+def _run_reference_reduce(maps: list[dict], source: Source) -> dict:
+    """One call over every window's report, for material that is not a session.
+
+    Same failure contract as the session reduce: the digest is the deliverable,
+    so there is nothing to degrade to and a failure is raised.
+    """
+    user = (
+        f"MATERIAL LENGTH: {source.duration_min if source.duration_min else 'not known'}\n\n"
+        "REPORTS ON EACH PART OF THE MATERIAL, in order. The start_min and "
+        "end_min values were computed by the app from the material itself, so "
+        "copy them, never adjust them, and never write a timestamp of your "
+        f"own:\n{_reference_map_payload(maps)}\n\n"
+        "Produce the JSON object now."
+    )
+    try:
+        result = llm.chat(
+            [
+                {"role": "system", "content": _prompt(_REFERENCE_PROMPT_PATH)},
+                {"role": "user", "content": user},
+            ],
+            schema=REFERENCE_DIGEST_SCHEMA,
+            max_tokens=_REDUCE_MAX_TOKENS,
+            temperature=0.2,
+        )
+    except LadderError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - re-raised as the module's own error
+        raise LadderError(f"the summary of this material could not be assembled: {exc}") from exc
+    if not isinstance(result, dict):
+        raise LadderError(
+            "the summary of this material could not be assembled: the model "
+            "returned no object."
+        )
+    return result
 
 
 def _run_reduce(maps: list[dict], source: Source, context: str) -> dict:
@@ -751,6 +935,10 @@ def build_digest(
     are what an attributed quote is checked against, since the corrected text no
     longer says who spoke. Without them no quote can be attributed.
 
+    A reference source takes the other road at both calls: the windows are
+    described as material rather than as a session, and the digest that comes
+    back is the reference shape, which has nowhere to put a client's words.
+
     Raises LadderError when there is nothing to distil or the reduce call fails.
     """
     text = (corrected_text or "").strip()
@@ -773,7 +961,8 @@ def build_digest(
     total_steps = len(windows) + 1
     _report(progress, "digesting", 0, total_steps)
 
-    context = _context_block(client_ctx)
+    reference = _is_reference_source(source)
+    context = "" if reference else _context_block(client_ctx)
     maps: list[dict] = []
     for done, (start, end) in enumerate(windows, start=1):
         window_text = " ".join(sentences[start:end])
@@ -784,10 +973,15 @@ def build_digest(
                 "end_char": end_position,
                 "start_min": minute_at(offsets[start]),
                 "end_min": minute_at(end_position),
-                "result": _run_map(window_text, done, len(windows), context),
+                "result": _run_map(window_text, done, len(windows), context, reference),
             }
         )
         _report(progress, "digesting", done, total_steps)
+
+    if reference:
+        reduced = _run_reference_reduce(maps, source)
+        _report(progress, "digesting", total_steps, total_steps)
+        return _assemble_reference(reduced, maps, source)
 
     reduced = _run_reduce(maps, source, context)
     _report(progress, "digesting", total_steps, total_steps)
@@ -855,8 +1049,43 @@ def enforce_provenance(digest: dict, source: Source | None) -> dict:
     The attribution check itself is deliberately not rerun here. It reads the
     rung 0 turns, which a retention sweep may have outlived, and the confidences
     in a stored digest were already checked against them at build time.
+
+    Reference material crosses the same way, in both directions, and both
+    crossings are handled first. A source can be flipped to reference after its
+    session digest was written, and back again, and the digest on disk is
+    whichever shape it was built in.
     """
     digest = dict(digest or {})
+
+    if _is_reference_digest(digest):
+        # A reference digest, whatever the source now says it is. Only the
+        # fields this shape actually has are served, which is a stronger rule
+        # than deleting the ones that carry a session claim: a field this shape
+        # never had cannot smuggle a sentence into evidence under a name nobody
+        # thought to ban. Note also what is not done: the session fields are
+        # removed rather than emptied. An empty client_statements list is a
+        # session digest saying nobody was quoted, and this digest is not
+        # entitled to answer that question at all.
+        return {
+            field: digest[field]
+            for field in REFERENCE_DIGEST_SCHEMA["properties"]
+            if field in digest
+        }
+
+    if _is_reference_source(source):
+        # The other crossing: a session digest on disk for a source the
+        # clinician has since called reference material. Flipping deletes rung 2,
+        # so this is a digest that a job wrote after the flip or that outran it.
+        # Same direction as rule 2 and one step further, because reference
+        # material is not evidence about anybody: the quotes, the excerpts, the
+        # interventions, and the risk flag all go, and the description of what
+        # is in the material survives.
+        digest["client_statements"] = []
+        digest["risk_excerpts"] = []
+        digest["interventions_observed"] = []
+        digest["risk_language_present"] = False
+        return digest
+
     if source is None or not source.verbatim:
         digest["client_statements"] = []
         digest["risk_excerpts"] = []
@@ -937,6 +1166,33 @@ def _assemble(
         "notable_shifts": _string_list(reduced.get("notable_shifts")),
         "_dropped_ungrounded": dropped,
         "_dropped_over_cap": over_cap,
+    }
+    return enforce_provenance(digest, source)
+
+
+def _assemble_reference(reduced: dict, maps: list[dict], source: Source) -> dict:
+    """Turn a reference reduce output into the reference digest.
+
+    Built key by key from an empty dict, which is the enforcement. The model's
+    object is read for the six fields this shape has and is never carried
+    across wholesale, so a client_statements list it decided to include has
+    nowhere to land. enforce_provenance then removes any that got in by another
+    road, on this hand out and on every later one.
+
+    source_id and duration_min come from the Source and the timeline comes from
+    the windows, exactly as they do for a session: the model owns prose, code
+    owns every number.
+    """
+    digest = {
+        "source_id": source.id,
+        "duration_min": source.duration_min,
+        "kind": REFERENCE_KIND,
+        "title": str(reduced.get("title") or "").strip(),
+        "summary": str(reduced.get("summary") or "").strip(),
+        "segments": _segments_from_maps(maps),
+        "key_points": _string_list(reduced.get("key_points")),
+        "practices_or_suggestions": _string_list(reduced.get("practices_or_suggestions")),
+        "topics": _string_list(reduced.get("topics")),
     }
     return enforce_provenance(digest, source)
 
@@ -1308,6 +1564,61 @@ def _bullets(items, empty: str) -> list[str]:
     return rows or [empty]
 
 
+def _render_reference_md(digest: dict) -> str:
+    """Render a reference digest: what the material is, and what is in it.
+
+    The line saying this is not a session is not decoration. digest.md is a file
+    in a vault full of session digests, and a reader who opens this one three
+    months from now has to be able to tell in one line that nothing in it is
+    about their client.
+    """
+    duration = digest.get("duration_min")
+    title = str(digest.get("title") or "").strip() or "(untitled)"
+    summary = str(digest.get("summary") or "").strip()
+    lines: list[str] = [
+        f"# Reference digest: {_cell(title)}",
+        "",
+        f"Source {digest.get('source_id') or '(unknown source)'}. "
+        f"Length: {_minute(duration) + ' minutes' if duration else 'not known'}.",
+        "",
+        "This is reference material the clinician saved, not a session with a "
+        "client. It holds no client statements and no risk flags, because "
+        "nothing in it is evidence about anybody.",
+        "",
+        "## Summary",
+        "",
+        summary or "None recorded.",
+        "",
+        "## Timeline",
+        "",
+    ]
+
+    segments = digest.get("segments") or []
+    if segments:
+        lines += ["| Start | End | Topic | What it covers |", "| --- | --- | --- | --- |"]
+        for segment in segments:
+            segment = segment if isinstance(segment, dict) else {}
+            lines.append(
+                f"| {_minute(segment.get('start_min'))} "
+                f"| {_minute(segment.get('end_min'))} "
+                f"| {_cell(segment.get('topic'))} "
+                f"| {_cell(segment.get('summary'))} |"
+            )
+    else:
+        lines.append("No segments were produced for this material.")
+
+    lines += ["", "## Key points", ""]
+    lines += _bullets(digest.get("key_points"), "None recorded.")
+
+    lines += ["", "## Practices or suggestions", ""]
+    lines += _bullets(digest.get("practices_or_suggestions"), "None recorded.")
+
+    lines += ["", "## Topics", ""]
+    lines += _bullets(digest.get("topics"), "None recorded.")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def render_digest_md(digest: dict) -> str:
     """Render the digest as the readable markdown saved beside digest.json.
 
@@ -1315,8 +1626,13 @@ def render_digest_md(digest: dict) -> str:
     digest holds appears here, including the count of quotes that were dropped
     for not appearing in the transcript, so the human view never looks tidier
     than the evidence actually is.
+
+    Two shapes, and the digest's own kind picks between them rather than the
+    source's, so a stored digest always renders as the thing it actually is.
     """
     digest = digest or {}
+    if _is_reference_digest(digest):
+        return _render_reference_md(digest)
     duration = digest.get("duration_min")
     lines: list[str] = [
         f"# Session digest {digest.get('source_id') or '(unknown source)'}",
