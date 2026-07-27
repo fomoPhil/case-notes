@@ -294,7 +294,7 @@ def run_debrief(wav_path: str, client_id: str, execute: bool = True,
 ```
 POST   /api/sources/upload          multipart: file + client_id [+ declared_kind]
                                     -> {source_id, kind, verbatim, needs_confirmation, job_id}
-POST   /api/sources/{id}/confirm    json: {verbatim: bool, produced_by: str}
+POST   /api/sources/{id}/confirm    json: {client_id, verbatim: bool, produced_by: str}
 GET    /api/sources/{id}            -> Source + rungs present + job status
 GET    /api/sources?client_id=      -> list
 GET    /api/sources/{id}/digest     -> digest json
