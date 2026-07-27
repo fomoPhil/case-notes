@@ -1084,6 +1084,98 @@ def update_profile(client_id: str, new_summary: str, updates: dict) -> None:
     _atomic_write(profile_path, _dump_frontmatter(fm) + "\n" + new_body)
 
 
+# ---------------------------------------------------------------------------
+# Recording consent
+# ---------------------------------------------------------------------------
+
+# A dated flag on the client profile, in the same frontmatter as every other
+# client fact:
+#
+#     recording_consent: true
+#     recording_consent_date: 2026-07-25
+#
+# Recording the session and importing session material are both gated on it. The
+# app describes what it does and stores what the clinician tells it; obtaining
+# and documenting consent is the clinician's own responsibility and this code
+# takes no position beyond "we have a dated flag, or we do not".
+
+_CONSENT_FLAG = "recording_consent"
+_CONSENT_DATE = "recording_consent_date"
+
+
+def _profile_path(client_id: str) -> Path:
+    """The profile file for a client id that is a single, safe path segment."""
+    cid = str(client_id or "").strip()
+    if not cid or "/" in cid or "\\" in cid or cid.startswith("."):
+        raise VaultPathError(f"invalid client id: {client_id!r}")
+    return _client_dir(cid) / "_Profile.md"
+
+
+def _consent_date(value) -> str:
+    """Return an ISO date string when value reads as a date, else ""."""
+    if isinstance(value, _dt.datetime):
+        return value.date().isoformat()
+    if isinstance(value, _dt.date):
+        return value.isoformat()
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return _dt.date.fromisoformat(text[:10]).isoformat()
+    except ValueError:
+        return ""
+
+
+def set_recording_consent(client_id: str, granted: bool) -> None:
+    """Record or withdraw recording consent for a client. Frontmatter only.
+
+    Granting stamps today's date. Withdrawing sets the flag false and KEEPS the
+    date it was granted on: that date is an audit trail of what was true when
+    material was recorded, and deleting it would erase the answer to "was there
+    consent at the time".
+
+    The profile body is preserved exactly and the write is atomic.
+    """
+    profile_path = _profile_path(client_id)
+    if not profile_path.exists():
+        raise FileNotFoundError(f"No profile for client {client_id!r}")
+
+    fm, body = _split_frontmatter(profile_path.read_text(encoding="utf-8"))
+    fm[_CONSENT_FLAG] = bool(granted)
+    if granted:
+        # A regrant stamps today, so the date always describes the consent that
+        # is currently in force rather than an older one.
+        fm[_CONSENT_DATE] = _dt.date.today().isoformat()
+
+    _atomic_write(profile_path, _dump_frontmatter(fm) + "\n" + body)
+
+
+def recording_consent(client_id: str) -> tuple[bool, str]:
+    """Return (granted, date) for a client's recording consent.
+
+    granted is True only when the flag is on AND the stored date reads as a date.
+    A flag without a usable date is treated as no consent: an undated flag cannot
+    say what was true when the material was captured. A missing or unreadable
+    profile reads as no consent rather than raising, because every caller is a
+    gate and a gate must fail closed.
+    """
+    try:
+        text = _profile_path(client_id).read_text(encoding="utf-8")
+    except (OSError, VaultPathError):
+        return False, ""
+
+    fm, _ = _split_frontmatter(text)
+    flag = fm.get(_CONSENT_FLAG)
+    on = flag is True or (isinstance(flag, str) and flag.strip().lower() in ("true", "yes"))
+    date = _consent_date(fm.get(_CONSENT_DATE))
+    return (bool(on and date), date)
+
+
+def has_recording_consent(client_id: str) -> bool:
+    """True when this client has a dated, active recording consent flag."""
+    return recording_consent(client_id)[0]
+
+
 # Obsidian's own registry of vaults it knows how to open. Deep-linking an
 # unregistered vault makes Obsidian throw a "Vault not found" dialog, so we
 # check here before ever launching an obsidian:// URI.
