@@ -217,6 +217,99 @@ def test_sweep_respects_30_days(records):
 
 
 # ---------------------------------------------------------------------------
+# Trash: whole folders (session recording sources)
+# ---------------------------------------------------------------------------
+
+_RECORDING_REL = "Recordings/C-0001/2026-07-25-1430"
+_RECORDING_FILES = {
+    "audio.wav": b"RIFF....fake wave bytes",
+    "transcript.txt": b"clinician: how was the week?\n",
+    "chunks/001.txt": b"chunk one\n",
+}
+
+
+def _seed_recording_folder(records):
+    """Create a recording source folder: three files, one in a subfolder."""
+    src = records.VAULT_DIR / _RECORDING_REL
+    src.mkdir(parents=True, exist_ok=True)
+    for name, data in _RECORDING_FILES.items():
+        path = src / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return src
+
+
+def test_trash_directory_roundtrip(records):
+    src = _seed_recording_folder(records)
+    token = records.trash(_RECORDING_REL)
+
+    assert not src.exists(), "the folder leaves the vault whole"
+    assert token in [item["token"] for item in records.list_trash()]
+
+    restored = records.restore(token)
+    assert restored == _RECORDING_REL
+    assert src.is_dir()
+    for name, data in _RECORDING_FILES.items():
+        assert (src / name).read_bytes() == data, f"{name} came back byte-identical"
+
+
+def test_trash_directory_refuses_protected_roots(records):
+    # These two are created on demand in real use, so make them exist first.
+    (records.VAULT_DIR / "_Trash").mkdir(parents=True, exist_ok=True)
+    (records.VAULT_DIR / "_Settings").mkdir(parents=True, exist_ok=True)
+    for rel in ("", ".", "_Trash", "_Settings", "Private", "Clients/C-0001"):
+        with pytest.raises(ValueError):
+            records.trash(rel)
+
+    # A bucket already sitting in the trash must not be trashable again.
+    _seed_recording_folder(records)
+    token = records.trash(_RECORDING_REL)
+    with pytest.raises(ValueError):
+        records.trash(f"_Trash/{token}")
+    assert (records.VAULT_DIR / "_Trash" / token).is_dir()
+
+
+def test_list_trash_labels_directory_with_file_count(records):
+    _seed_recording_folder(records)
+    folder_token = records.trash(_RECORDING_REL)
+    meta = records.save_upload("C-0001", "scan.pdf", b"%PDF-1.7 x")
+    file_token = records.trash(meta["path"])
+
+    by_token = {item["token"]: item for item in records.list_trash()}
+    assert by_token[folder_token]["kind"] == "folder"
+    assert by_token[folder_token]["file_count"] == 3
+    assert by_token[file_token]["kind"] == "file"
+    # Existing keys still carry the same meaning.
+    assert by_token[folder_token]["original"] == _RECORDING_REL
+    assert by_token[file_token]["original"] == meta["path"]
+
+
+def test_sweep_purges_directory_buckets(records):
+    _seed_recording_folder(records)
+    old = dt.datetime.now() - dt.timedelta(days=40)
+    token = records.trash(_RECORDING_REL, now=old)
+
+    removed = records.sweep_trash(dt.datetime.now(), days=30)
+    assert removed == 1
+    assert not (records.VAULT_DIR / "_Trash" / token).exists()
+
+
+def test_restore_directory_collision_gets_suffix(records):
+    src = _seed_recording_folder(records)
+    token = records.trash(_RECORDING_REL)
+    # A new recording lands on the freed path before the restore.
+    src.mkdir(parents=True, exist_ok=True)
+    (src / "audio.wav").write_bytes(b"RIFF....a newer take")
+
+    restored = records.restore(token)
+    assert restored == f"{_RECORDING_REL}-restored"
+    assert (src / "audio.wav").read_bytes() == b"RIFF....a newer take", "newer folder untouched"
+    restored_dir = records.VAULT_DIR / restored
+    for name, data in _RECORDING_FILES.items():
+        assert (restored_dir / name).read_bytes() == data
+
+
+# ---------------------------------------------------------------------------
 # Uploads
 # ---------------------------------------------------------------------------
 

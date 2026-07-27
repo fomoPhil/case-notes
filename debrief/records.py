@@ -573,13 +573,50 @@ def _token_from_now(now: _dt.datetime) -> str:
     return now.strftime("%Y-%m-%dT%H-%M-%S-%f")
 
 
-def trash(rel_path: str, now: _dt.datetime | None = None) -> str:
-    """Move a file into _Trash/<token>/ with a .trashmeta.json. Returns token.
+def _reject_untrashable_folder(target: Path) -> None:
+    """Refuse folders whose loss would take vault structure or a client with it.
 
-    Rejects the protected _Profile.md and Treatment-Plan.md files.
+    Folder trashing exists for leaf content (a session recording source is a
+    folder of several files), never for structure. Off limits: the vault root,
+    any top-level vault folder, anything inside _Trash, _Settings, or Private,
+    and a client's own root folder. Messages are plain because the API hands
+    them straight to the user.
+    """
+    root = VAULT_DIR.resolve()
+    resolved = target.resolve()
+    if resolved == root:
+        raise VaultPathError("The vault folder itself cannot be moved to trash.")
+    parts = resolved.relative_to(root).parts
+    top = parts[0]
+    if top == _TRASH_DIRNAME:
+        raise VaultPathError("That folder is already in the trash.")
+    if top == "_Settings":
+        raise VaultPathError("Settings folders cannot be moved to trash.")
+    if top == "Private":
+        raise VaultPathError(
+            "Private is kept outside Debrief, so its folders cannot be moved to trash."
+        )
+    if len(parts) == 1:
+        raise VaultPathError(f"{top} is a main vault folder, so it cannot be moved to trash.")
+    if top == "Clients" and len(parts) == 2:
+        raise VaultPathError(
+            f"{parts[1]} is a client's own folder. Move the documents inside it to trash instead."
+        )
+
+
+def trash(rel_path: str, now: _dt.datetime | None = None) -> str:
+    """Move a file or a whole folder into _Trash/<token>/. Returns the token.
+
+    A folder moves as one unit so a session recording source (audio, transcript,
+    chunks) stays intact through the 30-day trash. Structural folders are
+    refused: see _reject_untrashable_folder. Rejects the protected _Profile.md
+    and Treatment-Plan.md files.
     """
     target = _guard(rel_path)
-    if not target.is_file():
+    is_folder = target.is_dir()
+    if is_folder:
+        _reject_untrashable_folder(target)
+    elif not target.is_file():
         raise FileNotFoundError(f"No such file: {rel_path}")
     if target.name in _PROTECTED_NAMES:
         raise VaultPathError(f"{target.name} cannot be moved to trash")
@@ -594,8 +631,9 @@ def trash(rel_path: str, now: _dt.datetime | None = None) -> str:
     os.replace(target, dest)
     # A worksheet's .md/.pdf pair goes to the trash together, whichever half the
     # UI acted on (the canonical path is the .md, but .pdf-first must also work).
+    # A folder has no partner half, and its name is not a file suffix.
     suffix = target.suffix.lower()
-    if suffix in (".md", ".pdf"):
+    if not is_folder and suffix in (".md", ".pdf"):
         other = ".pdf" if suffix == ".md" else ".md"
         sib = target.with_suffix(other)
         if sib.exists():
@@ -608,7 +646,10 @@ def trash(rel_path: str, now: _dt.datetime | None = None) -> str:
 
 
 def restore(token: str) -> str:
-    """Restore a trashed file to its original location. Returns the rel path."""
+    """Restore a trashed file or folder to its original location.
+
+    Returns the rel path it landed on.
+    """
     tok = str(token or "").strip()
     if not tok or "/" in tok or "\\" in tok or tok.startswith("."):
         raise VaultPathError(f"invalid trash token: {token!r}")
@@ -622,16 +663,22 @@ def restore(token: str) -> str:
     src = bucket / original_rel
     if not src.exists():
         raise FileNotFoundError(f"Trashed file is missing for token {tok}")
+    is_folder = src.is_dir()
     dest.parent.mkdir(parents=True, exist_ok=True)
     # The freed name may have been reused while this sat in the trash (e.g. a new
-    # same-day session note). Never clobber it: restore to a unique sibling.
+    # same-day session note, or a new recording in the same slot). Never clobber
+    # it: restore to a unique sibling. A folder keeps its whole name, since a dot
+    # in a folder name is not a file suffix.
     if dest.exists():
-        dest = _unique_sibling(dest.parent, f"{dest.stem}-restored", dest.suffix)
+        if is_folder:
+            dest = _unique_sibling(dest.parent, f"{dest.name}-restored", "")
+        else:
+            dest = _unique_sibling(dest.parent, f"{dest.stem}-restored", dest.suffix)
     os.replace(src, dest)
     # Restore a worksheet's partner half if it was trashed alongside, under the
-    # same final stem so the pair stays matched.
+    # same final stem so the pair stays matched. Folders have no partner half.
     orig_suffix = Path(original_rel).suffix.lower()
-    if orig_suffix in (".md", ".pdf"):
+    if not is_folder and orig_suffix in (".md", ".pdf"):
         other = ".pdf" if orig_suffix == ".md" else ".md"
         sib_src = bucket / str(Path(original_rel).with_suffix(other))
         if sib_src.exists():
@@ -643,8 +690,20 @@ def restore(token: str) -> str:
     return _rel(dest)
 
 
+def _folder_file_count(folder: Path) -> int:
+    """Count the files inside a trashed folder, at any depth."""
+    try:
+        return sum(1 for p in folder.rglob("*") if p.is_file())
+    except OSError:
+        return 0
+
+
 def list_trash() -> list[dict]:
-    """List trashed items: {token, original, title, trashed_at}."""
+    """List trashed items: {token, original, title, trashed_at, kind}.
+
+    kind is "folder" or "file"; a folder also carries file_count so the UI can
+    say what a restore would bring back.
+    """
     root = _trash_root()
     if not root.exists():
         return []
@@ -658,14 +717,18 @@ def list_trash() -> list[dict]:
         except (OSError, ValueError):
             continue
         original = meta.get("original", "")
-        items.append(
-            {
-                "token": bucket.name,
-                "original": original,
-                "title": Path(original).stem.replace("-", " ").title(),
-                "trashed_at": meta.get("trashed_at", ""),
-            }
-        )
+        payload = bucket / original if original else None
+        is_folder = payload is not None and payload.is_dir()
+        entry = {
+            "token": bucket.name,
+            "original": original,
+            "title": Path(original).stem.replace("-", " ").title(),
+            "trashed_at": meta.get("trashed_at", ""),
+            "kind": "folder" if is_folder else "file",
+        }
+        if is_folder:
+            entry["file_count"] = _folder_file_count(payload)
+        items.append(entry)
     return items
 
 
