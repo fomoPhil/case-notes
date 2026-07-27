@@ -55,6 +55,7 @@ import json
 import queue
 import re
 import secrets
+import sys
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -237,6 +238,31 @@ _STOP: threading.Event = threading.Event()
 # swallow there is the same failure this module was written to end.
 _LAST_WORKER_ERROR: str | None = None
 
+
+def _lost(job_id, detail) -> None:
+    """Report a failure that could not be written to its own record.
+
+    The record is where a failure is supposed to live, so when the record is the
+    thing that failed there is nowhere left inside the app to put it. It goes to
+    stderr, which is where the console the app runs in will show it, and it is
+    kept here for last_worker_error() so a route or a test can read it back. A
+    job left saying "running" forever with no visible cause is the exact failure
+    this module exists to end, and this is the last line of that defence.
+    """
+    global _LAST_WORKER_ERROR
+    message = f"debrief jobs: could not record job failure for {job_id}: {detail}"
+    _LAST_WORKER_ERROR = message
+    print(message, file=sys.stderr)
+
+
+def last_worker_error() -> str | None:
+    """The last failure that could not be written to a job record, or None.
+
+    Public so the jobs route can surface it: a failure the records cannot hold
+    still has to reach the clinician somehow.
+    """
+    return _LAST_WORKER_ERROR
+
 # The test seam. False means submit() still queues and still persists, but no
 # thread is started, so nothing runs until a test calls _run_job itself.
 _worker_enabled = True
@@ -250,7 +276,6 @@ def _worker_loop(stop: threading.Event) -> None:
     record write itself could raise. One broken job must never take the queue
     down with it, because the next job in line belongs to somebody else.
     """
-    global _LAST_WORKER_ERROR
     while not stop.is_set():
         try:
             _, _, job_id = _QUEUE.get(timeout=_QUEUE_POLL_SECONDS)
@@ -260,9 +285,9 @@ def _worker_loop(stop: threading.Event) -> None:
             _run_job(job_id)
         except Exception as exc:  # noqa: BLE001 - the worker outlives every job
             # Reaching here means the record itself could not be written, so
-            # there is nowhere else for this to go. Keeping it is what lets a
-            # doctor check, or a test, say what went wrong.
-            _LAST_WORKER_ERROR = f"{job_id}: {exc}"
+            # the job is stuck saying whatever it last managed to say. There is
+            # nowhere inside the app left to put this, so it goes to the console.
+            _lost(job_id, exc)
         finally:
             _QUEUE.task_done()
 
@@ -600,6 +625,10 @@ def _run_job(job_id: str) -> dict | None:
     try:
         record = _read(job_id)
         if record is None:
+            # A queued job whose record has gone or gone bad. There is nothing
+            # left to write the failure onto, so the console is told instead:
+            # the evidence should not be only a file nobody thought to look at.
+            _lost(job_id, "its record is missing or could not be read")
             return None
         # The id this was found under is the id it is written back under,
         # whatever the record says about itself. Anything else updates a
@@ -749,10 +778,13 @@ def cancel(job_id: str) -> bool:
 def resume_pending() -> int:
     """Requeue every job a restart interrupted. Returns how many.
 
-    Anything that was queued, running, or waiting when the process stopped is
-    put back as queued and marked interrupted, so the UI can say plainly that it
-    was cut off rather than pretending it never stalled. Finished, failed, and
-    cancelled jobs are left alone.
+    Anything that was queued, running, or waiting when the process stopped goes
+    back on the queue. Finished, failed, and cancelled jobs are left alone.
+
+    Only a job that was actually mid flight, running or waiting, is marked
+    interrupted. A job that was still queued had not started, so nothing was cut
+    off, and saying otherwise would have the UI report a stall to the clinician
+    that never happened.
 
     Resuming is cheap: the ladder asks the disk which rungs exist and builds
     only the ones that do not, so a job that died in the digest does not
@@ -780,8 +812,9 @@ def resume_pending() -> int:
             # The filename is the id: it is what a reader will look this record
             # up by, whatever the record says about itself.
             record["id"] = path.stem
+            if record.get("state") in (RUNNING, WAITING):
+                record["interrupted"] = True
             record["state"] = QUEUED
-            record["interrupted"] = True
             try:
                 _write(record)
             except JobError:

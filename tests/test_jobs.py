@@ -209,6 +209,12 @@ def _payload(source_id: str = SID, client_id: str = CLIENT) -> dict:
     return {"client_id": client_id, "source_id": source_id}
 
 
+def _raise_unreachable(source, client_ctx, progress=None, between_rungs=None):
+    """A ladder that cannot reach the model, the commonest real failure."""
+    progress("correcting", 2, 9)
+    raise ladder.LadderError("model unreachable")
+
+
 def _seed_record(job_id: str, state: str, **extra) -> dict:
     """Write a job record straight to disk, the way a previous run left one.
 
@@ -559,6 +565,51 @@ def test_a_stopped_worker_is_never_resurrected(scratch_vault, gate, monkeypatch)
     assert len(_live_workers()) == 1, "the stopped worker must not be brought back"
 
 
+def test_a_failure_the_record_cannot_hold_reaches_the_console(
+    scratch_vault, gate, capsys, monkeypatch
+):
+    """When the record itself cannot be written, the console is told.
+
+    A full disk defeats the one place a failure is supposed to live. The job is
+    then stuck saying whatever it last managed to say, so the cause has to leave
+    the app some other way or nobody ever learns why it stopped.
+    """
+    _seed_source()
+    real_write = jobs._write
+
+    def _write(record):
+        if record.get("state") == "failed":
+            raise OSError("no space left on device")
+        real_write(record)
+
+    monkeypatch.setattr(ladder, "build", _raise_unreachable)
+    monkeypatch.setattr(jobs, "_write", _write)
+
+    job_id = jobs.submit("ladder", _payload())
+    _wait_until(lambda: jobs.last_worker_error(), what="the console to be told")
+
+    reported = jobs.last_worker_error()
+    assert reported == (
+        f"debrief jobs: could not record job failure for {job_id}: no space left on device"
+    )
+    assert reported in capsys.readouterr().err
+    assert jobs.status(job_id)["state"] == "running", "the record is stuck, and says so"
+
+
+def test_a_record_that_cannot_be_read_is_not_a_silent_no_op(scratch_vault, no_worker, capsys):
+    """A queued job whose record has gone leaves evidence somewhere."""
+    missing = "20260725-100000-000abc"
+
+    assert jobs._run_job(missing) is None
+
+    reported = jobs.last_worker_error()
+    assert reported == (
+        f"debrief jobs: could not record job failure for {missing}: "
+        "its record is missing or could not be read"
+    )
+    assert reported in capsys.readouterr().err
+
+
 def test_worker_survives_a_failing_job(scratch_vault, monkeypatch):
     _seed_source("s-bad")
     _seed_source("s-good")
@@ -783,12 +834,21 @@ def test_resume_requeues_interrupted_only(scratch_vault, no_worker):
     by_state = {row["state"] for row in jobs.list_jobs()}
     assert by_state == {"queued", "done", "failed", "cancelled"}
 
-    requeued = [row for row in jobs.list_jobs() if row["interrupted"]]
-    assert len(requeued) == 3
-    assert all(row["state"] == "queued" for row in requeued)
+    # Only the two that were actually mid flight were interrupted by anything.
+    # The queued one had not started, so nothing was cut off and the UI must not
+    # be told that it was.
+    interrupted = {row["id"] for row in jobs.list_jobs() if row["interrupted"]}
+    assert interrupted == {seeded["running"], seeded["waiting"]}
+    assert jobs.status(seeded["queued"])["interrupted"] is False
+    assert jobs.status(seeded["queued"])["state"] == "queued"
 
-    untouched = [row for row in jobs.list_jobs() if not row["interrupted"]]
-    assert {row["state"] for row in untouched} == {"done", "failed", "cancelled"}
+    finished = [row for row in jobs.list_jobs() if row["state"] in {"done", "failed", "cancelled"}]
+    assert {row["id"] for row in finished} == {
+        seeded["done"],
+        seeded["failed"],
+        seeded["cancelled"],
+    }
+    assert not any(row["interrupted"] for row in finished)
 
     assert corrupt.is_file(), "an unreadable record is skipped, never deleted"
     assert jobs._QUEUE.qsize() == 3, "the three are back on the live queue"
