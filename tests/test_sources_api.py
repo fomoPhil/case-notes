@@ -1321,3 +1321,152 @@ def test_a_link_survives_the_source_changing_kind(client):
     assert app_module.recstore.read_meta(CLIENT, source_id)["linked_notes"] == [rel]
     row = tc.get(f"/api/sources/{source_id}", params={"client_id": CLIENT}).json()
     assert row["linked_notes"] == [rel]
+
+
+# ---------------------------------------------------------------------------
+# Reference material: what the source is FOR, flipped either way
+# ---------------------------------------------------------------------------
+
+
+def test_flip_to_reference_drops_the_stale_digest_and_rebuilds(client):
+    tc, _ = client
+    body = _upload_fixture(tc, "zoom.vtt").json()
+    source_id, first_job = body["source_id"], body["job_id"]
+    assert body["kind"] == "transcript_file"
+    _seed_digest(source_id)
+    assert 2 in app_module.recstore.rungs_present(CLIENT, source_id)
+
+    resp = tc.post(
+        f"/api/sources/{source_id}/reference",
+        json={"client_id": CLIENT, "reference": True},
+    )
+
+    assert resp.status_code == 200, resp.text
+    row = resp.json()
+    # Word for word is a fact about the bytes and survives the flip.
+    assert row["kind"] == "reference_recording"
+    assert row["verbatim"] is True
+    assert row["entry_rung"] == 0
+    assert row["needs_confirmation"] is False
+
+    # The job building the session digest is stopped, and a fresh one queued.
+    # Asserted through the live job list rather than the row's job pointer:
+    # two jobs submitted in the same second sort by a random suffix, so which
+    # one _newest_job_for picks is a coin toss and not this route's promise.
+    assert row["cancelled_jobs"] == [first_job]
+    assert app_module.jobs.status(first_job)["state"] == "cancelled"
+    assert row["job_id"] and row["job_id"] != first_job
+    assert row["job_error"] is None
+    live = [
+        job
+        for job in app_module.jobs.list_jobs(CLIENT)
+        if job["state"] not in ("cancelled", "failed", "done")
+    ]
+    assert [job["id"] for job in live] == [row["job_id"]]
+    assert live[0]["payload"] == {"client_id": CLIENT, "source_id": source_id}
+
+    # A session digest under reference material is stale evidence, so it goes.
+    assert 2 not in app_module.recstore.rungs_present(CLIENT, source_id)
+    assert 0 in app_module.recstore.rungs_present(CLIENT, source_id)
+
+
+def test_flip_back_restores_a_session_kind(client):
+    """The kind it arrived as is gone, so the answer is read off the disk."""
+    tc, _ = client
+    source_id = _upload_fixture(tc, "zoom.vtt").json()["source_id"]
+    tc.post(f"/api/sources/{source_id}/reference", json={"client_id": CLIENT, "reference": True})
+
+    resp = tc.post(
+        f"/api/sources/{source_id}/reference",
+        json={"client_id": CLIENT, "reference": False},
+    )
+
+    assert resp.status_code == 200, resp.text
+    row = resp.json()
+    # Word for word with no audio on disk is a transcript, per the back flip rule.
+    assert row["kind"] == "transcript_file"
+    assert row["verbatim"] is True
+    assert row["job_id"]
+
+
+def test_a_same_direction_flip_costs_nothing(client):
+    """A second click must not cost a summary and the work to rebuild it."""
+    tc, _ = client
+    source_id = _upload_fixture(tc, "zoom.vtt").json()["source_id"]
+    first = tc.post(
+        f"/api/sources/{source_id}/reference", json={"client_id": CLIENT, "reference": True}
+    ).json()
+    _seed_digest(source_id)
+
+    resp = tc.post(
+        f"/api/sources/{source_id}/reference",
+        json={"client_id": CLIENT, "reference": True},
+    )
+
+    assert resp.status_code == 200, resp.text
+    row = resp.json()
+    assert row["kind"] == "reference_recording"
+    assert row["job_id"] is None
+    assert row["cancelled_jobs"] == []
+    # Nothing was stopped, and the digest that was there is still there.
+    assert app_module.jobs.status(first["job_id"])["state"] != "cancelled"
+    assert 2 in app_module.recstore.rungs_present(CLIENT, source_id)
+
+
+def test_a_recording_flipped_to_reference_is_a_reference_recording(client):
+    tc, _ = client
+    body = _upload(tc, "session.m4a", b"fake audio bytes").json()
+    assert body["kind"] == "uploaded_audio"
+
+    resp = tc.post(
+        f"/api/sources/{body['source_id']}/reference",
+        json={"client_id": CLIENT, "reference": True},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["kind"] == "reference_recording"
+
+
+def test_a_write_up_flipped_to_reference_is_a_reference_document(client):
+    tc, _ = client
+    source_id = _upload_fixture(
+        tc, "clinician-notes.md", declared_kind="clinician_notes"
+    ).json()["source_id"]
+
+    resp = tc.post(
+        f"/api/sources/{source_id}/reference",
+        json={"client_id": CLIENT, "reference": True},
+    )
+    assert resp.status_code == 200, resp.text
+    row = resp.json()
+    assert row["kind"] == "reference_document"
+    assert row["verbatim"] is False
+    assert row["entry_rung"] == 2
+
+
+def test_reference_flip_needs_a_yes_or_no(client):
+    tc, _ = client
+    source_id = _upload_fixture(tc, "zoom.vtt").json()["source_id"]
+    resp = tc.post(
+        f"/api/sources/{source_id}/reference",
+        json={"client_id": CLIENT, "reference": "yes please"},
+    )
+    assert resp.status_code == 400
+    assert "reference material" in resp.json()["detail"]
+
+
+def test_reference_flip_unknown_source_404(client):
+    tc, _ = client
+    resp = tc.post(
+        "/api/sources/2026-01-01-0900/reference",
+        json={"client_id": CLIENT, "reference": True},
+    )
+    assert resp.status_code == 404
+
+
+def test_reference_flip_rejects_a_bad_client_id_400(client):
+    tc, _ = client
+    resp = tc.post(
+        "/api/sources/2026-01-01-0900/reference",
+        json={"client_id": "../escape", "reference": True},
+    )
+    assert resp.status_code == 400

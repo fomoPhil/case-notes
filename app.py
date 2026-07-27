@@ -1909,6 +1909,82 @@ async def api_source_confirm(source_id: str, request: Request) -> JSONResponse:
     return JSONResponse(payload)
 
 
+@app.post("/api/sources/{source_id}/reference")
+async def api_source_reference(source_id: str, request: Request) -> JSONResponse:
+    """Move a source between session material and reference material.
+
+    Body: {client_id, reference: bool}. true files it as reference material (a
+    talk, an article, something saved to read again), false files it back as
+    material from a session with this client.
+
+    Only what the material is FOR changes. Whether it is word for word is a fact
+    about the bytes and survives the flip, so the transcript and the audio are
+    untouched. The session summary does not survive: a session digest and a
+    reference digest are different shapes with different rules, so the stale one
+    is deleted and a fresh ladder is queued to rebuild it.
+
+    Flipping the way a source already points does nothing at all, and does it
+    without stopping a job or queueing one. A second click must not cost a
+    summary and the minutes of work to rebuild it.
+    """
+    body = await _json_body(request, _JSON_MAX_BYTES, _JSON_TOO_LARGE)
+    cid, sid = _source_ids(body.get("client_id"), source_id)
+    reference = body.get("reference")
+    if not isinstance(reference, bool):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "reference must be true (reference material) or false (material "
+                "from a session with this client)."
+            ),
+        )
+
+    meta = await run_in_threadpool(recstore.read_meta, cid, sid)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="No such source for this client.")
+
+    def _row() -> dict | None:
+        return _enriched_source(cid, sid, jobs.list_jobs(cid))
+
+    already = str(meta.get("kind") or "") in sources.REFERENCE_KINDS
+    if already == reference:
+        # Nothing to rebuild, so nothing is stopped and nothing is queued. The
+        # check lives here rather than only in reclassify (which is already a
+        # no-op) because the cancel and the queue happen out here, and a route
+        # that runs them anyway would charge a digest for a second click.
+        entry = await run_in_threadpool(_row)
+        return JSONResponse(
+            jsonable_encoder(
+                {**(entry or {}), "job_id": None, "job_error": None, "cancelled_jobs": []}
+            )
+        )
+
+    def _flip() -> tuple[sources.Source, list[str]]:
+        # Same reasoning as the confirm route: a ladder still running under the
+        # old kind would write its digest back after the flip deleted rung 2,
+        # and the next read would hand out a digest built to the wrong shape.
+        cancelled = _cancel_source_jobs(cid, sid)
+        return sources.reclassify(cid, sid, reference=reference), cancelled
+
+    try:
+        source, cancelled = await run_in_threadpool(_flip)
+    except (sources.SourceError, ValueError) as exc:
+        raise _source_http_error(exc)
+
+    job_id, job_error = await run_in_threadpool(_queue_ladder, cid, source.id)
+    entry = await run_in_threadpool(_row)
+    return JSONResponse(
+        jsonable_encoder(
+            {
+                **(entry or {}),
+                "job_id": job_id,
+                "job_error": job_error,
+                "cancelled_jobs": cancelled,
+            }
+        )
+    )
+
+
 async def _existing_source(client_id, source_id) -> tuple[str, str]:
     """Both ids validated and the source known to exist, or 400 / 404.
 
