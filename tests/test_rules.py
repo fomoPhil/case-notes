@@ -387,15 +387,307 @@ def test_rule3_low_confidence_never_a_filed_quote(scratch_vault, chats, monkeypa
     # Gone from the note, and the confirmed one survived untouched.
     assert merged["note"]["client_quotes"] == ["I have not been sleeping since the move"]
 
-    # The removal is visible, not silent.
+    # The removal is visible, not silent. Under 60 characters, so the snippet is
+    # the whole quote and carries no truncation marker.
     assert merged["evidence_conflicts"] == [
         "A quote was removed because the recording could not confirm who said "
-        f"it: '{unconfirmed.upper()[:60]}...'"
+        f"it: '{unconfirmed.upper()}'"
     ]
 
     # And it never reached the filed record.
     filed = Path(merged["note_path"]).read_text(encoding="utf-8")
     assert unconfirmed.casefold() not in filed.casefold()
+
+
+_CURLY = "I don’t think I’ll ever get over that argument"
+_STRAIGHT = "I don't think I'll ever get over that argument"
+
+
+@pytest.mark.parametrize(
+    "in_digest,in_note",
+    [(_CURLY, _STRAIGHT), (_STRAIGHT, _CURLY)],
+    ids=["curly-digest-straight-note", "straight-digest-curly-note"],
+)
+def test_rule3_survives_a_curly_apostrophe(scratch_vault, chats, in_digest, in_note):
+    """The same sentence typed two legal ways is one sentence, not two.
+
+    The transcript carries whichever apostrophe the source used and the model
+    writes whichever one it prefers, and the two are not the same byte. A
+    comparison that only collapses whitespace and casefolds sees two different
+    strings and files the quote.
+
+    Both directions are checked on purpose: normalising one side only happens to
+    work when the un-normalised side is the straight one, which makes a
+    half-done fix look correct until the day the model writes a curly quote.
+    """
+    assert _CURLY != _STRAIGHT
+
+    _source()
+    _write_digest(
+        _digest(
+            client_statements=[
+                {"quote": in_digest, "start_min": 18, "attribution_confidence": "low"}
+            ]
+        )
+    )
+    chats.reply = _NOTE_REPLY(
+        note={
+            "data": "d",
+            "assessment": "a",
+            "plan": "p",
+            "risk_present": False,
+            "interventions": [],
+            "themes": [],
+            "client_quotes": [in_note],
+        }
+    )
+
+    plan = pipeline.transcribe_and_extract("ignored.wav", CLIENT, source_id=SID)
+    assert plan["note"]["client_quotes"] == []
+    assert plan["evidence_conflicts"] == [
+        f"A quote was removed because the recording could not confirm who said it: '{in_note}'"
+    ]
+
+
+def test_rule3_a_short_statement_does_not_delete_a_real_quote(scratch_vault, chats):
+    """A one word statement matches half the session. It may not take a quote.
+
+    Substring in either direction is right for a fragment of a real sentence
+    and catastrophic for "tired": every sentence containing that word would be
+    deleted from the clinician's own note. Below the floor, identical or nothing.
+    """
+    dictated = "I have been so tired that I cannot think straight at work"
+
+    _source()
+    _write_digest(
+        _digest(
+            client_statements=[
+                {"quote": "tired", "start_min": 9, "attribution_confidence": "low"}
+            ]
+        )
+    )
+    chats.reply = _NOTE_REPLY(
+        note={
+            "data": "d",
+            "assessment": "a",
+            "plan": "p",
+            "risk_present": False,
+            "interventions": [],
+            "themes": [],
+            "client_quotes": [dictated],
+        }
+    )
+
+    plan = pipeline.transcribe_and_extract("ignored.wav", CLIENT, source_id=SID)
+    assert plan["note"]["client_quotes"] == [dictated]
+    assert plan["evidence_conflicts"] == []
+
+
+def test_rule3_still_strips_a_genuine_partial_match(scratch_vault, chats):
+    """The floor protects short strings, not long ones. A real fragment still goes."""
+    full = "I still think I am the problem in that house and I always have been"
+    fragment = "I still think I am the problem in that house"
+
+    _source()
+    _write_digest(
+        _digest(
+            client_statements=[
+                {"quote": full, "start_min": 18, "attribution_confidence": "low"}
+            ]
+        )
+    )
+    chats.reply = _NOTE_REPLY(
+        note={
+            "data": "d",
+            "assessment": "a",
+            "plan": "p",
+            "risk_present": False,
+            "interventions": [],
+            "themes": [],
+            "client_quotes": [fragment],
+        }
+    )
+
+    plan = pipeline.transcribe_and_extract("ignored.wav", CLIENT, source_id=SID)
+    assert plan["note"]["client_quotes"] == []
+    assert len(plan["evidence_conflicts"]) == 1
+
+
+def test_rule3_covers_risk_excerpts_as_well_as_statements(scratch_vault, chats):
+    """A risk excerpt has no confirmed speaker, so it is no safer than a low one.
+
+    Excerpts are checked against the transcript and nothing else. The sentence
+    in that list may be the clinician's, which makes filing it as a client quote
+    the same records failure by a different route.
+    """
+    excerpt = "I do not want to be here some days"
+
+    _source()
+    _write_digest(
+        _digest(
+            risk_language_present=True,
+            risk_excerpts=[excerpt],
+            client_statements=[
+                {
+                    "quote": "I have not been sleeping since the move",
+                    "start_min": 4,
+                    "attribution_confidence": "high",
+                }
+            ],
+        )
+    )
+    chats.reply = _NOTE_REPLY(
+        note={
+            "data": "d",
+            "assessment": "a",
+            "plan": "p",
+            "risk_present": False,
+            "interventions": [],
+            "themes": [],
+            "client_quotes": [excerpt, "I have not been sleeping since the move"],
+        }
+    )
+
+    plan = pipeline.transcribe_and_extract("ignored.wav", CLIENT, source_id=SID)
+    assert plan["note"]["client_quotes"] == ["I have not been sleeping since the move"]
+    assert plan["evidence_conflicts"] == [
+        f"A quote was removed because the recording could not confirm who said it: '{excerpt}'"
+    ]
+
+
+def test_rule3_flags_unconfirmed_words_woven_into_the_narrative(scratch_vault, chats):
+    """The prompt asks for a quote woven into the prose, so look there too.
+
+    Detection, not rewriting: the sentence stays exactly as the model wrote it
+    and the conflict line points at it. Editing a clinical narrative in code
+    would be a worse failure than the one it fixed, because a silently altered
+    sentence is one nobody can review.
+    """
+    unconfirmed = "I still think I am the problem in that house"
+    prose = f'Dana returned to the argument, saying "{unconfirmed}" before moving on.'
+
+    _source()
+    _write_digest(
+        _digest(
+            client_statements=[
+                {"quote": unconfirmed, "start_min": 18, "attribution_confidence": "low"}
+            ]
+        )
+    )
+    chats.reply = _NOTE_REPLY(
+        note={
+            "data": prose,
+            "assessment": "Barriers persist.",
+            "plan": "Continue paced breathing.",
+            "risk_present": False,
+            "interventions": [],
+            "themes": [],
+            "client_quotes": [],
+        }
+    )
+
+    plan = pipeline.transcribe_and_extract("ignored.wav", CLIENT, source_id=SID)
+
+    assert plan["evidence_conflicts"] == [
+        "The note's narrative quotes words the recording could not confirm who "
+        f"said: '{unconfirmed}'. Please review that sentence."
+    ]
+    # The prose itself is untouched. The clinician reads it and decides.
+    assert plan["note"]["data"] == prose
+
+
+def test_rule3_narrative_scan_reads_custom_sections_too(scratch_vault, chats):
+    """Every string field, so a custom format needs no code here to be covered."""
+    unconfirmed = "I still think I am the problem in that house"
+
+    _source()
+    _write_digest(
+        _digest(
+            client_statements=[
+                {"quote": unconfirmed, "start_min": 18, "attribution_confidence": "low"}
+            ]
+        )
+    )
+    chats.reply = _NOTE_REPLY(
+        note={
+            "data": "d",
+            "assessment": "a",
+            "plan": "p",
+            "what_the_room_felt_like": f"She said “{unconfirmed}” quietly.",
+            "risk_present": False,
+            "interventions": [],
+            "themes": [],
+            "client_quotes": [],
+        }
+    )
+
+    plan = pipeline.transcribe_and_extract("ignored.wav", CLIENT, source_id=SID)
+    assert len(plan["evidence_conflicts"]) == 1
+    assert "narrative quotes words" in plan["evidence_conflicts"][0]
+
+
+def test_rule3_narrative_scan_ignores_a_confirmed_quote(scratch_vault, chats):
+    """Weaving the CONFIRMED quote into the prose is exactly what was asked for."""
+    confirmed = "I have not been sleeping since the move"
+
+    _source()
+    _write_digest(
+        _digest(
+            client_statements=[
+                {"quote": confirmed, "start_min": 4, "attribution_confidence": "high"}
+            ]
+        )
+    )
+    chats.reply = _NOTE_REPLY(
+        note={
+            "data": f'Dana reported that "{confirmed}".',
+            "assessment": "a",
+            "plan": "p",
+            "risk_present": False,
+            "interventions": [],
+            "themes": [],
+            "client_quotes": [confirmed],
+        }
+    )
+
+    plan = pipeline.transcribe_and_extract("ignored.wav", CLIENT, source_id=SID)
+    assert plan["evidence_conflicts"] == []
+    assert plan["note"]["client_quotes"] == [confirmed]
+
+
+def test_a_long_removed_quote_says_it_was_truncated(scratch_vault, chats):
+    """The marker means "there is more of this", so it only appears when there is."""
+    long_quote = (
+        "I have not been able to stop replaying that conversation from the "
+        "weekend over and over in my head"
+    )
+    assert len(long_quote) > 60
+
+    _source()
+    _write_digest(
+        _digest(
+            client_statements=[
+                {"quote": long_quote, "start_min": 18, "attribution_confidence": "low"}
+            ]
+        )
+    )
+    chats.reply = _NOTE_REPLY(
+        note={
+            "data": "d",
+            "assessment": "a",
+            "plan": "p",
+            "risk_present": False,
+            "interventions": [],
+            "themes": [],
+            "client_quotes": [long_quote],
+        }
+    )
+
+    plan = pipeline.transcribe_and_extract("ignored.wav", CLIENT, source_id=SID)
+    assert plan["evidence_conflicts"] == [
+        "A quote was removed because the recording could not confirm who said "
+        f"it: '{long_quote[:60]}...'"
+    ]
 
 
 def test_rule3_leaves_a_debrief_only_quote_alone(scratch_vault, chats):
@@ -663,6 +955,34 @@ def test_rule7_recording_without_debrief_yields_no_actions(scratch_vault, monkey
     # The note itself survives: a draft from the recording is the point.
     assert plan["note"]["data"]
     assert plan["digest_used"] is True
+
+
+def test_rule7_clears_the_dropped_duplicates_too(scratch_vault, monkeypatch):
+    """"No actions, and one duplicate booking dropped" describes nothing real.
+
+    The dedup list and the raw extraction actions go with the plan's actions, so
+    the review screen has one consistent story: the recording produced a draft
+    note, and no bookings of any kind.
+    """
+    _source()
+    _write_digest(_digest())
+
+    monkeypatch.setattr(stt, "transcribe", lambda wav, engine_id=None: "")
+    monkeypatch.setattr(stt, "correct_transcript", lambda *a, **k: "")
+    booking = {
+        "type": "schedule_followup",
+        "datetime_utterance": "next Tuesday at 3",
+        "duration_min": 50,
+    }
+    monkeypatch.setattr(
+        llm, "chat", lambda *a, **k: _NOTE_REPLY(actions=[dict(booking), dict(booking)])
+    )
+
+    plan = pipeline.transcribe_and_extract("ignored.wav", CLIENT, source_id=SID)
+    assert plan["no_debrief"] is True
+    assert plan["actions"] == []
+    assert plan["deduped_actions"] == []
+    assert plan["extraction"]["actions"] == []
 
 
 def test_rule7_does_not_fire_when_there_is_a_debrief(scratch_vault, monkeypatch):

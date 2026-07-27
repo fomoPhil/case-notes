@@ -438,6 +438,25 @@ def _normalize(text: str) -> str:
     return _normalize_with_index(text)[0]
 
 
+def normalize_quote_text(text: str) -> str:
+    """The one form two quotes are ever compared in. Public on purpose.
+
+    The pipeline has to decide whether a quote the model put in a note is the
+    same words as a statement this module could not attribute, and it has to
+    decide it the same way this module does. A second, looser comparison written
+    over there would differ exactly where it matters: a curly apostrophe against
+    a straight one, a non breaking space, a decomposed accent. Every one of
+    those reads as a different string to a naive comparison and as the same
+    sentence to a human, and the gap between the two is a misattributed quote in
+    a clinical record.
+
+    So there is one normaliser and both callers use it: compatibility
+    normalisation over whole combining clusters, invisible characters dropped,
+    every width of quote and dash flattened, whitespace collapsed, casefolded.
+    """
+    return _normalize(text)
+
+
 class _Grounding:
     """The transcript, in the one form quotes are checked against.
 

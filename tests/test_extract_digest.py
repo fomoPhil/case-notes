@@ -208,7 +208,8 @@ def test_digest_renders_labelled_evidence_block(calls):
         "Risk-related language was flagged in the session recording for your "
         "review. It is not an assessment." in user
     )
-    assert '- "I do not want to be here some days"' in user
+    assert "Flagged language from the session (speaker unconfirmed):" in user
+    assert "- I do not want to be here some days" in user
 
     # And the debrief is still the debrief, unchanged and last.
     assert f"SESSION DEBRIEF TRANSCRIPT:\n{TRANSCRIPT}" in user
@@ -229,6 +230,42 @@ def test_low_confidence_renders_unattributed_no_quotemarks(calls):
     # And the confirmed one is not demoted by the same pass.
     assert "Client statements captured word for word:" in user
     assert '"I have not been sleeping since the move"' in user
+
+
+def test_risk_excerpts_are_never_quoted_and_never_claimed_as_the_client(calls):
+    """A risk excerpt is grounded in the transcript, never attribution checked.
+
+    Which means the sentence in that list may be the CLINICIAN's. Rendering it
+    in quotation marks under a prompt that says quoted text is the client
+    speaking is how a therapist's own words become their client's on the record.
+    """
+    excerpt = "I do not want to be here some days"
+    extract_mod.extract(TRANSCRIPT, CTX, "CBT", NOW, digest=_digest())
+    user = _user_message(calls)
+
+    assert f'"{excerpt}' not in user
+    assert f'{excerpt}"' not in user
+    assert f"- {excerpt}" in user
+    assert "Flagged language from the session (speaker unconfirmed):" in user
+
+    # And the framing scopes its confirmation claim to the statements list
+    # rather than to "anything in quotation marks".
+    framing = user.split("Session timeline:")[0]
+    assert (
+        "Only the statements listed under Client statements captured word for "
+        "word were confirmed as this client speaking" in framing
+    )
+    assert "including unattributed statements and flagged language" in framing
+
+
+def test_only_confirmed_statements_carry_quotation_marks(calls):
+    """One structural rule, checked across the whole evidence block at once."""
+    extract_mod.extract(TRANSCRIPT, CTX, "CBT", NOW, digest=_digest())
+    user = _user_message(calls)
+    evidence = user.split("Session timeline:")[1].split("SESSION DEBRIEF TRANSCRIPT:")[0]
+
+    quoted = [line for line in evidence.splitlines() if '"' in line]
+    assert quoted == ['- "I have not been sleeping since the move" (minute 4)']
 
 
 def test_no_confirmed_statements_says_so_rather_than_going_quiet(calls):

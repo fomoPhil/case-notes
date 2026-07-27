@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -315,12 +316,73 @@ def _source_job_active(client_id: str, source_id: str) -> bool:
     return False
 
 
-def _flatten_quote(text) -> str:
-    """Whitespace collapsed and casefolded: the one form quotes compare in."""
-    return " ".join(str(text or "").split()).casefold()
+# A quote that is only a word or two matches far too much. "tired" appears
+# inside half the sentences a session produces, so a substring rule with no
+# floor would let one unattributed word delete a paragraph of the clinician's
+# own dictation. Below the floor the two strings have to be the same string.
+_MATCH_MIN_WORDS = 5
+_MATCH_MIN_CHARS = 25
+
+# How much of a quote a conflict line shows before it gets out of the way.
+_SNIPPET_CHARS = 60
+
+# A span the note itself presents as somebody's exact words, in straight or
+# curly double quotes. Newlines end a span, so an unclosed quotation mark cannot
+# swallow the rest of a section.
+_QUOTED_SPAN_RE = re.compile('"([^"\n]+)"|“([^”\n]+)”')
 
 
-def _strip_unconfirmed_quotes(note: dict, digest: dict) -> list[str]:
+def _substantial(text: str) -> bool:
+    """True when a normalised string is long enough to match on as a substring."""
+    return len(text) >= _MATCH_MIN_CHARS or len(text.split()) >= _MATCH_MIN_WORDS
+
+
+def _quote_matches(candidate: str, other: str) -> bool:
+    """True when two normalised quotes are the same words in the same mouth.
+
+    Substring in either direction, because the model may quote a fragment of a
+    statement or pad one out, but only once the shorter of the two is long
+    enough to mean something on its own. Below that floor, identical or nothing.
+    """
+    if not candidate or not other:
+        return False
+    if candidate == other:
+        return True
+    shorter = candidate if len(candidate) <= len(other) else other
+    if not _substantial(shorter):
+        return False
+    return candidate in other or other in candidate
+
+
+def _snippet(text) -> str:
+    """A quote shortened for a conflict line, marked only when truncated."""
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= _SNIPPET_CHARS else f"{text[:_SNIPPET_CHARS]}..."
+
+
+def _unconfirmed_texts(digest: dict) -> list[str]:
+    """Every phrase in the digest that nobody proved the client said.
+
+    Two sources, both unconfirmed for different reasons. A client statement
+    below "high" is one the ladder could not tie to a labelled turn of this
+    client's. A risk excerpt is grounded in the transcript but never attribution
+    checked at all, which means a sentence the CLINICIAN spoke can be sitting in
+    that list. Neither may end up inside quotation marks in a clinical record,
+    so both are compared against.
+    """
+    texts: list[str] = []
+    for item in digest.get("client_statements") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("attribution_confidence") or "").strip().casefold() == "high":
+            continue
+        texts.append(ladder.normalize_quote_text(item.get("quote")))
+    for item in digest.get("risk_excerpts") or []:
+        texts.append(ladder.normalize_quote_text(item))
+    return [text for text in texts if text]
+
+
+def _strip_unconfirmed_quotes(note: dict, unconfirmed: list[str]) -> list[str]:
     """Spec rule 3, downstream half: an unconfirmed quote never gets filed.
 
     The ladder refuses to mark a statement "high" unless it sits inside exactly
@@ -330,6 +392,11 @@ def _strip_unconfirmed_quotes(note: dict, digest: dict) -> list[str]:
     those words into client_quotes, so the guarantee is finished here, in code,
     after the model has answered.
 
+    Comparison runs through the ladder's own normaliser, which is the point: a
+    quote retyped with a curly apostrophe is the same sentence to a reader and a
+    different string to anything less careful, and that gap is exactly where a
+    misattributed quote would slip through.
+
     Returns one conflict line per removal. This CAN remove a quote the clinician
     genuinely dictated, when their words happen to match an unattributed
     statement, and that is the intended direction: an unattributed observation
@@ -338,37 +405,62 @@ def _strip_unconfirmed_quotes(note: dict, digest: dict) -> list[str]:
     clinician can put it back in review.
     """
     quotes = note.get("client_quotes")
-    if not isinstance(quotes, list) or not quotes:
-        return []
-
-    unconfirmed = [
-        flat
-        for flat in (
-            _flatten_quote(item.get("quote"))
-            for item in (digest.get("client_statements") or [])
-            if isinstance(item, dict)
-            and str(item.get("attribution_confidence") or "").strip().casefold() != "high"
-        )
-        if flat
-    ]
-    if not unconfirmed:
+    if not isinstance(quotes, list) or not quotes or not unconfirmed:
         return []
 
     kept: list = []
     conflicts: list[str] = []
     for quote in quotes:
-        flat = _flatten_quote(quote)
-        # Either direction: the model may quote a fragment of an unattributed
-        # statement, or pad one out. Both are the same words in the same mouth.
-        if flat and any(flat in other or other in flat for other in unconfirmed):
-            text = " ".join(str(quote or "").split())
+        flat = ladder.normalize_quote_text(quote)
+        if any(_quote_matches(flat, other) for other in unconfirmed):
             conflicts.append(
                 "A quote was removed because the recording could not confirm "
-                f"who said it: '{text[:60]}...'"
+                f"who said it: '{_snippet(quote)}'"
             )
             continue
         kept.append(quote)
     note["client_quotes"] = kept
+    return conflicts
+
+
+def _narrative_quote_conflicts(note: dict, unconfirmed: list[str]) -> list[str]:
+    """Flag unconfirmed words the model quoted inside the narrative prose.
+
+    The DAP guidance asks the model to weave a quote into the Data section, so
+    the riskiest place an unattributed sentence can land is not client_quotes at
+    all, it is the middle of a paragraph, inside quotation marks, reading as the
+    client's own words.
+
+    This detects and reports. It does NOT rewrite. Editing a clinician's
+    narrative in code would be worse than the problem: the note is a clinical
+    record, a silently altered sentence is unreviewable, and the clinician is
+    about to read this on the approval screen anyway. So the sentence stays and
+    the conflict line points straight at it.
+
+    Every string field is scanned, so a custom format's own sections are covered
+    without this needing to know their names.
+    """
+    if not unconfirmed:
+        return []
+
+    conflicts: list[str] = []
+    seen: set[str] = set()
+    for value in note.values():
+        if not isinstance(value, str) or '"' not in value and "“" not in value:
+            continue
+        for match in _QUOTED_SPAN_RE.finditer(value):
+            span = match.group(1) or match.group(2) or ""
+            flat = ladder.normalize_quote_text(span)
+            if not flat or flat in seen:
+                continue
+            if not any(_quote_matches(flat, other) for other in unconfirmed):
+                continue
+            seen.add(flat)
+            conflicts.append(
+                "The note's narrative quotes words the recording could not "
+                f"confirm who said: '{_snippet(span)}'. Please review that "
+                "sentence."
+            )
     return conflicts
 
 
@@ -516,7 +608,12 @@ def transcribe_and_extract(
             evidence_conflicts = [
                 text for text in (str(item or "").strip() for item in claimed) if text
             ]
-        evidence_conflicts.extend(_strip_unconfirmed_quotes(note, digest))
+        # One comparison set for both passes: the statements the recording could
+        # not attribute, plus every risk excerpt (grounded in the transcript,
+        # never attribution checked, so the speaker is unknown by construction).
+        unconfirmed = _unconfirmed_texts(digest)
+        evidence_conflicts.extend(_strip_unconfirmed_quotes(note, unconfirmed))
+        evidence_conflicts.extend(_narrative_quote_conflicts(note, unconfirmed))
         extraction["evidence_conflicts"] = evidence_conflicts
 
     # --- normalise actions for the UI / executor --------------------------
@@ -579,6 +676,11 @@ def transcribe_and_extract(
     no_debrief = digest is not None and not (corrected or "").strip()
     if no_debrief:
         plan_actions = []
+        # The dropped-duplicate list and the raw extraction go with them: a
+        # review screen that says "no actions, and one duplicate booking was
+        # dropped" is telling the clinician about bookings that do not exist.
+        deduped_actions = []
+        extraction["actions"] = []
 
     # Session metadata for the note write (session_number = existing files + 1).
     # The active format spec also travels in the plan so the review UI can render

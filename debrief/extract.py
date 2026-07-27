@@ -103,9 +103,10 @@ _EVIDENCE_FRAMING = (
     "and chronology. Where the two disagree, do not resolve it and do not pick "
     "one: write the note from the clinician's debrief and record the "
     "disagreement in plain language in evidence_conflicts.\n"
-    "Only text shown in quotation marks below was captured word for word and "
-    "confirmed as the client speaking. Anything listed as unattributed may be "
-    "used as an observation and may never be written as a client quote."
+    "Only the statements listed under Client statements captured word for word "
+    "were confirmed as this client speaking. Everything else below, including "
+    "unattributed statements and flagged language, is an observation about the "
+    "session: it may inform the note and may never be written as a client quote."
 )
 
 # One line, and only this line. The digest flags language for a human to look
@@ -114,6 +115,13 @@ _RISK_EVIDENCE_LINE = (
     "Risk-related language was flagged in the session recording for your review. "
     "It is not an assessment."
 )
+
+# Risk excerpts are grounded in the transcript and nothing more. Unlike a client
+# statement they are never put through the attribution check, so a sentence the
+# CLINICIAN spoke can be sitting in that list. Rendering one in quotation marks
+# under a prompt that says quoted text is the client speaking is how a
+# therapist's own words end up in a clinical record as their client's.
+_RISK_EXCERPT_HEADING = "Flagged language from the session (speaker unconfirmed):"
 
 # What the model may add to the note when the two inputs disagree. Appended to
 # a deep copy of the resolved schema, never to the cached object itself.
@@ -150,10 +158,13 @@ def _render_digest_evidence(digest: dict) -> str:
     the order a reader would want it: what happened and when, then the themes,
     then what was actually said, then what is still open, then the risk flag.
 
-    The one structural rule: a client statement is quoted only when its
-    attribution_confidence is "high". Every other statement is rendered as an
-    unattributed observation with no quotation marks, so nothing downstream can
-    mistake it for somebody's exact words.
+    The one structural rule: quotation marks appear around a client statement
+    whose attribution_confidence is "high", and nowhere else in this block.
+    Every other statement, and every risk excerpt, is rendered as an
+    observation with no quotation marks, so nothing downstream can mistake it
+    for somebody's exact words. Risk excerpts in particular are grounded in the
+    transcript but never attribution checked, so the speaker is unknown by
+    construction.
     """
     digest = digest or {}
     lines: list[str] = []
@@ -243,7 +254,9 @@ def _render_digest_evidence(digest: dict) -> str:
         lines.append("Risk language:")
         lines.append(_RISK_EVIDENCE_LINE)
         excerpts = _evidence_list(digest.get("risk_excerpts"))
-        lines += [f'- "{excerpt}"' for excerpt in excerpts]
+        if excerpts:
+            lines.append(_RISK_EXCERPT_HEADING)
+            lines += [f"- {excerpt}" for excerpt in excerpts]
         lines.append("")
 
     return "\n".join(lines).rstrip()
