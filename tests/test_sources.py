@@ -390,6 +390,32 @@ def test_set_consent_refuses_a_profile_it_cannot_parse(scratch_vault):
     assert profile.read_text(encoding="utf-8") == broken, "the profile is untouched"
     assert vault_mod.has_recording_consent(CLIENT) is False
 
+    # A block that reads as something other than properties is no safer to
+    # overwrite than one that will not read at all.
+    scalar = "---\njust a note to self\n---\n\nBob is a mid-career professional.\n"
+    profile.write_text(scalar, encoding="utf-8")
+    with pytest.raises(ValueError):
+        vault_mod.set_recording_consent(CLIENT, True)
+    assert profile.read_text(encoding="utf-8") == scalar
+
+
+def test_set_consent_accepts_an_empty_properties_block(scratch_vault):
+    """An empty block holds no properties, so adding one destroys nothing.
+
+    Only a block that failed to read is refused. An empty one is written to like
+    any other.
+    """
+    profile = scratch_vault / "Clients" / CLIENT / "_Profile.md"
+    profile.write_text("---\n---\n\nBob is a mid-career professional.\n", encoding="utf-8")
+
+    vault_mod.set_recording_consent(CLIENT, True)
+
+    fm, body = vault_mod._split_frontmatter(profile.read_text(encoding="utf-8"))
+    assert fm["recording_consent"] is True
+    assert str(fm["recording_consent_date"]) == dt.date.today().isoformat()
+    assert body == "Bob is a mid-career professional.\n"
+    assert vault_mod.has_recording_consent(CLIENT) is True
+
 
 def test_ingest_requires_consent(scratch_vault, tmp_path):
     src = tmp_path / "notes.md"
@@ -479,7 +505,8 @@ def test_ingest_text_pasted(consented_vault):
     assert source.duration_min is None
     assert recstore.rungs_present(CLIENT, source.id) == {0}
     assert recstore.read_rung(CLIENT, source.id, 0).strip() == text
-    assert not (recstore.source_dir(CLIENT, source.id) / "source-text.md").exists()
+    source_text = recstore.source_dir(CLIENT, source.id) / "source-text.md"
+    assert source_text.read_text(encoding="utf-8") == text, "what was pasted is kept as it came"
 
 
 def test_ingest_text_clinician_notes_enters_rung2(consented_vault):
@@ -593,6 +620,64 @@ def test_ingest_otter_verbatim_txt_enters_rung0_with_turns(consented_vault, tmp_
     assert raw.startswith("[00:03] Dana Ruiz: Thanks for making the time today.")
     assert "[02:51] Bob Smith:" in raw
     assert "otter.ai" not in raw, "the archive holds what was said, not the export footer"
+
+
+def test_multi_paragraph_turn_is_not_truncated():
+    """A long answer split over paragraphs is one turn, complete.
+
+    Rev and Descript break a client's answer at paragraph boundaries. Ending the
+    turn at the first blank line would drop every paragraph after the first, and
+    those are the client's own words.
+    """
+    _, turns = sources.parse_transcript(fixture_text("rev-multi-paragraph.txt"))
+
+    assert len(turns) == 5
+    second = turns[3]
+    assert second["speaker"] == "Bob Smith"
+    assert second["text"].startswith("It slowed. Not gone, but slower.")
+    assert "without me ever deciding to give it the whole evening." in second["text"], (
+        "the second paragraph of the answer is still the client talking"
+    )
+    # The three things that do end a turn still end it.
+    assert "Rev.com" not in " ".join(turn["text"] for turn in turns)
+
+
+def test_rung0_ingest_keeps_the_original_text_the_parser_dropped(consented_vault, tmp_path):
+    """The archive of last resort: whatever the parser made of it, the text stays.
+
+    render_turns is a rendering, not an archive. Any line the parser did not
+    recognise, or deliberately refused, would otherwise exist nowhere in the
+    vault and be unrecoverable. This is the test that a parser miss can never
+    lose the client's words.
+    """
+    src = tmp_path / "otter-verbatim.txt"
+    original = fixture_text("otter-verbatim.txt")
+    src.write_text(original, encoding="utf-8")
+
+    source, _ = sources.ingest_file(src, CLIENT)
+    assert source.entry_rung == 0
+
+    raw = recstore.read_rung(CLIENT, source.id, 0)
+    stored = (recstore.source_dir(CLIENT, source.id) / "source-text.md").read_text(
+        encoding="utf-8"
+    )
+    assert stored == original, "the file is kept exactly as it arrived"
+    assert "otter.ai" not in raw, "the parser still keeps credits out of the transcript"
+    assert "otter.ai" in stored, "and what it dropped is still recoverable"
+
+
+def test_rung0_ingest_keeps_every_paragraph(consented_vault, tmp_path):
+    src = tmp_path / "rev-multi-paragraph.txt"
+    original = fixture_text("rev-multi-paragraph.txt")
+    src.write_text(original, encoding="utf-8")
+
+    source, _ = sources.ingest_file(src, CLIENT)
+
+    raw = recstore.read_rung(CLIENT, source.id, 0)
+    assert "without me ever deciding to give it the whole evening." in raw
+    assert (recstore.source_dir(CLIENT, source.id) / "source-text.md").read_text(
+        encoding="utf-8"
+    ) == original
 
 
 def test_declared_kind_overrides(consented_vault, tmp_path):

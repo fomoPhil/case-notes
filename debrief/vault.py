@@ -1103,6 +1103,29 @@ _CONSENT_FLAG = "recording_consent"
 _CONSENT_DATE = "recording_consent_date"
 
 
+def _frontmatter_unreadable(text: str) -> bool:
+    """True when a file opens a properties block that will not read as properties.
+
+    _split_frontmatter returns {} both for a block holding nothing and for a
+    block whose YAML is broken, because a reader only needs to not crash. A
+    writer needs to tell those apart: adding a key to an empty block is safe,
+    and adding one to a block that failed to parse would save {} plus that key
+    over every property in the file.
+    """
+    if not text.startswith("---"):
+        return False
+    parts = text.split("---", 2)
+    if len(parts) != 3:
+        return False
+    try:
+        parsed = yaml.safe_load(parts[1])
+    except Exception:
+        return True
+    # None is an empty block. A scalar or a list is a block that read as
+    # something other than properties, which is no safer to overwrite.
+    return parsed is not None and not isinstance(parsed, dict)
+
+
 def _profile_path(client_id: str) -> Path:
     """The profile file for a client id that is a single, safe path segment."""
     cid = str(client_id or "").strip()
@@ -1136,24 +1159,25 @@ def set_recording_consent(client_id: str, granted: bool) -> None:
 
     The profile body is preserved exactly and the write is atomic.
 
-    A profile whose frontmatter block will not parse is left completely alone.
+    A profile whose properties block will not parse is left completely alone.
     _split_frontmatter reads broken YAML as an empty dict so that a listing never
     crashes, which is right for a reader and catastrophic here: merging one key
     into {} and writing it back would delete the client's name, diagnosis, risk
-    flags, and every other fact in the block. Better to refuse and say so.
+    flags, and every other fact in the block. Better to refuse and say so. An
+    empty block is a different thing entirely and is written to normally.
     """
     profile_path = _profile_path(client_id)
     if not profile_path.exists():
         raise FileNotFoundError(f"No profile for client {client_id!r}")
 
     text = profile_path.read_text(encoding="utf-8")
-    fm, body = _split_frontmatter(text)
-    if not fm and text.lstrip().startswith("---"):
+    if _frontmatter_unreadable(text):
         raise ValueError(
             f"The profile for {client_id} has a properties block that cannot be "
             "read, so nothing was changed. Open _Profile.md and fix it first."
         )
 
+    fm, body = _split_frontmatter(text)
     fm[_CONSENT_FLAG] = bool(granted)
     if granted:
         # A regrant stamps today, so the date always describes the consent that
