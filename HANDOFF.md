@@ -2,6 +2,24 @@
 
 Session-to-session state of the project. Read this first. Update it whenever meaningful state changes.
 
+## Session recording and ingestion, Phase A (built overnight 2026-07-27)
+
+The whole of Phase A from `docs/specs/2026-07-25-session-recording-and-ingestion.md` shipped: a clinician can upload or paste a session recording, video, transcript, or document; it is classified with provenance (word for word vs AI summary, with a one-tap confirmation when unsure), distilled by a background job ladder (raw transcript, corrected transcript, session digest), and the digest rides into the debrief as labelled session evidence. Plan with per-chunk detail: `docs/plans/2026-07-26-session-recording-phase-a.md`.
+
+- **Tests: 695 non-live passing** (was 413), 4 deselected, the one pre-existing Starlette warning. Run only with `.venv/bin/pytest -m "not live"`; a bare `pytest` runs the live suite, which writes its test client into the real vault (pre-existing behaviour, see open items).
+- **New modules:** `debrief/doctext.py` (doc readers carved out of compiler), `recstore.py` (Recordings/ storage, atomic rungs, retention sweep), `sources.py` (ingestion, classification firewall, consent gate), `ladder.py` (map-reduce digest with code-owned timestamps, quote grounding, attribution checks), `jobs.py` (priority worker, interactive hold, resume). Changed: `stt.py` (windowed long correction, timed transcription), `extract.py` (digest as labelled evidence), `pipeline.py` (`source_id`, rule 3 strip, no-debrief rule), `records.py` (directory trash), `settings_store.py` (`recording_retention_days`), `app.py` (source/consent/jobs routes), `static/app.js` (Recordings tab, confirm banner, evidence checkbox, review callouts, 7-card wizard).
+- **The seven spec rules each have a named test** in `tests/test_rules.py` (extract never sees rungs 0/1; non-verbatim never attributed; low confidence never files as a quote; raw transcript never in a note; Private/ untouched, asserted by snapshot; consent gates ingest; a recording without a debrief yields no actions). The no-source hero flow is pinned byte-identical by golden tests and was verified against the pre-change commit empirically.
+- **Verified end to end on this machine** against the live model: consent 403, upload, confirm, ladder to done, digest served, debrief with `source_id` returning `digest_used: true` and a note whose data drew on session detail absent from the spoken debrief. Scratch vault only.
+- **Build process:** eight chunks, one Opus implementer each, a senior review subagent per chunk. The checkpoint caught a real defect every single chunk, including three Criticals (a mixed AI export classifiable as verbatim; model-guessed speaker attribution; a retention sweep that could delete never-transcribed audio).
+
+Open items from this pass:
+
+1. **Phil has not seen the UI.** Visual pass pending: Recordings tab, confirm banner, review callouts, wizard card 6 (retention; permissions is now card 7). A scratch-vault server may still be running at `http://127.0.0.1:8378`.
+2. **Any already-running `debrief` server predates this code.** Restart it to load Phase A (a stale instance was found listening on 8377 during verification and was left untouched).
+3. **Pre-existing live-suite hygiene:** the live tests write `Clients/C-0008` (Bob Liveclient) and `_Activity` entries into the real vault; their git-checkout restore is a no-op because the vault is gitignored. Worth a scratch-vault fixture pass someday.
+4. Deferred minors, all reviewer-noted and documented in code: delete-source racing a running rung write (narrow window), jobs folder never pruned, focus not restored after the confirm banner is answered, no window-level drag guard outside the upload zone, `_Trash` folder titles render as raw slugs.
+5. **Phase B (live in-app long recording) is not built.** Spec section 12/14; the recorder-consolidation note at spec 12 still applies.
+
 ## Overnight design and hardening pass (2026-07-25)
 
 Three parallel audits (empty and edge states, copy and emotional design, accessibility) followed by roughly forty commits of fixes. Start at `SHIP_BLOCKERS.md`, which lists what only Phil can do and every decision made on his behalf.
