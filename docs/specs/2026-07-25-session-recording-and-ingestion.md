@@ -70,7 +70,9 @@ def correct_long_transcript(
 ) -> str
 ```
 
-Splits on sentence boundaries into windows of roughly 1,200 words with a two-sentence overlap, corrects each window with the existing layered system prompt, and stitches on the overlap. Windows are independent, so a single failed window degrades to its uncorrected text rather than failing the run. `correct_transcript` stays as-is for short debriefs.
+Splits on sentence boundaries into disjoint windows of roughly 1,200 words, corrects each window with the existing layered system prompt, and joins the corrected windows. Each window after the first carries the previous window's last two sentences as read-only context (marked "do not repeat in your output"), which orients the correction without an overlap to de-duplicate at the stitch; disjoint windows make silent duplication or loss at a seam structurally impossible. Windows are independent, so a single failed window degrades to its uncorrected text rather than failing the run. `correct_transcript` stays as-is for short debriefs.
+
+As built, the window budget counts characters as well as words, so a pasted transcript in a language without spaces still splits into real windows with a real output budget.
 
 ### 4.2 The digest is where quality lives or dies
 
