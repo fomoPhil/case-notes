@@ -456,16 +456,26 @@ def correct_transcript(
 # each comfortably fit, and stitches the results back together.
 _WINDOW_WORDS = 1200
 
-# A run of words with no sentence-ending punctuation (a wall-of-text paste, or
-# an engine that emitted none) is hard-split at this length, so one unbroken
-# run can never become a monster window. Split pieces are _WINDOW_WORDS long,
-# so the largest possible window is one sentence of _MAX_SENTENCE_WORDS.
+# A run with no sentence-ending punctuation (a wall-of-text paste, or an engine
+# that emitted none) is hard-split at this length, so one unbroken run can never
+# become a monster window.
 _MAX_SENTENCE_WORDS = 1500
 
-# Output budget per window. Roughly 2 tokens per word (generous: English runs
-# nearer 1.33) plus slack, because a window truncated mid-sentence is exactly
-# the bug this function exists to fix.
-_TOKENS_PER_WORD = 2
+# Every budget below is denominated in estimated OUTPUT TOKENS, not words. A
+# word count is the right unit only for space-delimited writing: a pasted
+# Chinese or Thai session has no spaces at all, so the whole transcript counts
+# as one word and every word-based budget silently collapses to nothing.
+_TOKENS_PER_WORD = 2  # generous; English runs nearer 1.33
+_CHARS_PER_TOKEN = 1.5  # dense scripts run near one token per 1 to 1.5 chars
+_DENSE_CHARS_PER_WORD = 12  # past this, word boundaries have stopped meaning much
+
+_WINDOW_TOKENS = _WINDOW_WORDS * _TOKENS_PER_WORD  # 2400
+_WINDOW_CHARS = int(_WINDOW_TOKENS * _CHARS_PER_TOKEN)  # 3600
+_MAX_SENTENCE_TOKENS = _MAX_SENTENCE_WORDS * _TOKENS_PER_WORD  # 3000
+
+# Output ceiling per window. A window truncated mid-sentence is exactly the bug
+# this function exists to fix, so the ceiling always clears a full window's
+# estimate plus slack.
 _TOKEN_SLACK = 200
 _MIN_WINDOW_TOKENS = 256
 _MAX_WINDOW_TOKENS = 2600
@@ -478,6 +488,8 @@ _CONTEXT_MAX_WORDS = 250
 
 _CONTEXT_HEADER = "CONTEXT (already corrected, do not repeat it in your output):"
 _WINDOW_HEADER = "CORRECT ONLY THE FOLLOWING TEXT:"
+# Used both to build the window prompt and to scrub it back out of the answer.
+_PROMPT_HEADERS = frozenset({_CONTEXT_HEADER, _WINDOW_HEADER})
 
 # Split after sentence-ending punctuation followed by whitespace. Deliberately
 # simple: an abbreviation like "Dr. Smith" splits early, which only makes a
@@ -485,55 +497,110 @@ _WINDOW_HEADER = "CORRECT ONLY THE FOLLOWING TEXT:"
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
 
+def _estimate_tokens(text: str) -> int:
+    """Rough output-token count for a stretch of transcript.
+
+    Space-delimited text is counted in words. That estimate collapses for
+    scripts written without spaces (Chinese, Japanese, Thai), where a whole
+    session is a single "word": there, characters are the unit. The switch is a
+    density test rather than a script table, so it covers any writing system
+    that drops word boundaries, and it never fires for ordinary space-delimited
+    text (about 6 characters per word, well under the threshold). English
+    therefore estimates exactly as it always did.
+    """
+    words = len(text.split())
+    word_estimate = words * _TOKENS_PER_WORD
+    if words and len(text) / words <= _DENSE_CHARS_PER_WORD:
+        return word_estimate
+    return max(word_estimate, int(len(text) / _CHARS_PER_TOKEN))
+
+
+def _hard_split(piece: str) -> list[str]:
+    """Chop an over-long unbroken run into window-sized pieces.
+
+    Two shapes have to work. A punctuation-free English paste is many words, so
+    it regroups on word boundaries. A dense-script paste has no spaces at all,
+    so its one enormous "word" can only be cut on characters; those cuts are
+    emitted as their own pieces rather than regrouped, so no space is ever
+    inserted into text that had none.
+    """
+    pieces: list[str] = []
+    current: list[str] = []
+    budget = 0
+
+    def _flush() -> None:
+        nonlocal current, budget
+        if current:
+            pieces.append(" ".join(current))
+            current = []
+            budget = 0
+
+    for word in piece.split():
+        cost = _estimate_tokens(word)
+        if cost > _WINDOW_TOKENS:
+            _flush()
+            for start in range(0, len(word), _WINDOW_CHARS):
+                pieces.append(word[start : start + _WINDOW_CHARS])
+            continue
+        if current and budget + cost > _WINDOW_TOKENS:
+            _flush()
+        current.append(word)
+        budget += cost
+    _flush()
+    return pieces
+
+
 def _split_sentences(text: str) -> list[str]:
     """Split a transcript into sentences, hard-splitting unbroken runs.
 
-    Any piece longer than _MAX_SENTENCE_WORDS is chopped into _WINDOW_WORDS
-    chunks so a punctuation-free paste still windows. Whitespace inside a
-    hard-split chunk is normalised; ordinary sentences keep their own spacing.
+    Any piece whose estimate passes _MAX_SENTENCE_TOKENS is chopped down to
+    window-sized pieces, so neither a punctuation-free English paste nor a
+    space-free dense-script paste can produce a monster window. Whitespace
+    inside a hard-split chunk is normalised; ordinary sentences keep their own
+    spacing.
     """
     pieces: list[str] = []
     for raw in _SENTENCE_END.split((text or "").strip()):
         piece = raw.strip()
         if not piece:
             continue
-        words = piece.split()
-        if len(words) <= _MAX_SENTENCE_WORDS:
+        if _estimate_tokens(piece) <= _MAX_SENTENCE_TOKENS:
             pieces.append(piece)
             continue
-        for start in range(0, len(words), _WINDOW_WORDS):
-            pieces.append(" ".join(words[start : start + _WINDOW_WORDS]))
+        pieces.extend(_hard_split(piece))
     return pieces
 
 
 def _pack_windows(sentences: list[str]) -> list[tuple[int, int]]:
-    """Pack sentences into disjoint windows of roughly _WINDOW_WORDS words.
+    """Pack sentences into disjoint windows of roughly _WINDOW_TOKENS tokens.
 
     Returns half-open index ranges into `sentences`. A window closes when the
     next sentence would push it past the budget, so every boundary lands on a
     sentence boundary. Every window holds at least one sentence (an oversized
     single sentence gets its own window rather than an empty one), and the
     ranges tile the whole list: disjoint, contiguous, nothing dropped.
+
+    For space-delimited text the budget is exactly the old 1200-word one, since
+    _estimate_tokens counts such text at _TOKENS_PER_WORD per word.
     """
     windows: list[tuple[int, int]] = []
     start = 0
-    words_in_window = 0
+    tokens_in_window = 0
     for index, sentence in enumerate(sentences):
-        length = len(sentence.split())
-        if words_in_window and words_in_window + length > _WINDOW_WORDS:
+        cost = _estimate_tokens(sentence)
+        if tokens_in_window and tokens_in_window + cost > _WINDOW_TOKENS:
             windows.append((start, index))
             start = index
-            words_in_window = 0
-        words_in_window += length
+            tokens_in_window = 0
+        tokens_in_window += cost
     if start < len(sentences):
         windows.append((start, len(sentences)))
     return windows
 
 
 def _window_max_tokens(window_text: str) -> int:
-    """Output budget for one window: generous per word, hard-capped."""
-    words = len(window_text.split())
-    budget = words * _TOKENS_PER_WORD + _TOKEN_SLACK
+    """Output budget for one window: the window's own estimate plus slack."""
+    budget = _estimate_tokens(window_text) + _TOKEN_SLACK
     return min(_MAX_WINDOW_TOKENS, max(_MIN_WINDOW_TOKENS, budget))
 
 
@@ -544,6 +611,32 @@ def _context_tail(text: str) -> str:
     if len(words) > _CONTEXT_MAX_WORDS:
         tail = " ".join(words[-_CONTEXT_MAX_WORDS:])
     return tail
+
+
+def _scrub_scaffolding(corrected: str, context_tail: str) -> str:
+    """Strip prompt scaffolding a window's answer may have echoed back.
+
+    The window prompt carries two headers and a read-only context block. A model
+    that repeats any of that would write the scaffolding, and a duplicate of the
+    previous window's closing sentences, straight into the clinical record. Two
+    defences: drop any line that is exactly one of the headers, and drop a
+    leading copy of the context tail this window was handed (exact match first,
+    then a whitespace-normalised comparison, since a model may re-space it).
+
+    Returns "" when nothing survives, which the caller treats as a failed window.
+    """
+    lines = [ln for ln in corrected.splitlines() if ln.strip() not in _PROMPT_HEADERS]
+    cleaned = "\n".join(lines).strip()
+    if not context_tail:
+        return cleaned
+
+    if cleaned.startswith(context_tail):
+        return cleaned[len(context_tail) :].strip()
+    tail_words = context_tail.split()
+    cleaned_words = cleaned.split()
+    if tail_words and cleaned_words[: len(tail_words)] == tail_words:
+        return " ".join(cleaned_words[len(tail_words) :])
+    return cleaned
 
 
 def correct_long_transcript(
@@ -561,7 +654,9 @@ def correct_long_transcript(
     prompt does not vary per window, so it is built once. Each window is one
     call; windows after the first are handed the previous window's last two
     sentences as read-only context so terminology stays consistent across a
-    boundary, and that context is never part of the window's own output.
+    boundary. That context is never part of the window's own output: every
+    successful answer is scrubbed of echoed headers and of a repeated context
+    block before it is stitched in.
 
     Windows are independent on purpose: a window whose call raises, or answers
     with nothing, degrades to its own uncorrected text. A long session never
@@ -607,9 +702,12 @@ def correct_long_transcript(
         except Exception:  # noqa: BLE001 - one bad window must not fail the run
             answer = None
 
+        corrected = ""
         if isinstance(answer, str) and answer.strip():
-            corrected = answer.strip()
-        else:
+            # Never trust the answer verbatim: an echoed header or context block
+            # would otherwise land in rung 1 as if it were clinical text.
+            corrected = _scrub_scaffolding(answer.strip(), previous_tail)
+        if not corrected:
             corrected = window_text
 
         corrected_windows.append(corrected)

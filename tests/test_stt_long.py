@@ -110,6 +110,53 @@ def test_windowing_wall_of_text_hard_split():
     assert sum(len(s.split()) for s in sentences) == 4000
 
 
+def test_windowing_dense_script_counts_characters():
+    """A pasted Chinese session has no spaces: word budgets alone would starve it.
+
+    The reported failure: 12,000+ characters counted as one word, so the whole
+    session became a single window at the 256-token floor and rung 1 silently
+    came back as about 2% of the transcript. Budgets therefore count characters
+    as well, and every window's ceiling must clear its own character count.
+    """
+    text = "客" * 12000  # no spaces, no sentence-ending punctuation
+    sentences = stt._split_sentences(text)
+    windows = stt._pack_windows(sentences)
+
+    assert len(windows) > 1, "a dense-script session must not be one window"
+    for start, end in windows:
+        window_text = " ".join(sentences[start:end])
+        assert stt._window_max_tokens(window_text) >= len(window_text) / 2
+
+    # Nothing is dropped: only the window-join spaces separate it from the input.
+    rebuilt = " ".join(" ".join(sentences[start:end]) for start, end in windows)
+    assert rebuilt.replace(" ", "") == text
+
+
+def test_dense_script_correction_covers_whole_transcript(monkeypatch):
+    """End to end on dense script: several calls, generous budgets, nothing lost."""
+    budgets: list[int] = []
+
+    def fake_chat(messages, max_tokens=1500, temperature=0.0):
+        budgets.append(max_tokens)
+        return _echo_body(messages[1]["content"])
+
+    monkeypatch.setattr(stt.llm, "chat", fake_chat)
+    text = "客" * 12500
+    out = stt.correct_long_transcript(text, profession="therapy", dictionary="")
+
+    assert len(budgets) > 1
+    assert min(budgets) > stt._MIN_WINDOW_TOKENS, "no window may sit at the floor"
+    assert out.replace(" ", "") == text
+
+
+def test_estimate_tokens_leaves_space_delimited_text_alone():
+    """The character term never fires for ordinary English."""
+    english = _transcript(12)  # 1200 words
+    assert stt._estimate_tokens(english) == 1200 * stt._TOKENS_PER_WORD
+    # Dense script falls back to characters instead of counting one word.
+    assert stt._estimate_tokens("客" * 3000) >= 3000 / 2
+
+
 def test_pack_windows_empty_input_has_no_windows():
     assert stt._pack_windows([]) == []
 
@@ -215,6 +262,81 @@ def test_failed_window_degrades(monkeypatch):
     assert "CONTEXT" not in out
     assert "CORRECT ONLY" not in out
     assert "fell over" not in out
+
+
+def test_first_window_failure_uses_raw_tail_as_context(monkeypatch):
+    """When window 1 fails, window 2's context is window 1's RAW closing tail."""
+    seen: list[dict] = []
+
+    def fake_chat(messages, max_tokens=1500, temperature=0.0):
+        seen.append({"messages": messages})
+        if len(seen) == 1:
+            raise RuntimeError("model fell over on the first window")
+        return _echo_body(messages[1]["content"]).replace("alpha", "ALPHA")
+
+    monkeypatch.setattr(stt.llm, "chat", fake_chat)
+    text = _transcript(36)  # exactly three 12-sentence windows
+    out = stt.correct_long_transcript(text, profession="therapy", dictionary="")
+
+    assert len(seen) == 3
+    second_user = seen[1]["messages"][1]["content"]
+    assert "CONTEXT (already corrected, do not repeat it in your output):" in second_user
+    # Window 1 never produced a correction, so the tail is its raw last two
+    # sentences: lowercase "alpha", not the stub's "ALPHA".
+    assert "alpha s10" in second_user and "alpha s11" in second_user
+    assert "ALPHA s10" not in second_user
+
+    # Output: raw window 1, then corrected windows 2 and 3.
+    for i in range(0, 12):
+        assert f"alpha s{i} " in out
+    for i in range(12, 36):
+        assert f"ALPHA s{i} " in out
+    assert "CONTEXT" not in out
+
+
+def test_echoed_scaffolding_is_scrubbed(monkeypatch):
+    """A model that parrots the whole user message must not pollute rung 1."""
+
+    def fake_chat(messages, max_tokens=1500, temperature=0.0):
+        # Worst case: the entire user message handed straight back.
+        return messages[1]["content"]
+
+    monkeypatch.setattr(stt.llm, "chat", fake_chat)
+    text = _transcript(24)  # two windows, so window 2 gets a CONTEXT block
+    out = stt.correct_long_transcript(text, profession="therapy", dictionary="")
+
+    assert "CONTEXT (already corrected, do not repeat it in your output):" not in out
+    assert "CORRECT ONLY THE FOLLOWING TEXT:" not in out
+    # The context sentences (window 1's last two) appear once, not twice.
+    for i in range(24):
+        assert out.count(f"alpha s{i} ") == 1
+    assert out == text
+
+
+def test_scrub_scaffolding_handles_rewrapped_context():
+    """The context strip survives a model that re-spaces what it echoed."""
+    tail = "One tail sentence. Another tail sentence."
+    answer = (
+        f"{stt._CONTEXT_HEADER}\n"
+        "One   tail sentence.\nAnother tail sentence.\n\n"
+        f"{stt._WINDOW_HEADER}\n"
+        "The real window text."
+    )
+    assert stt._scrub_scaffolding(answer, tail) == "The real window text."
+    # Nothing to strip when the answer is clean.
+    assert stt._scrub_scaffolding("Just the text.", tail) == "Just the text."
+
+
+def test_answer_that_is_only_scaffolding_degrades_to_raw(monkeypatch):
+    """If the scrub leaves nothing, the window falls back to its raw text."""
+
+    def fake_chat(messages, max_tokens=1500, temperature=0.0):
+        return stt._WINDOW_HEADER
+
+    monkeypatch.setattr(stt.llm, "chat", fake_chat)
+    text = _transcript(4)
+    out = stt.correct_long_transcript(text, profession="therapy", dictionary="")
+    assert out == text
 
 
 def test_empty_window_result_degrades_to_raw(monkeypatch):
