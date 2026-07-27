@@ -327,6 +327,50 @@ def test_sweep_retention_zero_keeps_everything(scratch_vault, tmp_path):
     assert (old_dir / "source.m4a").exists()
 
 
+def test_sweep_retention_never_outruns_transcription(scratch_vault, tmp_path):
+    settings_store.save({"recording_retention_days": 30})
+    expired = (_NOW - dt.timedelta(days=40)).isoformat()
+
+    # A source whose ladder never ran or failed: audio, no rung 0. The audio is
+    # not a redundant copy of a transcript here, it is the only copy of the
+    # session, and thirty days is exactly how long a failed job goes unnoticed.
+    never_ran = recstore.source_dir("C-0001", "2026-06-15-0900")
+    src = tmp_path / "incoming.m4a"
+    src.write_bytes(b"fake audio bytes")
+    recstore.write_audio("C-0001", "2026-06-15-0900", src)
+    recstore.write_meta(
+        "C-0001",
+        "2026-06-15-0900",
+        {"kind": "uploaded_audio", "verbatim": True, "entry_rung": 0, "captured_at": expired},
+    )
+
+    # A source that WAS transcribed, same age, same settings.
+    transcribed = _seed_source(
+        "C-0001", "2026-06-16-0900", captured_at=expired, tmp_path=tmp_path
+    )
+    recstore.write_meta(
+        "C-0001",
+        "2026-06-16-0900",
+        {"kind": "uploaded_audio", "verbatim": True, "entry_rung": 0, "captured_at": expired},
+    )
+
+    assert recstore.sweep_retention(_NOW) == 1
+
+    assert (never_ran / "source.m4a").exists(), "an untranscribed session keeps its only copy"
+    assert not (transcribed / "source.m4a").exists(), "a transcribed one still expires"
+    assert "audio_deleted_at" not in recstore.read_meta("C-0001", "2026-06-15-0900")
+
+    # And it is still skipped on every later boot, not just the first.
+    assert recstore.sweep_retention(_NOW + dt.timedelta(days=365)) == 0
+    assert (never_ran / "source.m4a").exists()
+
+    # Once the ladder does run, the audio becomes expendable again.
+    recstore.write_rung("C-0001", "2026-06-15-0900", 0, "raw transcript\n")
+    assert recstore.sweep_retention(_NOW) == 1
+    assert not (never_ran / "source.m4a").exists()
+    assert (never_ran / "transcript-raw.md").exists()
+
+
 def test_sweep_retention_bad_meta_skipped(scratch_vault, tmp_path):
     settings_store.save({"recording_retention_days": 30})
     garbage = _seed_source("C-0001", "2026-06-15-0900", captured_at="not a date", tmp_path=tmp_path)

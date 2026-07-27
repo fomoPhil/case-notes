@@ -15,6 +15,7 @@ Run:  .venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8377
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import os
 import re
 import shutil
@@ -1503,6 +1504,17 @@ _SOURCE_ACCEPTS = (
     "transcripts (.vtt, .srt), and documents (.txt, .md, .pdf, .docx)."
 )
 
+# Bodies this section will read. The paste cap is the interesting one: a
+# transcript pasted into a text box is the one JSON body here that can be large.
+_PASTE_MAX_BYTES = 2 * 1024 * 1024
+_JSON_MAX_BYTES = 64 * 1024
+
+_PASTE_TOO_LARGE = (
+    "That text is too long to paste. Save it as a file and bring it in that way, "
+    "or paste up to 2 MB at a time."
+)
+_JSON_TOO_LARGE = "That request is larger than this endpoint accepts."
+
 _DIGEST_NOT_READY = (
     "The session digest is not ready yet. It appears here once Debrief has "
     "finished reading this material."
@@ -1530,6 +1542,35 @@ def _source_http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, sources.SourceError):
         return HTTPException(status_code=422, detail=str(exc))
     return HTTPException(status_code=400, detail=str(exc))
+
+
+async def _json_body(request: Request, limit: int, too_large: str) -> dict:
+    """Read a bounded JSON object body, or raise 400 / 413.
+
+    The body is accumulated a chunk at a time and abandoned the moment it passes
+    the limit, so an oversized paste is refused partway through rather than
+    after it has all been held in memory. The declared content-length is checked
+    first, which usually means it is refused before any of it is read.
+    """
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > limit:
+                raise HTTPException(status_code=413, detail=too_large)
+        except ValueError:
+            pass
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw += chunk
+        if len(raw) > limit:
+            raise HTTPException(status_code=413, detail=too_large)
+    try:
+        body = json.loads(bytes(raw) or b"null")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Expected an object.")
+    return body
 
 
 def _source_client_id(client_id) -> str:
@@ -1680,6 +1721,7 @@ def _enriched_source(client_id: str, source_id: str, job_rows: list[dict]) -> di
             "source_id": source_id,
             "rungs": sorted(recstore.rungs_present(client_id, source_id)),
             "has_audio": recstore.audio_path(client_id, source_id) is not None,
+            "needs_confirmation": bool(meta.get("needs_confirmation")),
             "job": _job_view(_newest_job_for(job_rows, source_id)),
         }
     )
@@ -1727,6 +1769,14 @@ async def api_source_upload(
         except ValueError:
             pass
 
+    # Consent before staging, not only inside ingest_file. The gate in the
+    # module is the authoritative one and stays; this is the same question asked
+    # early enough that a client with no consent on file does not first have
+    # gigabytes of their session copied onto the disk to be told no.
+    granted, _consent_date = await run_in_threadpool(vault.recording_consent, cid)
+    if not granted:
+        raise HTTPException(status_code=403, detail=sources.CONSENT_MESSAGE)
+
     # One temp directory for the whole request, removed on every path out of
     # here, including the oversize one and every ingestion failure below.
     tmp_dir = Path(tempfile.mkdtemp(prefix="debrief_source_upload_"))
@@ -1760,13 +1810,7 @@ async def api_source_paste(request: Request) -> JSONResponse:
     clinician's own observation, rung 2). Nothing is guessed, so nothing needs
     confirming. Consent is gated exactly as it is on the upload path.
     """
-    try:
-        body = await request.json()
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}")
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="Expected an object.")
-
+    body = await _json_body(request, _PASTE_MAX_BYTES, _PASTE_TOO_LARGE)
     cid = _source_client_id(body.get("client_id"))
     text = body.get("text")
     if not isinstance(text, str):
@@ -1798,13 +1842,7 @@ async def api_source_confirm(source_id: str, request: Request) -> JSONResponse:
     the ladder is queued afterwards. A recording is a 409: there is nothing to
     confirm about a microphone.
     """
-    try:
-        body = await request.json()
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}")
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="Expected an object.")
-
+    body = await _json_body(request, _JSON_MAX_BYTES, _JSON_TOO_LARGE)
     cid, sid = _source_ids(body.get("client_id"), source_id)
     verbatim = body.get("verbatim")
     if not isinstance(verbatim, bool):
@@ -1945,14 +1983,25 @@ async def api_source_delete(
     cid, sid = _source_ids(client_id, source_id)
 
     def _delete() -> dict:
+        # "That source has no audio" and "there is no such source" are different
+        # answers, and telling a clinician the first when the second is true
+        # says their material is filed somewhere when it is not.
+        if not recstore.source_dir(cid, sid).is_dir():
+            return {"deleted": False, "missing": True, "cancelled_jobs": []}
         if audio_only:
             if recstore.audio_path(cid, sid) is None:
-                return {"deleted": False, "cancelled_jobs": []}
-            return {"deleted": recstore.delete_audio(cid, sid), "cancelled_jobs": []}
-        if not recstore.source_dir(cid, sid).is_dir():
-            return {"deleted": False, "cancelled_jobs": []}
+                return {"deleted": False, "missing": False, "cancelled_jobs": []}
+            return {
+                "deleted": recstore.delete_audio(cid, sid),
+                "missing": False,
+                "cancelled_jobs": [],
+            }
         cancelled = _cancel_source_jobs(cid, sid)
-        return {"deleted": recstore.delete_source(cid, sid), "cancelled_jobs": cancelled}
+        return {
+            "deleted": recstore.delete_source(cid, sid),
+            "missing": False,
+            "cancelled_jobs": cancelled,
+        }
 
     try:
         result = await run_in_threadpool(_delete)
@@ -1960,12 +2009,13 @@ async def api_source_delete(
         raise HTTPException(status_code=400, detail=str(exc))
     except VaultPathError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    missing = result.pop("missing", False)
     if not result["deleted"]:
         raise HTTPException(
             status_code=404,
             detail=(
                 "There is no audio stored for that source."
-                if audio_only
+                if audio_only and not missing
                 else "No such source for this client."
             ),
         )
@@ -1984,12 +2034,7 @@ async def api_recording_consent(client_id: str, request: Request) -> JSONRespons
     Withdrawing keeps the date it was granted on: that date is the answer to
     "was there consent at the time", and erasing it would erase the answer.
     """
-    try:
-        body = await request.json()
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}")
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="Expected an object.")
+    body = await _json_body(request, _JSON_MAX_BYTES, _JSON_TOO_LARGE)
     granted = body.get("granted")
     if not isinstance(granted, bool):
         raise HTTPException(

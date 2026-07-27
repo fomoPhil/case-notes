@@ -847,11 +847,14 @@ def test_rule5_private_never_touched(scratch_vault, chats, monkeypatch, tmp_path
     )
     assert merged["digest_used"] is True
 
-    # 4. A second source with audio, swept by the retention rule.
+    # 4. A second source with audio, swept by the retention rule. It carries a
+    # rung 0, because the sweep deliberately refuses to delete the audio of a
+    # source that was never transcribed: there the audio is the whole record.
     clip = tmp_path / "clip.wav"
     clip.write_bytes(b"RIFF....WAVEfmt ")
     old_sid = "2026-01-01-0900"
     recstore.write_audio(CLIENT, old_sid, clip)
+    recstore.write_rung(CLIENT, old_sid, 0, "Therapist: an older session.\n")
     recstore.write_meta(
         CLIENT,
         old_sid,

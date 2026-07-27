@@ -906,6 +906,107 @@ def test_source_id_collision_suffix(consented_vault, monkeypatch, tmp_path):
     ]
 
 
+def test_concurrent_uploads_in_one_minute_cannot_collide(consented_vault, monkeypatch, tmp_path):
+    """Two uploads finishing in the same minute must not take the same id.
+
+    Reserving used to be check-then-create, and both callers fit inside the gap:
+    both saw a free id, both took it, and the second wrote its audio and its
+    meta over the first. write_audio removes the previous container as it goes,
+    so the first session's only recording was gone with nothing left to say it
+    had ever been there.
+
+    The race is forced here rather than threaded: the reservation is wrapped so
+    that the moment the first caller creates its folder, a second source appears
+    underneath the same id. A check-then-create reservation hands the same name
+    to both. mkdir(exist_ok=False) cannot.
+    """
+    pinned = dt.datetime(2026, 7, 25, 14, 30, 0)
+    monkeypatch.setattr(sources, "_now", lambda: pinned)
+
+    first = tmp_path / "first.m4a"
+    first.write_bytes(b"the first session")
+    second = tmp_path / "second.m4a"
+    second.write_bytes(b"the second session")
+
+    real_reserve = sources._reserve_source_id
+    intruder = {"done": False}
+
+    def _racing_reserve(client_id, captured_at):
+        if not intruder["done"]:
+            intruder["done"] = True
+            # Somebody else got the base id a microsecond earlier.
+            recstore.source_dir(client_id, "2026-07-25-1430").mkdir(parents=True)
+        return real_reserve(client_id, captured_at)
+
+    monkeypatch.setattr(sources, "_reserve_source_id", _racing_reserve)
+    stolen, _ = sources.ingest_file(first, CLIENT)
+    monkeypatch.setattr(sources, "_reserve_source_id", real_reserve)
+    later, _ = sources.ingest_file(second, CLIENT)
+
+    assert stolen.id != later.id
+    assert [stolen.id, later.id] == ["2026-07-25-1430-2", "2026-07-25-1430-3"]
+    # Both recordings survive, each its own bytes.
+    assert (
+        recstore.audio_path(CLIENT, stolen.id).read_bytes() == b"the first session"
+    )
+    assert (
+        recstore.audio_path(CLIENT, later.id).read_bytes() == b"the second session"
+    )
+    assert recstore.read_meta(CLIENT, stolen.id) is not None
+    assert recstore.read_meta(CLIENT, later.id) is not None
+
+
+def test_a_failed_ingest_reserves_no_id(consented_vault, monkeypatch, tmp_path):
+    """An unreadable file must not leave an empty folder holding an id."""
+    pinned = dt.datetime(2026, 7, 25, 14, 30, 0)
+    monkeypatch.setattr(sources, "_now", lambda: pinned)
+
+    empty = tmp_path / "empty.md"
+    empty.write_text("   \n", encoding="utf-8")
+    with pytest.raises(sources.SourceError):
+        sources.ingest_file(empty, CLIENT)
+
+    good = tmp_path / "notes.md"
+    good.write_text(fixture_text("clinician-notes.md"), encoding="utf-8")
+    source, _ = sources.ingest_file(good, CLIENT)
+    assert source.id == "2026-07-25-1430", "the failure took no id with it"
+
+
+def test_needs_confirmation_is_persisted_and_cleared(consented_vault, tmp_path):
+    """The question survives the response it was first asked in.
+
+    A clinician who closes the tab before answering has to find the question
+    still there. On disk it is the only thing separating a source waiting for an
+    answer from a source whose processing silently failed.
+    """
+    doc = tmp_path / "notes.md"
+    doc.write_text(fixture_text("clinician-notes.md"), encoding="utf-8")
+    unsure, needs = sources.ingest_file(doc, CLIENT)
+    assert needs is True
+    assert unsure.needs_confirmation is True
+    assert recstore.read_meta(CLIENT, unsure.id)["needs_confirmation"] is True
+    assert recstore.list_sources(CLIENT)[0]["needs_confirmation"] is True
+
+    answered = sources.reclassify(CLIENT, unsure.id, False, "clinician")
+    assert answered.needs_confirmation is False
+    assert recstore.read_meta(CLIENT, unsure.id)["needs_confirmation"] is False
+
+    # A certain classification never asks in the first place.
+    certain, needs = sources.ingest_file(FIXTURES / "zoom.vtt", CLIENT)
+    assert needs is False
+    assert recstore.read_meta(CLIENT, certain.id)["needs_confirmation"] is False
+
+    # Meta written before this key existed reads as answered, not as pending.
+    old = recstore.read_meta(CLIENT, certain.id)
+    old.pop("needs_confirmation")
+    recstore.write_meta(CLIENT, certain.id, old)
+    assert sources.Source.from_meta(recstore.read_meta(CLIENT, certain.id)).needs_confirmation is (
+        False
+    )
+    rows = {row["source_id"]: row for row in recstore.list_sources(CLIENT)}
+    assert rows[certain.id]["needs_confirmation"] is False
+
+
 def test_ingest_writes_only_under_recordings(consented_vault, tmp_path):
     """No ingest path may write anywhere else in the vault.
 

@@ -177,6 +177,23 @@ def test_upload_rejects_a_declared_kind_a_document_cannot_be(client):
     assert resp.status_code == 422
 
 
+def test_upload_without_consent_403_before_staging_anything(client, monkeypatch):
+    tc, vault_dir = client
+    staged: list = []
+
+    def _never(*args, **kwargs):
+        staged.append(args)
+        raise AssertionError("a consent-less upload must not be copied to disk")
+
+    # Asked early enough that gigabytes of somebody's session are not written to
+    # the disk first and told no afterwards.
+    monkeypatch.setattr(app_module, "_copy_capped", _never)
+    resp = _upload_fixture(tc, "zoom.vtt", client_id=NO_CONSENT_CLIENT)
+    assert resp.status_code == 403
+    assert staged == []
+    assert resp.json()["detail"] == app_module.sources.CONSENT_MESSAGE
+
+
 def test_upload_without_consent_403_with_plain_copy(client):
     tc, vault_dir = client
     resp = _upload_fixture(tc, "zoom.vtt", client_id=NO_CONSENT_CLIENT)
@@ -263,6 +280,32 @@ def test_paste_without_consent_403(client):
     )
     assert resp.status_code == 403
     assert resp.json()["detail"] == app_module.sources.CONSENT_MESSAGE
+
+
+def test_paste_over_cap_413(client, monkeypatch):
+    tc, _ = client
+    assert app_module._PASTE_MAX_BYTES == 2 * 1024 * 1024
+    assert "2 MB" in app_module._PASTE_TOO_LARGE
+
+    monkeypatch.setattr(app_module, "_PASTE_MAX_BYTES", 512)
+    resp = tc.post(
+        "/api/sources/paste",
+        json={"client_id": CLIENT, "text": "x" * 4096, "kind": "pasted_transcript"},
+    )
+    assert resp.status_code == 413
+    assert resp.json()["detail"] == app_module._PASTE_TOO_LARGE
+    # Nothing was stored from a body that was never fully read.
+    assert app_module.recstore.list_sources(CLIENT) == []
+
+
+def test_confirm_body_is_bounded(client, monkeypatch):
+    tc, _ = client
+    monkeypatch.setattr(app_module, "_JSON_MAX_BYTES", 32)
+    resp = tc.post(
+        "/api/sources/2026-01-01-0900/confirm",
+        json={"client_id": CLIENT, "verbatim": True, "produced_by": "otter"},
+    )
+    assert resp.status_code == 413
 
 
 def test_paste_rejects_a_kind_that_is_not_pasteable(client):
@@ -497,6 +540,33 @@ def test_get_sources_list_enriched(client):
     assert one.json()["rungs"] == [0]
 
 
+def test_get_sources_carries_the_unanswered_question(client):
+    tc, _ = client
+    # Closing the tab must not lose the question. It is on disk, so the panel
+    # can re-ask after a reload, and an unanswered source is distinguishable
+    # from one whose processing quietly failed.
+    unsure = _upload_fixture(tc, "clinician-notes.md").json()["source_id"]
+    certain = _upload_fixture(tc, "zoom.vtt").json()["source_id"]
+
+    rows = {r["source_id"]: r for r in tc.get("/api/sources", params={"client_id": CLIENT}).json()["sources"]}
+    assert rows[unsure]["needs_confirmation"] is True
+    assert rows[unsure]["job"] is None, "unanswered means unqueued"
+    assert rows[certain]["needs_confirmation"] is False
+    one = tc.get(f"/api/sources/{unsure}", params={"client_id": CLIENT}).json()
+    assert one["needs_confirmation"] is True
+
+    tc.post(
+        f"/api/sources/{unsure}/confirm",
+        json={"client_id": CLIENT, "verbatim": False, "produced_by": "clinician"},
+    )
+    rows = {r["source_id"]: r for r in tc.get("/api/sources", params={"client_id": CLIENT}).json()["sources"]}
+    assert rows[unsure]["needs_confirmation"] is False
+    assert rows[unsure]["job"]["state"] == "queued"
+    assert tc.get(f"/api/sources/{unsure}", params={"client_id": CLIENT}).json()[
+        "needs_confirmation"
+    ] is False
+
+
 def test_get_sources_requires_a_client_id(client):
     tc, _ = client
     assert tc.get("/api/sources").status_code == 400
@@ -615,6 +685,29 @@ def test_delete_unknown_source_404(client):
         "DELETE", "/api/sources/2026-01-01-0900", params={"client_id": CLIENT}
     )
     assert resp.status_code == 404
+
+
+def test_delete_audio_only_on_a_missing_source_says_it_is_missing(client):
+    tc, _ = client
+    resp = tc.request(
+        "DELETE",
+        "/api/sources/2026-01-01-0900",
+        params={"client_id": CLIENT, "audio_only": "true"},
+    )
+    assert resp.status_code == 404
+    # "There is no audio stored for that source" would tell a clinician their
+    # material is filed and merely missing its audio, when it is not there.
+    assert resp.json()["detail"] == "No such source for this client."
+
+    # And the other 404 still says what it means when the source does exist.
+    source_id = _upload_fixture(tc, "zoom.vtt").json()["source_id"]
+    no_audio = tc.request(
+        "DELETE",
+        f"/api/sources/{source_id}",
+        params={"client_id": CLIENT, "audio_only": "true"},
+    )
+    assert no_audio.status_code == 404
+    assert "no audio" in no_audio.json()["detail"].lower()
 
 
 def test_delete_rejects_a_traversal_source_id_400(client, vault_dir=None):

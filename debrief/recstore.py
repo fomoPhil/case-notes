@@ -290,6 +290,10 @@ def list_sources(client_id: str | None = None) -> list[dict]:
                     "source_id": sid,
                     "rungs": sorted(rungs_present(cid, sid)),
                     "has_audio": audio_path(cid, sid) is not None,
+                    # Always present and always a bool, so a caller never has to
+                    # tell "answered" apart from "written before this existed".
+                    # Both mean nothing is pending.
+                    "needs_confirmation": bool(meta.get("needs_confirmation")),
                 }
             )
             rows.append(entry)
@@ -416,8 +420,14 @@ def sweep_retention(now: _dt.datetime) -> int:
     audio_deleted_at in the source's meta, so the UI can say what happened rather
     than showing an unexplained gap.
 
-    Deliberately timid: a source whose captured_at is missing or unparseable is
-    skipped, never deleted. An unknown age is not an expired one.
+    Deliberately timid, in two ways. A source whose captured_at is missing or
+    unparseable is skipped, never deleted: an unknown age is not an expired one.
+    And a source that enters at rung 0 but has no rung 0 on disk is skipped
+    however old it is, because retention must never outrun transcription. That
+    source is one whose ladder never ran or failed, so the audio is not a
+    redundant copy of a transcript, it is the only copy of the session. Deleting
+    it thirty days later at boot would destroy the session itself, quietly, and
+    the clinician would find an empty folder where their evidence was.
     """
     try:
         days = int(settings_store.load().get(_RETENTION_KEY, 0) or 0)
@@ -432,6 +442,13 @@ def sweep_retention(now: _dt.datetime) -> int:
     for entry in list_sources():
         captured = _parse_captured_at(entry.get("captured_at"), now)
         if captured is None or captured >= cutoff:
+            continue
+        try:
+            entry_rung = int(entry.get("entry_rung", 0))
+        except (TypeError, ValueError):
+            entry_rung = 0
+        if entry_rung == 0 and 0 not in set(entry.get("rungs") or []):
+            # Never transcribed. The audio IS the evidence trail here.
             continue
         cid, sid = entry["client_id"], entry["source_id"]
         if not delete_audio(cid, sid):

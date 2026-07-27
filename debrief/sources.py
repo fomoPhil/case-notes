@@ -138,6 +138,14 @@ class Source:
     partial: bool
     audio_path: Path | None
     consent_ref: str | None
+    # True while the classifier's guess is still only a guess. It lives in
+    # meta.json rather than in one HTTP response because the question outlives
+    # the request: a clinician who closes the tab before answering must find the
+    # question waiting when they come back, not a source that is silently doing
+    # nothing and looks identical to one whose processing failed. Defaults to
+    # False so meta written before this existed reads as answered, which is the
+    # right reading: nothing was ever pending on it.
+    needs_confirmation: bool = False
 
     def __post_init__(self) -> None:
         if self.kind not in KIND_RULES:
@@ -173,6 +181,7 @@ class Source:
             "partial": bool(self.partial),
             "audio_path": str(self.audio_path) if self.audio_path else None,
             "consent_ref": self.consent_ref,
+            "needs_confirmation": bool(self.needs_confirmation),
         }
 
     @classmethod
@@ -206,6 +215,7 @@ class Source:
             partial=bool(meta.get("partial")),
             audio_path=Path(audio) if audio else None,
             consent_ref=meta.get("consent_ref") or None,
+            needs_confirmation=bool(meta.get("needs_confirmation")),
         )
 
 
@@ -828,17 +838,34 @@ def _validated_kind(kind) -> str:
     return text
 
 
-def _next_source_id(client_id: str, captured_at: _dt.datetime) -> str:
-    """The capture minute as an id, with -2, -3 on collision."""
+def _reserve_source_id(client_id: str, captured_at: _dt.datetime) -> str:
+    """Take the capture minute as an id, with -2, -3 on collision. Reserves it.
+
+    The folder is CREATED here, and that is the point. Asking whether a path
+    exists and then writing to it is two operations with a gap in between, and
+    two uploads finishing in the same minute both fit inside that gap: both see
+    a free id, both take it, and the second one writes its audio and its
+    meta.json over the first. write_audio even removes the previous container on
+    its way past, so the first session's recording is gone and the only thing
+    left saying it ever existed is a job record pointing at somebody else's
+    material. A clinician would have no way to notice.
+
+    mkdir with exist_ok=False is one atomic operation: exactly one caller can
+    create a given directory, and the loser hears FileExistsError and moves to
+    the next suffix. Reserving is therefore always safe to do; what callers must
+    take care of is not reserving until they know they have something to store,
+    because an abandoned reservation leaves an empty folder that takes an id.
+    """
     base = captured_at.strftime("%Y-%m-%d-%H%M")
-    if not recstore.source_dir(client_id, base).exists():
-        return base
-    n = 2
+    candidate = base
+    n = 1
     while True:
-        candidate = f"{base}-{n}"
-        if not recstore.source_dir(client_id, candidate).exists():
+        try:
+            recstore.source_dir(client_id, candidate).mkdir(parents=True, exist_ok=False)
             return candidate
-        n += 1
+        except FileExistsError:
+            n += 1
+            candidate = f"{base}-{n}"
 
 
 def _store(
@@ -851,6 +878,7 @@ def _store(
     audio_path: Path | None = None,
     turns: list[dict] | None = None,
     duration_min: int | None = None,
+    needs_confirmation: bool = False,
 ) -> Source:
     """Build the Source, write meta.json, and hand it back.
 
@@ -872,6 +900,7 @@ def _store(
         partial=False,
         audio_path=audio_path,
         consent_ref=consent_ref,
+        needs_confirmation=bool(needs_confirmation),
     )
     recstore.write_meta(client_id, source_id, source.to_meta())
     return source
@@ -907,6 +936,10 @@ def ingest_file(path: Path, client_id: str, declared_kind: str | None = None) ->
 
     Video is the exception to "store what arrived": its audio track is extracted
     and kept, and the video is not retained.
+
+    The id is reserved as late as each path allows, immediately before the first
+    write. Reserving creates the folder, and a folder created for material that
+    then turned out to be unreadable is an empty source holding an id.
     """
     src = Path(path)
     if not src.is_file():
@@ -917,7 +950,6 @@ def ingest_file(path: Path, client_id: str, declared_kind: str | None = None) ->
 
     ext = src.suffix.lower()
     captured_at = _now()
-    source_id = _next_source_id(client_id, captured_at)
 
     if ext in AUDIO_EXTS or ext in VIDEO_EXTS:
         natural = "uploaded_audio" if ext in AUDIO_EXTS else "uploaded_video"
@@ -929,9 +961,12 @@ def ingest_file(path: Path, client_id: str, declared_kind: str | None = None) ->
         if ext in AUDIO_EXTS:
             # The original container is kept so the archive stays byte faithful.
             # Transcription is the job queue's work, not this function's.
+            source_id = _reserve_source_id(client_id, captured_at)
             stored = recstore.write_audio(client_id, source_id, src)
         else:
+            # After the extraction, which is the step most likely to fail here.
             track = _extract_audio_track(src)
+            source_id = _reserve_source_id(client_id, captured_at)
             try:
                 stored = recstore.write_audio(client_id, source_id, track)
             finally:
@@ -976,9 +1011,19 @@ def ingest_file(path: Path, client_id: str, declared_kind: str | None = None) ->
         if kind == "clinician_notes":
             produced_by = "clinician"
 
-    return _store_text(client_id, source_id, kind, produced_by, captured_at, consent_ref, text), (
-        confidence < CONFIRM_BELOW
+    needs_confirmation = confidence < CONFIRM_BELOW
+    source_id = _reserve_source_id(client_id, captured_at)
+    source = _store_text(
+        client_id,
+        source_id,
+        kind,
+        produced_by,
+        captured_at,
+        consent_ref,
+        text,
+        needs_confirmation=needs_confirmation,
     )
+    return source, needs_confirmation
 
 
 def ingest_text(text: str, client_id: str, kind: str) -> tuple[Source, bool]:
@@ -998,8 +1043,8 @@ def ingest_text(text: str, client_id: str, kind: str) -> tuple[Source, bool]:
 
     consent_ref = _consent_ref(client_id)
     captured_at = _now()
-    source_id = _next_source_id(client_id, captured_at)
     produced_by = "clinician" if kind == "clinician_notes" else "unknown"
+    source_id = _reserve_source_id(client_id, captured_at)
 
     source = _store_text(client_id, source_id, kind, produced_by, captured_at, consent_ref, text)
     return source, False
@@ -1101,6 +1146,9 @@ def reclassify(client_id: str, source_id: str, verbatim: bool, produced_by: str)
         stored.consent_ref,
         turns=turns,
         duration_min=duration,
+        # Answered. The question stops being asked, on this screen and on every
+        # later reload, because the flag it was asked from is on disk.
+        needs_confirmation=False,
     )
 
 
@@ -1112,6 +1160,7 @@ def _store_text(
     captured_at: _dt.datetime,
     consent_ref: str,
     text: str,
+    needs_confirmation: bool = False,
 ) -> Source:
     """Write text material at the rung its kind enters on, then its provenance.
 
@@ -1130,7 +1179,15 @@ def _store_text(
     recstore.write_source_text(client_id, source_id, text)
 
     if entry_rung != 0:
-        return _store(client_id, source_id, kind, produced_by, captured_at, consent_ref)
+        return _store(
+            client_id,
+            source_id,
+            kind,
+            produced_by,
+            captured_at,
+            consent_ref,
+            needs_confirmation=needs_confirmation,
+        )
 
     _, turns = parse_transcript(text)
     recstore.write_rung(client_id, source_id, 0, render_turns(turns))
@@ -1143,4 +1200,5 @@ def _store_text(
         consent_ref,
         turns=turns,
         duration_min=_duration_min(turns),
+        needs_confirmation=needs_confirmation,
     )
