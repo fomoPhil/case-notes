@@ -91,6 +91,15 @@ DOC_EXTS = {".txt", ".md", ".pdf", ".docx"}
 # The two kinds a clinician can paste in directly.
 PASTE_KINDS = {"pasted_transcript", "clinician_notes"}
 
+# The kinds a file of text can honestly be. The rest describe media, and a
+# document declared as one of those would enter a rung expecting audio.
+TEXT_KINDS = {
+    "transcript_file",
+    "pasted_transcript",
+    "third_party_summary",
+    "clinician_notes",
+}
+
 
 # ---------------------------------------------------------------------------
 # The Source record
@@ -215,16 +224,30 @@ _OTTER_HEADER_RE = re.compile(
 
 _INT_LINE_RE = re.compile(r"^\s*\d+\s*$")
 
-# Headings an AI meeting tool puts on a generated write up. None of them appear
-# above an utterance in a verbatim export.
+# A SubRip cue line, in full: 00:00:03,480 --> 00:00:08,120. Nothing looser, so
+# an arrow inside prose can never pass for one.
+_SRT_CUE_RE = re.compile(
+    r"^\s*\d{1,3}:\d{2}:\d{2},\d{1,3}\s*-->\s*\d{1,3}:\d{2}:\d{2},\d{1,3}"
+)
+
+# Headings an AI meeting tool puts on a generated write up. Otter, Granola,
+# Fathom, and Fireflies all reach for the same handful of words, and none of them
+# appear above an utterance in a verbatim export. Kept broad on purpose: a false
+# positive here costs one confirmation tap, and a false negative files generated
+# prose as somebody's words.
 _SUMMARY_HEADINGS = {
-    "summary",
-    "keywords",
     "action items",
-    "overview",
+    "chapters",
+    "highlights",
     "key takeaways",
+    "keywords",
+    "meeting purpose",
     "next steps",
+    "notes",
     "outline",
+    "overview",
+    "summary",
+    "topics",
 }
 
 
@@ -286,18 +309,38 @@ def _looks_like_vtt(text: str) -> bool:
     return text.lstrip("﻿ \t\r\n").upper().startswith("WEBVTT")
 
 
+def _cue_times(line: str) -> tuple[float, float] | None:
+    """The (start, end) of a subtitle cue line, or None when it is not one.
+
+    The arrow alone proves nothing. A clinician's formulation note is full of
+    "trigger --> thought --> spiral", and treating that as a cue would file the
+    note as somebody's words. So the line must open with the range, and both
+    tokens must carry a colon and read as times.
+    """
+    match = _ARROW_RE.match(line)
+    if not match:
+        return None
+    start, end = match.group("start"), match.group("end")
+    if ":" not in start or ":" not in end:
+        return None
+    seconds_start, seconds_end = _seconds(start), _seconds(end)
+    if seconds_start is None or seconds_end is None:
+        return None
+    return seconds_start, seconds_end
+
+
+def _timed_cues(text: str) -> int:
+    """How many lines of this text are real, timed subtitle cues."""
+    return sum(1 for line in text.splitlines() if _cue_times(line) is not None)
+
+
 def _looks_like_srt(text: str) -> bool:
-    """A digit-only cue index immediately above a comma separated cue line."""
+    """A digit-only cue index immediately above a real SubRip timestamp line."""
     lines = text.splitlines()
     for i, line in enumerate(lines[:-1]):
-        if _INT_LINE_RE.match(line) and "-->" in lines[i + 1] and "," in lines[i + 1]:
+        if _INT_LINE_RE.match(line) and _SRT_CUE_RE.match(lines[i + 1]):
             return True
     return False
-
-
-def _has_cue_lines(text: str) -> bool:
-    """True when a line actually opens with a subtitle cue range."""
-    return any(_ARROW_RE.match(line) for line in text.splitlines())
 
 
 def _otter_headers(text: str) -> list[tuple[int, str, float]]:
@@ -392,12 +435,11 @@ def _parse_cues(text: str) -> list[dict]:
     lines = text.splitlines()
     i = 0
     while i < len(lines):
-        match = _ARROW_RE.match(lines[i])
-        if not match:
+        times = _cue_times(lines[i])
+        if times is None:
             i += 1
             continue
-        start = _seconds(match.group("start"))
-        end = _seconds(match.group("end"))
+        start, end = times
         i += 1
         payload: list[str] = []
         while i < len(lines) and lines[i].strip():
@@ -417,14 +459,27 @@ def _parse_cues(text: str) -> list[dict]:
 
 
 def _parse_timestamped_speakers(text: str) -> list[dict]:
-    """Parse an export whose utterances open with "Speaker Name  0:03"."""
+    """Parse an export whose utterances open with "Speaker Name  0:03".
+
+    An utterance is the block of lines immediately under its header, and it ends
+    at the first blank line. Accumulation deliberately stops there rather than
+    running to the next header, because these exports put generated material
+    after the last utterance: an "otter.ai" footer, or a whole Summary section.
+    Folding that into the final turn would put a machine's sentences inside a
+    speaker's quoted words and into the rung 0 archive, which is the exact
+    records failure this module exists to prevent.
+    """
     lines = text.splitlines()
     headers = _otter_headers(text)
     turns: list[dict] = []
     for position, (index, speaker, seconds) in enumerate(headers):
         stop = headers[position + 1][0] if position + 1 < len(headers) else len(lines)
-        body = " ".join(lines[index + 1 : stop])
-        turns.append(_turn(seconds, None, speaker, body))
+        body: list[str] = []
+        for line in lines[index + 1 : stop]:
+            if not line.strip():
+                break
+            body.append(line)
+        turns.append(_turn(seconds, None, speaker, " ".join(body)))
     return [turn for turn in turns if turn["text"]]
 
 
@@ -461,11 +516,10 @@ def parse_transcript(path_or_text) -> tuple[str, list[dict]]:
         return "", []
 
     turns: list[dict] = []
-    if _looks_like_vtt(text) or _looks_like_srt(text) or _has_cue_lines(text):
+    if _timed_cues(text):
         turns = _parse_cues(text)
-    # An empty result means the cue shape was a false alarm (an arrow inside
-    # prose, say), so the other readers still get their turn rather than
-    # archiving nothing.
+    # An empty result means the cue shape was a false alarm, so the other readers
+    # still get their turn rather than archiving nothing.
     if not turns:
         if len(_otter_headers(text)) >= 2:
             turns = _parse_timestamped_speakers(text)
@@ -523,27 +577,43 @@ def _duration_min(turns: list[dict]) -> int | None:
 def classify(path: Path | None, text: str) -> tuple[str, bool, str, float]:
     """Guess (kind, verbatim, produced_by, confidence) for some session material.
 
-    Layered and deterministic, never a model call. Subtitle formats are certain,
-    export structures are strong, speaker turns are good, and prose is a coin
-    toss that the clinician settles. Confidence below CONFIRM_BELOW means ask.
+    Layered and deterministic, never a model call. Timed subtitle cues are
+    certain, export structures are strong, speaker turns are a decent guess, and
+    prose is a coin toss that the clinician settles. Confidence below
+    CONFIRM_BELOW means ask.
+
+    Every layer fails in the same direction: when the evidence is mixed or thin,
+    the answer is not verbatim and the clinician is asked. A confirmation tap
+    costs a second. A generated sentence filed as a client quote is in the record
+    for good.
     """
     text = text or ""
-    suffix = Path(path).suffix.lower() if path is not None else ""
 
-    if suffix == ".vtt" or _looks_like_vtt(text):
-        _, turns = parse_transcript(text)
-        return "transcript_file", True, ("zoom" if _is_zoom_vtt(text, turns) else "unknown"), 1.0
-    if suffix == ".srt" or _looks_like_srt(text):
-        return "transcript_file", True, "unknown", 1.0
+    # path is accepted for the module contract and deliberately not used to
+    # decide anything. An extension is a claim made by whoever named the file,
+    # and a clinician's formulation note saved as .srt is still a note. Only the
+    # bytes settle it: a WebVTT file always opens with the WEBVTT header and a
+    # SubRip file always pairs a cue index with a full timestamp line, so a file
+    # carrying neither falls through to the heuristics below and gets asked
+    # about, whatever it is called.
+    if _timed_cues(text):
+        if _looks_like_vtt(text):
+            _, turns = parse_transcript(text)
+            producer = "zoom" if _is_zoom_vtt(text, turns) else "unknown"
+            return "transcript_file", True, producer, 1.0
+        if _looks_like_srt(text):
+            return "transcript_file", True, "unknown", 1.0
 
     dense = _dense_utterance_headers(text)
     headings = _summary_headings(text)
 
-    if dense and headings >= 2:
-        # Both shapes in one file, which is exactly how an Otter export with the
-        # summary switched on arrives. The safe guess is the one that cannot put
-        # an invented sentence in the record as a quote, and the low confidence
-        # sends it to the clinician.
+    if dense and headings:
+        # A transcript block with any generated section anywhere in the same
+        # file: an Otter export with the summary switched on, a Fathom export
+        # with Key Takeaways above the transcript. One heading is enough. There
+        # is no way to know from structure alone which sentences came from a
+        # person, so the whole file is treated as a write up and the clinician
+        # is asked.
         return "third_party_summary", False, "otter", 0.5
     if dense:
         return "transcript_file", True, "otter", 0.9
@@ -552,7 +622,10 @@ def classify(path: Path | None, text: str) -> tuple[str, bool, str, float]:
     if headings >= 2:
         return "third_party_summary", False, "otter", 0.85
     if _looks_like_dialogue(text):
-        return "transcript_file", True, "unknown", 0.85
+        # Speaker labels with no timestamps anywhere. A pasted transcript looks
+        # exactly like a clinician typing up remembered dialogue afterwards, and
+        # only one of those is word for word, so this one always asks.
+        return "transcript_file", True, "unknown", 0.75
     return "clinician_notes", False, "clinician", 0.5
 
 
@@ -573,10 +646,7 @@ def _run_ffmpeg(args: list[str]) -> subprocess.CompletedProcess:
 
 def _ffmpeg_tail(proc: subprocess.CompletedProcess) -> str:
     """The last of ffmpeg's stderr, which is where it says what went wrong."""
-    err = proc.stderr or ""
-    if isinstance(err, bytes):
-        err = err.decode("utf-8", errors="replace")
-    return err.strip()[-300:]
+    return (proc.stderr or "").strip()[-300:]
 
 
 def _ffmpeg_to(src: Path, args: list[str], out_name: str, what: str) -> Path:
@@ -777,6 +847,8 @@ def ingest_file(path: Path, client_id: str, declared_kind: str | None = None) ->
 
     if ext in TRANSCRIPT_EXTS:
         text = src.read_text(encoding="utf-8", errors="replace")
+        if not text.strip():
+            raise SourceError(f"there was no readable text in {src.name}.")
     elif ext in DOC_EXTS:
         text = _read_document(src)
     else:
@@ -787,6 +859,14 @@ def ingest_file(path: Path, client_id: str, declared_kind: str | None = None) ->
 
     kind, _, produced_by, confidence = classify(src, text)
     if declared is not None:
+        if declared not in TEXT_KINDS:
+            # Declaring a document to be a recording would file text at a rung
+            # that expects media, so the claim is refused rather than absorbed.
+            raise SourceError(
+                f"{src.name} holds text, so it cannot be filed as "
+                f"{declared.replace('_', ' ')}. Expected one of: "
+                f"{', '.join(sorted(TEXT_KINDS))}."
+            )
         kind = declared
         confidence = 1.0
         if kind == "clinician_notes":

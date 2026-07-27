@@ -1135,12 +1135,25 @@ def set_recording_consent(client_id: str, granted: bool) -> None:
     consent at the time".
 
     The profile body is preserved exactly and the write is atomic.
+
+    A profile whose frontmatter block will not parse is left completely alone.
+    _split_frontmatter reads broken YAML as an empty dict so that a listing never
+    crashes, which is right for a reader and catastrophic here: merging one key
+    into {} and writing it back would delete the client's name, diagnosis, risk
+    flags, and every other fact in the block. Better to refuse and say so.
     """
     profile_path = _profile_path(client_id)
     if not profile_path.exists():
         raise FileNotFoundError(f"No profile for client {client_id!r}")
 
-    fm, body = _split_frontmatter(profile_path.read_text(encoding="utf-8"))
+    text = profile_path.read_text(encoding="utf-8")
+    fm, body = _split_frontmatter(text)
+    if not fm and text.lstrip().startswith("---"):
+        raise ValueError(
+            f"The profile for {client_id} has a properties block that cannot be "
+            "read, so nothing was changed. Open _Profile.md and fix it first."
+        )
+
     fm[_CONSENT_FLAG] = bool(granted)
     if granted:
         # A regrant stamps today, so the date always describes the consent that

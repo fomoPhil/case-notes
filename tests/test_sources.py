@@ -113,12 +113,18 @@ def test_classify_granola_not_verbatim():
     assert confidence >= sources.CONFIRM_BELOW
 
 
-def test_classify_plain_speaker_text_verbatim():
+def test_classify_plain_speaker_text_verbatim_but_asks():
+    """Speaker labels with no timestamps are a guess, not a fact.
+
+    A pasted transcript and a clinician typing up remembered dialogue after the
+    session produce the same shape, and only one of them is word for word.
+    """
     kind, verbatim, produced_by, confidence = sources.classify(
         FIXTURES / "plain-transcript.txt", fixture_text("plain-transcript.txt")
     )
     assert (kind, verbatim, produced_by) == ("transcript_file", True, "unknown")
-    assert confidence >= sources.CONFIRM_BELOW
+    assert confidence == 0.75
+    assert confidence < sources.CONFIRM_BELOW
 
 
 def test_classify_prose_low_confidence_needs_confirmation():
@@ -141,9 +147,87 @@ def test_classify_mixed_export_is_not_assumed_verbatim():
     assert confidence < sources.CONFIRM_BELOW
 
 
+def test_classify_one_summary_heading_over_a_transcript_asks():
+    """A Fathom style export: Key Takeaways above the transcript, one heading.
+
+    One generated section is enough. Structure cannot tell which sentences came
+    from a person, so the whole file is treated as a write up and confirmed.
+    """
+    kind, verbatim, _, confidence = sources.classify(
+        FIXTURES / "fathom-export.txt", fixture_text("fathom-export.txt")
+    )
+    assert (kind, verbatim) == ("third_party_summary", False)
+    assert confidence < sources.CONFIRM_BELOW
+
+
+def test_classify_transcript_then_summary_asks():
+    kind, verbatim, _, confidence = sources.classify(
+        FIXTURES / "otter-transcript-then-summary.txt",
+        fixture_text("otter-transcript-then-summary.txt"),
+    )
+    assert (kind, verbatim) == ("third_party_summary", False)
+    assert confidence < sources.CONFIRM_BELOW
+
+
+def test_classify_prose_named_srt_is_not_verbatim():
+    """A note saved with a subtitle extension is still a note.
+
+    The reviewer's scenario: a formulation note whose prose uses arrows, with a
+    stray numbered line above one. The old index-plus-arrow test called that
+    SubRip and filed the clinician's own thinking as somebody's words at full
+    confidence.
+    """
+    note = (
+        "Formulation, 25 July\n"
+        "\n"
+        "1\n"
+        "Trigger --> thought, then the spiral. He gets home, and it runs.\n"
+        "\n"
+        "The chain we mapped together: 6pm --> replaying --> tight chest --> no dinner.\n"
+        "Worth testing whether naming it at the desk shortens the evening.\n"
+    )
+    kind, verbatim, _, confidence = sources.classify(Path("formulation.srt"), note)
+    assert (kind, verbatim) == ("clinician_notes", False)
+    assert confidence < sources.CONFIRM_BELOW
+
+    # Harder: the same note quotes one real cue line from the recording, so the
+    # file does hold a timed cue. The index-plus-arrow pair is still prose, and
+    # only a full SubRip timestamp line under the index makes this a subtitle
+    # file.
+    with_quote = (
+        "Formulation, 25 July\n"
+        "\n"
+        "1\n"
+        "Trigger --> thought, then the spiral.\n"
+        "\n"
+        "He read this back to me off the recording:\n"
+        "00:12:04,500 --> 00:12:09,200\n"
+        "I just could not stop going over it.\n"
+        "\n"
+        "The chain we mapped: 6pm --> replaying --> tight chest.\n"
+    )
+    kind, verbatim, _, confidence = sources.classify(Path("formulation.srt"), with_quote)
+    assert (kind, verbatim) == ("clinician_notes", False)
+    assert confidence < sources.CONFIRM_BELOW
+
+
 # ---------------------------------------------------------------------------
 # Transcript parsing
 # ---------------------------------------------------------------------------
+
+
+def test_classify_cueless_vtt_header_is_not_verbatim():
+    """A WEBVTT header with no cues under it is a claim, not a transcript.
+
+    Nothing in the file was said by anyone, so it cannot be archived as words.
+    It is kept and confirmed rather than trusted at full confidence.
+    """
+    kind, verbatim, _, confidence = sources.classify(
+        Path("session.vtt"), "WEBVTT\n\nNOTE exported before the recording finished\n"
+    )
+    assert verbatim is False
+    assert kind == "clinician_notes"
+    assert confidence < sources.CONFIRM_BELOW
 
 
 def test_parse_vtt_timestamps_and_speakers():
@@ -187,6 +271,29 @@ def test_parse_otter_headers():
     assert turns[0]["speaker"] == "Dana Ruiz"
     assert turns[-1]["start"] == 171.0
     assert turns[-1]["speaker"] == "Bob Smith"
+    assert turns[-1]["text"].endswith("two hours of it.")
+    assert "otter.ai" not in turns[-1]["text"], "the export footer is not a spoken word"
+
+
+def test_parse_never_folds_a_summary_into_a_speakers_turn():
+    """The records failure this module exists to prevent, at parser level.
+
+    The file is a verbatim transcript with Otter's generated Summary stapled to
+    the end. Not one word of that summary may end up inside a turn, because a
+    turn is what later becomes an attributed quote.
+    """
+    text = fixture_text("otter-transcript-then-summary.txt")
+    _, turns = sources.parse_transcript(text)
+
+    assert len(turns) == 6
+    assert turns[-1]["text"] == (
+        "I did two thought records this week, and the second one actually helped."
+    )
+    generated = ("Bob described a difficult week", "appears to be the priority", "otter.ai")
+    for turn in turns:
+        for phrase in generated:
+            assert phrase not in turn["text"], f"generated prose leaked into a turn: {phrase}"
+    assert "priority" not in sources.render_turns(turns)
 
 
 def test_parse_prose_containing_an_arrow_is_still_prose():
@@ -256,6 +363,32 @@ def test_consent_regrant_writes_a_fresh_date(scratch_vault):
     vault_mod.set_recording_consent(CLIENT, True)
     fm, _ = vault_mod._split_frontmatter(profile.read_text(encoding="utf-8"))
     assert str(fm["recording_consent_date"]) == dt.date.today().isoformat()
+
+
+def test_set_consent_refuses_a_profile_it_cannot_parse(scratch_vault):
+    """A broken properties block must stop the write, not be written over.
+
+    _split_frontmatter reads unparseable YAML as an empty dict so a listing never
+    crashes. Merging one key into that and saving would delete the client's name,
+    diagnosis, and risk flags in a single call.
+    """
+    profile = scratch_vault / "Clients" / CLIENT / "_Profile.md"
+    broken = (
+        "---\n"
+        "type: client-profile\n"
+        "client_id: C-0001\n"
+        'name: "Bob Smith\n'  # unterminated quote, the classic hand-edit typo
+        "risk_flags: [SI-passive-2026-07-24]\n"
+        "---\n"
+        "\nBob is a mid-career professional.\n"
+    )
+    profile.write_text(broken, encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        vault_mod.set_recording_consent(CLIENT, True)
+
+    assert profile.read_text(encoding="utf-8") == broken, "the profile is untouched"
+    assert vault_mod.has_recording_consent(CLIENT) is False
 
 
 def test_ingest_requires_consent(scratch_vault, tmp_path):
@@ -459,6 +592,7 @@ def test_ingest_otter_verbatim_txt_enters_rung0_with_turns(consented_vault, tmp_
     raw = recstore.read_rung(CLIENT, source.id, 0)
     assert raw.startswith("[00:03] Dana Ruiz: Thanks for making the time today.")
     assert "[02:51] Bob Smith:" in raw
+    assert "otter.ai" not in raw, "the archive holds what was said, not the export footer"
 
 
 def test_declared_kind_overrides(consented_vault, tmp_path):
@@ -483,6 +617,55 @@ def test_declared_kind_must_be_a_real_kind(consented_vault, tmp_path):
     src.write_text("Some notes.\n", encoding="utf-8")
     with pytest.raises(sources.SourceError):
         sources.ingest_file(src, CLIENT, declared_kind="whatever_i_like")
+
+
+def test_declared_media_kind_on_a_document_is_refused(consented_vault, tmp_path):
+    """A document cannot be declared a recording.
+
+    The media kinds enter at a rung that expects audio, so accepting the claim
+    would file text where a transcript belongs and leave the source describing
+    something it does not hold.
+    """
+    src = tmp_path / "notes.md"
+    src.write_text(fixture_text("clinician-notes.md"), encoding="utf-8")
+    for kind in ("uploaded_audio", "uploaded_video", "live_recording"):
+        with pytest.raises(sources.SourceError):
+            sources.ingest_file(src, CLIENT, declared_kind=kind)
+    assert not recstore.recordings_root().exists(), "a refused claim writes nothing"
+
+
+def test_empty_transcript_file_is_refused(consented_vault, tmp_path):
+    """A 0-byte .vtt has no material in it, and says so rather than filing prose."""
+    empty = tmp_path / "session.vtt"
+    empty.write_bytes(b"")
+    with pytest.raises(sources.SourceError) as excinfo:
+        sources.ingest_file(empty, CLIENT)
+    assert "no readable text" in str(excinfo.value)
+
+    blank = tmp_path / "blank.srt"
+    blank.write_text("\n \n\n", encoding="utf-8")
+    with pytest.raises(sources.SourceError):
+        sources.ingest_file(blank, CLIENT)
+    assert not recstore.recordings_root().exists()
+
+
+def test_needs_confirmation_tracks_the_threshold(consented_vault, tmp_path):
+    """The 0.8 bar, wired end to end: 0.75 asks, 0.85 does not."""
+    assert sources.CONFIRM_BELOW == 0.8
+
+    asks = tmp_path / "plain-transcript.txt"
+    asks.write_text(fixture_text("plain-transcript.txt"), encoding="utf-8")
+    source, needs_confirmation = sources.ingest_file(asks, CLIENT)
+    assert sources.classify(asks, fixture_text("plain-transcript.txt"))[3] == 0.75
+    assert needs_confirmation is True
+    assert source.kind == "transcript_file", "stored with its best guess either way"
+
+    settled = tmp_path / "granola-note.md"
+    settled.write_text(fixture_text("granola-note.md"), encoding="utf-8")
+    source, needs_confirmation = sources.ingest_file(settled, CLIENT)
+    assert sources.classify(settled, fixture_text("granola-note.md"))[3] == 0.85
+    assert needs_confirmation is False
+    assert source.kind == "third_party_summary"
 
 
 def test_unreadable_extension_is_refused(consented_vault, tmp_path):
