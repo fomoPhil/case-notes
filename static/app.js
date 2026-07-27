@@ -49,8 +49,10 @@ const App = {
   sourcesLoading: false,
   sourcesError: null,
   sourcesTimer: null,      // Recordings tab poll handle, cleared in go()
+  sourcesPainted: null,    // fingerprint of the source list actually on screen
+  sourcesBusy: 0,          // requests the poll must not repaint over
   sourceStates: null,      // last seen job state per source, for announcements
-  uploads: [],             // in-flight and failed uploads, one line each
+  uploads: [],             // in-flight and failed uploads, one line each, per client
   // The record screen's evidence pick: which sources are ready for this client,
   // and the one the clinician ticked. Fetched once when the screen opens.
   debriefFor: null,
@@ -1099,7 +1101,15 @@ function renderRecord() {
   // with a client just out of the room.
   ensureDebriefSources(c.client_id);
   const evidence = newestReadySource();
-  if (evidence && !down) {
+  const showPick = !!evidence && !down;
+  // The checkbox on screen is the only thing that decides what gets attached.
+  // Tick one recording, walk away while a second finishes, and the row that
+  // comes back names the newer one: a pick still held from the older one would
+  // ride along invisibly under a label for a different session.
+  if (App.debriefSourceId && (!showPick || App.debriefSourceId !== evidence.source_id)) {
+    App.debriefSourceId = null;
+  }
+  if (showPick) {
     const pickId = uid("ev");
     const row = h(`<label class="ev-pick" for="${pickId}">
       <input type="checkbox" id="${pickId}" ${App.debriefSourceId === evidence.source_id ? "checked" : ""} />
@@ -2139,7 +2149,11 @@ async function openClient(c) {
   App.sourcesFor = null;
   App.sourcesError = null;
   App.sourceStates = null;
-  App.uploads = [];
+  App.sourcesPainted = null;
+  // Upload lines survive the trip. Only another client's finished lines are
+  // dropped: a failure is news the clinician has not read yet, and an upload
+  // still running owns its line until it is done.
+  App.uploads = (App.uploads || []).filter(u => u.client_id === c.client_id || u.state !== "done");
   render();
   try {
     const r = await fetch("/api/clients/" + encodeURIComponent(c.client_id));
@@ -2487,40 +2501,110 @@ function announceSourceChanges(rows) {
   if (said.length) announce(said.join(" "));
 }
 
+// Whose record is open. A reply about anyone else is not this screen's news.
+function currentRecordClientId() {
+  return String((App.client && App.client.client_id)
+    || (App.recordData && App.recordData.client_id) || "");
+}
+
+// True while this client's Recordings tab is the thing on screen.
+function onSourcesTab(clientId) {
+  return App.state === "clientRecord"
+    && App.recordTab === "sources"
+    && currentRecordClientId() === String(clientId);
+}
+
 // quiet:true is a poll. A poll that fails keeps what is on screen rather than
 // replacing a working list with a banner over a blip.
 async function refreshSources(clientId, opts) {
   const quiet = !!(opts && opts.quiet);
+  let rows = null;
+  let failed = null;
   try {
     const r = await fetch("/api/sources?client_id=" + encodeURIComponent(clientId));
     if (!r.ok) throw await failure(r);
     const data = await r.json();
-    const rows = (data && data.sources) || [];
+    rows = (data && data.sources) || [];
+  } catch (e) {
+    failed = errOf(e);
+  }
+  // A slow reply for a client who has since been closed is dropped whole:
+  // nothing written, nothing announced. Otherwise one person's recordings
+  // land in the next person's record, which is the worst bug this screen
+  // could have.
+  if (currentRecordClientId() !== String(clientId)) return false;
+  if (failed) {
+    if (quiet) return false;
+    App.sources = [];
+    App.sourcesError = failed;
+  } else {
     App.sources = rows;
     App.sourcesError = null;
     announceSourceChanges(rows);
-  } catch (e) {
-    if (quiet) return;
-    App.sources = [];
-    App.sourcesError = errOf(e);
+  }
+  // Set on both paths, so a failure shows its banner instead of refetching
+  // forever behind it.
+  App.sourcesFor = String(clientId);
+  return true;
+}
+
+// Everything the tab draws from a source, in one string. Two equal fingerprints
+// mean a repaint would put back exactly what is already there.
+function sourcesFingerprint(rows) {
+  return (rows || []).map(row => {
+    const job = row.job || {};
+    return [
+      row.source_id,
+      row.needs_confirmation ? 1 : 0,
+      row.has_audio ? 1 : 0,
+      (row.rungs || []).join("."),
+      job.state || "", job.stage || "", job.done || 0, job.total || 0, job.error || "",
+    ].join("~");
+  }).join("|");
+}
+
+// A repaint in the middle of something is a repaint that takes the thing away:
+// an open menu closes, a button mid-request comes back enabled and clickable a
+// second time, and focus lands on the body. The tick waits instead.
+function sourcesInteractionLive() {
+  if ((App.sourcesBusy || 0) > 0) return true;
+  return !!document.querySelector(".src-menu-wrap .overflow-menu");
+}
+
+// Wrap a request that the poll must not repaint over.
+async function withSourcesBusy(fn) {
+  App.sourcesBusy = (App.sourcesBusy || 0) + 1;
+  try {
+    return await fn();
   } finally {
-    // Set either way, so a failure shows its banner instead of refetching
-    // forever behind it.
-    App.sourcesFor = clientId;
+    App.sourcesBusy = Math.max(0, (App.sourcesBusy || 1) - 1);
   }
 }
 
-function scheduleSourcesPoll(clientId) {
+// pending:true keeps the timer alive for a change that is waiting to be
+// painted, even once every job has finished. Without it, a job that completes
+// while a menu is open would leave its news stranded until the next render.
+function scheduleSourcesPoll(clientId, opts) {
   clearSourcesTimer();
-  if (!(App.sources || []).some(sourceJobActive)) return;
+  const pending = !!(opts && opts.pending);
+  if (!pending && !(App.sources || []).some(sourceJobActive)) return;
   App.sourcesTimer = setTimeout(async () => {
     App.sourcesTimer = null;
     // The screen may have moved on between ticks. Nothing here repaints another
     // screen, and nothing schedules the next tick from anywhere but a render of
-    // this tab.
-    if (App.state !== "clientRecord" || App.recordTab !== "sources") return;
+    // this tab or from the tick itself when it decides not to paint.
+    if (!onSourcesTab(clientId)) return;
     await refreshSources(clientId, { quiet: true });
-    if (App.state === "clientRecord" && App.recordTab === "sources") render();
+    if (!onSourcesTab(clientId)) return;
+    // App.sourcesPainted holds what is actually on screen, never the last
+    // response, so a repaint that has to wait is not lost.
+    const changed = sourcesFingerprint(App.sources) !== App.sourcesPainted;
+    if (!changed) { scheduleSourcesPoll(clientId); return; }
+    // The clinician is in the middle of something: a repaint would close their
+    // menu, re-enable a button mid request, and drop their focus. Wait, and
+    // paint on the first tick that arrives with nothing in the way.
+    if (sourcesInteractionLive()) { scheduleSourcesPoll(clientId, { pending: true }); return; }
+    render();
   }, SOURCES_POLL_MS);
 }
 
@@ -2540,9 +2624,10 @@ function renderSourcesTab(d) {
       App.sourcesLoading = true;
       refreshSources(cid).then(() => {
         App.sourcesLoading = false;
-        if (App.state === "clientRecord" && App.recordTab === "sources") render();
+        if (onSourcesTab(cid)) render();
       });
     }
+    App.sourcesPainted = null;
     wrap.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Looking for session material...</div></div>`));
     el.appendChild(wrap);
     return;
@@ -2552,8 +2637,20 @@ function renderSourcesTab(d) {
   rows.filter(r => r.needs_confirmation).forEach(r => wrap.appendChild(buildConfirmBanner(r, cid)));
 
   if (App.sourcesError) {
-    // "Nothing here yet" would be a lie when the list is what failed.
-    wrap.appendChild(errorBanner(App.sourcesError));
+    // "Nothing here yet" would be a lie when the list is what failed. A dead
+    // end needs a way out, so the banner carries the retry rather than making
+    // the clinician close the record and open it again.
+    const box = errorBanner(App.sourcesError);
+    const bar = h(`<div class="dead-end-actions"></div>`);
+    const again = h(`<button type="button" class="btn btn-primary btn-compact">Try again</button>`);
+    again.onclick = () => {
+      App.sourcesError = null;
+      App.sourcesFor = null;
+      render();
+    };
+    bar.appendChild(again);
+    box.appendChild(bar);
+    wrap.appendChild(box);
   } else if (!rows.length) {
     wrap.appendChild(emptyState({
       title: "No session material yet",
@@ -2568,6 +2665,9 @@ function renderSourcesTab(d) {
   }
 
   el.appendChild(wrap);
+  // What is now actually on screen. The poll compares against this, never
+  // against the last response, so a repaint it had to defer still happens.
+  App.sourcesPainted = sourcesFingerprint(rows);
   scheduleSourcesPoll(cid);
 }
 
@@ -2599,11 +2699,11 @@ async function setRecordingConsent(clientId, granted, btn) {
   const original = btn ? btn.textContent : "";
   if (btn) { btn.disabled = true; btn.textContent = "Saving..."; }
   try {
-    const r = await fetch("/api/clients/" + encodeURIComponent(clientId) + "/recording-consent", {
+    const r = await withSourcesBusy(() => fetch("/api/clients/" + encodeURIComponent(clientId) + "/recording-consent", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ granted: !!granted }),
-    });
+    }));
     if (!r.ok) throw await failure(r);
     const data = await r.json();
     // Patch the record in place rather than reopening the client: reopening
@@ -2652,19 +2752,28 @@ function buildSourceDrop(clientId, granted) {
   zone.appendChild(input);
   zone.appendChild(h(`<div class="srcdrop-accepts">${esc(SOURCE_ACCEPT_TEXT)}</div>`));
 
-  if (granted) {
-    zone.addEventListener("dragover", (e) => { e.preventDefault(); zone.classList.add("drop-active"); });
-    zone.addEventListener("dragleave", () => zone.classList.remove("drop-active"));
-    zone.addEventListener("drop", (e) => {
-      e.preventDefault();
-      zone.classList.remove("drop-active");
-      const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
-      if (files.length) uploadSources(files, clientId);
-    });
-  }
+  zone.addEventListener("dragover", (e) => {
+    // Held on both paths. Without it the browser takes the drop itself and
+    // navigates the whole tab to the file, which loses the record entirely.
+    e.preventDefault();
+    if (granted) zone.classList.add("drop-active");
+  });
+  zone.addEventListener("dragleave", () => zone.classList.remove("drop-active"));
+  zone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    zone.classList.remove("drop-active");
+    const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+    if (!granted) {
+      // Nothing is uploaded and nothing is lost: the reason is said instead.
+      if (files.length) { toast(CONSENT_BLOCKED, null, true); }
+      return;
+    }
+    if (files.length) uploadSources(files, clientId);
+  });
 
   const lines = h(`<div class="src-uploads"></div>`);
-  (App.uploads || []).forEach(u => lines.appendChild(buildUploadLine(u)));
+  // One client's upload lines never appear on another's tab.
+  (App.uploads || []).filter(u => u.client_id === clientId).forEach(u => lines.appendChild(buildUploadLine(u)));
   zone.appendChild(lines);
   return zone;
 }
@@ -2732,8 +2841,13 @@ function uploadSourceFile(file, clientId, onProgress) {
 // model server means they would queue anyway, and a serial upload keeps the
 // failure of one file from taking the others with it.
 async function uploadSources(files, clientId) {
-  const batch = files.map(f => ({ id: uid("upl"), name: f.name || "file", pct: 0, state: "uploading", error: "" }));
-  App.uploads = (App.uploads || []).filter(u => u.state === "failed").concat(batch);
+  // Every line carries the client it belongs to, so a batch that is still
+  // running when the clinician opens somebody else keeps its own lines to
+  // itself and finds them again on the way back.
+  const batch = files.map(f => ({
+    id: uid("upl"), client_id: clientId, name: f.name || "file", pct: 0, state: "uploading", error: "",
+  }));
+  App.uploads = (App.uploads || []).concat(batch);
   render();
   announce(files.length === 1 ? "Uploading one file." : `Uploading ${files.length} files.`);
 
@@ -2759,12 +2873,14 @@ async function uploadSources(files, clientId) {
   const failed = batch.filter(u => u.state === "failed").length;
   const brought = batch.length - failed;
   // The cards below are the real confirmation, so a finished line has done its
-  // job. A failed one stays put, with its reason, until it is dismissed.
-  App.uploads = (App.uploads || []).filter(u => u.state === "failed");
+  // job. Only this batch's finished lines go: a failed one stays put with its
+  // reason, and another client's batch is none of this one's business.
+  const finished = new Set(batch.filter(u => u.state === "done").map(u => u.id));
+  App.uploads = (App.uploads || []).filter(u => !finished.has(u.id));
   await refreshSources(clientId);
   if (brought) announce(brought === 1 ? "One file was brought in." : `${brought} files were brought in.`);
   if (failed) announce(failed === 1 ? "One file could not be brought in." : `${failed} files could not be brought in.`, true);
-  if (App.state === "clientRecord" && App.recordTab === "sources") render();
+  if (onSourcesTab(clientId)) render();
 }
 
 function openPasteSheet(clientId) {
@@ -2807,11 +2923,11 @@ function openPasteSheet(clientId) {
     const original = save.textContent;
     save.textContent = "Bringing it in...";
     try {
-      const r = await fetch("/api/sources/paste", {
+      const r = await withSourcesBusy(() => fetch("/api/sources/paste", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ client_id: clientId, text, kind: (picked && picked.value) || "pasted_transcript" }),
-      });
+      }));
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
         showError(apiErr(data, r.status));
@@ -2822,7 +2938,7 @@ function openPasteSheet(clientId) {
       await refreshSources(clientId);
       announce("The pasted text was brought in.");
       if (data && data.job_error) toast(String(data.job_error), null, true);
-      if (App.state === "clientRecord" && App.recordTab === "sources") render();
+      if (onSourcesTab(clientId)) render();
     } catch (e) {
       showError("Debrief could not reach its own server. " + SERVER_ERROR_FIX);
       save.disabled = false; save.textContent = original;
@@ -2867,22 +2983,24 @@ function buildConfirmBanner(row, clientId) {
 
 async function confirmSource(row, clientId, verbatim, buttons) {
   try {
-    const r = await fetch("/api/sources/" + encodeURIComponent(row.source_id) + "/confirm", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        client_id: clientId,
-        verbatim: !!verbatim,
-        produced_by: String(row.produced_by || "unknown"),
-      }),
+    await withSourcesBusy(async () => {
+      const r = await fetch("/api/sources/" + encodeURIComponent(row.source_id) + "/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_id: clientId,
+          verbatim: !!verbatim,
+          produced_by: String(row.produced_by || "unknown"),
+        }),
+      });
+      if (!r.ok) throw await failure(r);
+      await r.json().catch(() => ({}));
+      // Re-read rather than patch: the answer changes the kind, the rung, and
+      // whether a job is now queued, and the banner has to be gone afterwards.
+      await refreshSources(clientId);
     });
-    if (!r.ok) throw await failure(r);
-    await r.json().catch(() => ({}));
-    // Re-read rather than patch: the answer changes the kind, the rung, and
-    // whether a job is now queued, and the banner has to be gone afterwards.
-    await refreshSources(clientId);
     announce(verbatim ? "Marked as word for word. Debrief is reading it now." : "Marked as an AI summary. Debrief will never quote from it.");
-    if (App.state === "clientRecord" && App.recordTab === "sources") render();
+    if (onSourcesTab(clientId)) render();
   } catch (e) {
     buttons.forEach(b => { b.disabled = false; });
     toastError(e);
@@ -3052,12 +3170,14 @@ async function deleteSource(row, clientId, audioOnly) {
     + "?client_id=" + encodeURIComponent(clientId)
     + (audioOnly ? "&audio_only=true" : "");
   try {
-    const r = await fetch(url, { method: "DELETE" });
-    if (!r.ok) throw await failure(r);
-    await r.json().catch(() => ({}));
-    await refreshSources(clientId);
+    await withSourcesBusy(async () => {
+      const r = await fetch(url, { method: "DELETE" });
+      if (!r.ok) throw await failure(r);
+      await r.json().catch(() => ({}));
+      await refreshSources(clientId);
+    });
     toast(audioOnly ? "Audio deleted. The transcript and summary were kept." : "Moved to Trash.");
-    if (App.state === "clientRecord" && App.recordTab === "sources") render();
+    if (onSourcesTab(clientId)) render();
   } catch (e) { toastError(e); }
 }
 
