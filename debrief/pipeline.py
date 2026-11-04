@@ -1039,7 +1039,11 @@ def execute_plan(plan: dict, verify: bool = True) -> dict:
         entry = dict(a)
         if a.get("enabled") is False:
             entry["status"] = "skipped"
-            entry["detail"] = "Unchecked by the therapist."
+            undated = a.get("type") == "schedule_followup" and not a.get("resolved_datetime")
+            entry["detail"] = (
+                "No resolvable date in the spoken request." if undated
+                else "Unchecked by the therapist."
+            )
             result_actions.append(entry)
             continue
 

@@ -148,3 +148,15 @@ def test_stale_recordings_are_swept(monkeypatch, tmp_path):
     fresh = app_module._store_original_audio(b"new")
     assert not old_path.exists()
     assert (tmp_path / "store" / f"{fresh}.webm").exists()
+
+
+def test_an_undated_followup_says_why_it_was_skipped(env):
+    tc, _, calls = env
+    plan = _plan(actions=[{"type": "schedule_followup", "datetime_utterance": "soon",
+                           "resolved_datetime": None, "enabled": False}])
+    r = tc.post("/api/execute", json=plan)
+    assert r.status_code == 200
+    action = r.json()["actions"][0]
+    assert action["status"] == "skipped"
+    assert "date" in action["detail"]
+    assert calls["calendar"] == []
