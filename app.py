@@ -1384,7 +1384,7 @@ async def api_import_compile(request: Request) -> JSONResponse:
                 detail="Cloud compile requires explicit consent and an API key.",
             )
         try:
-            out = await run_in_threadpool(compiler.compile_gemini, doc_text, api_key)
+            out = await run_in_threadpool(compiler.compile_gemini, doc_text, api_key, profession)
         except compiler.CompilerError as exc:
             # The key is already scrubbed inside CompilerError; return a fallback
             # hint so the UI can offer to compile locally instead.
@@ -1492,6 +1492,12 @@ async def api_import_save(request: Request) -> JSONResponse:
             status_code=400, detail="prompt_layer is too long (50000 char max)."
         )
     set_active = bool(body.get("set_active"))
+
+    # Same rule as the compiler: under a clinical profession the risk section
+    # is not optional, whatever the browser sent.
+    profession = settings_store.load().get("profession", "therapy")
+    if vocab.get_pack(profession).get("clinical"):
+        spec = {**spec, "clinical": True, "risk_section": True}
 
     def _persist() -> dict:
         saved = formats.save_custom(spec)

@@ -30,7 +30,7 @@ import json
 
 import requests
 
-from . import config, doctext, extract as extract_mod, formats, llm
+from . import config, doctext, extract as extract_mod, formats, llm, vocab
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -177,7 +177,10 @@ def _finalize_spec(raw: dict, profession: str = "therapy") -> dict:
     """
     raw = raw or {}
     name = str(raw.get("name") or "").strip() or "Imported format"
-    clinical = bool(raw.get("clinical", False))
+    # A clinical profession's note always carries the risk section. The model's
+    # guess is not enough: a template with no Risk heading would otherwise
+    # switch risk documentation off for every later note.
+    clinical = bool(raw.get("clinical", False)) or vocab.get_pack(profession).get("clinical", False)
     style_rules = str(raw.get("style_rules") or "").strip()
 
     cleaned: list[dict] = []
@@ -277,7 +280,7 @@ def _scrub(text: str, secret: str) -> str:
     return (text or "").replace(secret, "[redacted]")
 
 
-def compile_gemini(doc_text: str, api_key: str) -> dict:
+def compile_gemini(doc_text: str, api_key: str, profession: str = "therapy") -> dict:
     """Derive a candidate FormatSpec (plus a prompt layer) using Google Gemini.
 
     Single-use: the api_key is used only inside this call, never persisted, never
@@ -340,7 +343,7 @@ def compile_gemini(doc_text: str, api_key: str) -> dict:
     if not isinstance(raw, dict):
         raise CompilerError("Gemini returned an unexpected shape")
 
-    spec = _finalize_spec(raw, "therapy")
+    spec = _finalize_spec(raw, profession)
     prompt_layer = str(raw.get("compiled_prompt_layer") or "").strip()
     return {"spec": spec, "prompt_layer": prompt_layer}
 

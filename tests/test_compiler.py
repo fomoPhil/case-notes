@@ -131,7 +131,24 @@ def test_compile_local_slugifies_and_drops_reserved(store, monkeypatch):
     keys = [s["key"] for s in spec["sections"]]
     assert keys == ["presenting_concern", "history"]  # reserved + dup gone
     assert spec["id"] == "intake-summary"
-    assert spec["risk_section"] is False  # derived from clinical=False
+    # Under therapy the risk section stays on even when the model said not
+    # clinical: a template with no Risk heading must not switch it off.
+    assert spec["clinical"] is True
+    assert spec["risk_section"] is True
+
+
+def test_compile_local_non_clinical_profession_keeps_models_answer(store, monkeypatch):
+    from debrief import llm
+
+    raw = {
+        "name": "Coaching Recap",
+        "clinical": False,
+        "style_rules": "Plain prose.",
+        "sections": [{"key": "wins", "heading": "Wins", "description": "x"}],
+    }
+    monkeypatch.setattr(llm, "chat", _canned(raw))
+    spec = compiler.compile_local("some document text", "coaching")
+    assert spec["risk_section"] is False
 
 
 def test_compile_local_risk_section_follows_clinical(store, monkeypatch):
