@@ -219,9 +219,33 @@ function fmtDateTimeDisplay(d) {
 function isBookable(a) {
   return a.type === "schedule_followup" && !!a.resolved_datetime && a.enabled !== false;
 }
+// Quoted words in the note that are not in the dictation. The model is told to
+// quote only what was said; this is the check, and it changes nothing.
+function normQuote(t) {
+  return String(t || "").toLowerCase().replace(/[“”"‘’]/g, "").replace(/[\s]+/g, " ").replace(/^[\s.,;:!?'-]+|[\s.,;:!?'-]+$/g, "");
+}
+function ungroundedQuotes(plan) {
+  const said = normQuote((plan && (plan.corrected_transcript || plan.transcript)) || "").replace(/[.,;:!?]/g, "");
+  if (!said) return [];
+  const note = (plan && plan.note) || {};
+  const keys = ((plan.session_meta && plan.session_meta.sections) || []).map(s => s.key);
+  const texts = (keys.length ? keys : ["data", "assessment", "plan"]).map(k => note[k]).filter(Boolean);
+  const found = new Set(note.client_quotes || []);
+  texts.forEach(t => (String(t).match(/"([^"\n]+)"|“([^”\n]+)”/g) || []).forEach(q => found.add(q)));
+  const out = [];
+  found.forEach(q => {
+    const n = normQuote(q).replace(/[.,;:!?]/g, "");
+    if (n && !said.includes(n) && !out.includes(q)) out.push(String(q).replace(/^[“"]|[”"]$/g, ""));
+  });
+  return out;
+}
 function computeNudges(plan) {
   const acts = (plan && plan.actions) || [];
   const nudges = [];
+  const loose = ungroundedQuotes(plan);
+  if (loose.length) {
+    nudges.push({ id: "quotes", text: "Quoted in the note but not in what you said: " + loose.map(q => `"${q}"`).join("; "), sub: "Check the wording before you approve. Nothing was changed." });
+  }
   // The add-an-appointment row shows whenever nothing ticked will actually be
   // booked: no follow-up at all, one whose date did not resolve, or one the
   // clinician unticked because the date was wrong.
