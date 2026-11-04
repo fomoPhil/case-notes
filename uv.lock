@@ -425,18 +425,19 @@ dependencies = [
     { name = "dateparser" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "markdown" },
     { name = "mlx-whisper", marker = "sys_platform == 'darwin'" },
     { name = "parakeet-mlx", marker = "sys_platform == 'darwin'" },
     { name = "pydantic" },
     { name = "python-dateutil" },
     { name = "python-multipart" },
+    { name = "pyyaml" },
     { name = "requests" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.optional-dependencies]
 pdf = [
-    { name = "markdown" },
     { name = "weasyprint" },
 ]
 
@@ -450,12 +451,13 @@ requires-dist = [
     { name = "dateparser", specifier = ">=1.2,<2" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "httpx", specifier = ">=0.27,<1" },
-    { name = "markdown", marker = "extra == 'pdf'" },
+    { name = "markdown", specifier = ">=3.5,<4" },
     { name = "mlx-whisper", marker = "sys_platform == 'darwin'", specifier = ">=0.4,<1" },
     { name = "parakeet-mlx", marker = "sys_platform == 'darwin'", specifier = ">=0.3" },
     { name = "pydantic", specifier = ">=2.9,<3" },
     { name = "python-dateutil", specifier = ">=2.9,<3" },
     { name = "python-multipart", specifier = ">=0.0.12,<1" },
+    { name = "pyyaml", specifier = ">=6,<7" },
     { name = "requests", specifier = ">=2.32,<3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1" },
     { name = "weasyprint", marker = "extra == 'pdf'" },
