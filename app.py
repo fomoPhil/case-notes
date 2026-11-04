@@ -531,10 +531,24 @@ async def api_debrief(
     return JSONResponse(plan)
 
 
+# Plans already approved, by their audio token. Calendar and Mail run before the
+# note is written, so approving the same plan twice would book twice.
+_EXECUTED_TOKENS: set[str] = set()
+
+_ALREADY_APPROVED_FIX = (
+    "This plan was already approved once. Check Calendar, Mail, and the "
+    "client's Sessions folder to see what was done before doing any of it again."
+)
+
+
 @app.post("/api/execute")
 async def api_execute(request: Request) -> JSONResponse:
-    """Execute an approved plan: actions + note write + verification."""
-    _require_model_ready()
+    """Execute an approved plan: actions + note write + verification.
+
+    No model readiness gate: filing a note the clinician has already reviewed
+    needs no model. The summary update and the screen check fall back on their
+    own when the model is gone.
+    """
     try:
         plan = await request.json()
     except Exception as exc:
@@ -549,6 +563,14 @@ async def api_execute(request: Request) -> JSONResponse:
     verify = bool(settings_store.load().get("features", {}).get("verify", True))
     if plan.get("verify") is False:
         verify = False
+    token = plan.get("audio_token")
+    if isinstance(token, str) and token:
+        if token in _EXECUTED_TOKENS:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "Plan already approved.", "fix": _ALREADY_APPROVED_FIX},
+            )
+        _EXECUTED_TOKENS.add(token)
     # Resolve the stored original upload (never trust a client-sent path).
     plan.pop("audio_path", None)
     stored = _pop_original_audio(plan.get("audio_token"))
@@ -567,10 +589,9 @@ async def api_execute(request: Request) -> JSONResponse:
             detail={
                 "error": f"Execution failed: {exc}",
                 "fix": (
-                    "Debrief could not finish filing that note. Check that LM "
-                    "Studio is running and your vault folder is writable, then "
-                    "approve the plan again. Check the client's Sessions folder "
-                    "first in case a partial note was already filed."
+                    "Debrief could not finish filing that note. Some of it may "
+                    "already be done: check Calendar, Mail, and the client's "
+                    "Sessions folder, then finish by hand what is missing."
                 ),
             },
         )

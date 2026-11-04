@@ -99,3 +99,28 @@ def test_debrief_for_unknown_client_is_refused(env):
     tc, _, _ = env
     r = tc.post("/api/debrief", data={"client_id": "C-9999"}, files={"audio": ("a.webm", b"x")})
     assert r.status_code == 404
+
+
+def test_the_same_plan_cannot_be_approved_twice(env):
+    tc, _, calls = env
+    plan = _plan(audio_token="ab" * 16)
+    assert tc.post("/api/execute", json=plan).status_code == 200
+    again = tc.post("/api/execute", json=plan)
+    assert again.status_code == 409
+    assert "already approved" in again.json()["detail"]["fix"]
+    assert len(calls["mail"]) == 1
+
+
+def test_a_reviewed_note_files_with_the_model_gone(env, monkeypatch):
+    tc, vault_dir, _ = env
+
+    def model_down():
+        return [{"key": "model_server", "name": "Local AI", "ok": False,
+                 "detail": "down", "fix": "open LM Studio", "hard": True}]
+
+    monkeypatch.setattr(app_module.doctor, "run_checks", model_down)
+    app_module._doctor_cache["checks"] = None
+    r = tc.post("/api/execute", json=_plan())
+    assert r.status_code == 200, r.text
+    assert r.json()["note_path"]
+    assert list((vault_dir / "Clients" / "C-0001" / "Sessions").glob("2026-11-03-session*.md"))
