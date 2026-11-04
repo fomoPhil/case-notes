@@ -18,7 +18,9 @@ Exit code is 0 only if the pass rate is >= the threshold in cases.json (0.85).
 from __future__ import annotations
 
 import json
+import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -28,7 +30,15 @@ REPO_ROOT = EVAL_DIR.parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# Evals run against a throwaway vault seeded with the fictional demo clients,
+# never against DebriefVault/, so results are the same on every Mac and no real
+# record is read. Set DEBRIEF_VAULT_DIR to point at a vault on purpose.
+if not os.environ.get("DEBRIEF_VAULT_DIR"):
+    os.environ["DEBRIEF_VAULT_DIR"] = tempfile.mkdtemp(prefix="debrief_eval_vault_")
+
 from debrief import stt, vault  # noqa: E402
+
+vault.ensure_vault()
 
 CASES_PATH = EVAL_DIR / "cases.json"
 RESULTS_JSON = EVAL_DIR / "results.json"
