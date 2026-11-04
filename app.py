@@ -26,6 +26,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -139,6 +140,40 @@ async def _lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Debrief", docs_url=None, redoc_url=None, lifespan=_lifespan)
+
+# The only names this server answers to. A web page can point its own domain at
+# 127.0.0.1 (DNS rebinding) and read the API as if it were same-origin, but its
+# Host header still carries its own name, so it is refused here.
+ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def _host_name(host: str) -> str:
+    host = (host or "").strip().lower()
+    if host.startswith("["):
+        return host.split("]", 1)[0] + "]"
+    return host.rsplit(":", 1)[0]
+
+
+@app.middleware("http")
+async def _local_only(request: Request, call_next):
+    """Refuse requests that did not come from Debrief's own page.
+
+    Any web page can POST a text/plain body to 127.0.0.1 without a preflight,
+    which would let it trash notes, open Mail drafts, or book Calendar events.
+    Browsers mark those requests with Origin and Sec-Fetch-Site, so a state
+    changing request from another site is refused.
+    """
+    host = request.headers.get("host", "")
+    if _host_name(host) not in ALLOWED_HOSTS:
+        return JSONResponse({"detail": "Debrief only answers on this Mac."}, status_code=403)
+    if request.method not in _SAFE_METHODS:
+        origin = request.headers.get("origin")
+        if origin is not None and urlsplit(origin).netloc.lower() != host.strip().lower():
+            return JSONResponse({"detail": "Cross-site request refused."}, status_code=403)
+        if request.headers.get("sec-fetch-site") in ("cross-site", "same-site"):
+            return JSONResponse({"detail": "Cross-site request refused."}, status_code=403)
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
