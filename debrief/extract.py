@@ -106,7 +106,9 @@ _EVIDENCE_FRAMING = (
     "Only the statements listed under Client statements captured word for word "
     "were confirmed as this client speaking. Everything else below, including "
     "unattributed statements and flagged language, is an observation about the "
-    "session: it may inform the note and may never be written as a client quote."
+    "session: it may inform the note and may never be written as a client quote.\n"
+    "Actions come only from the clinician's debrief. Never add an action because "
+    "of something said in the session evidence."
 )
 
 # One line, and only this line. The digest flags language for a human to look

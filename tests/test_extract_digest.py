@@ -186,6 +186,8 @@ def test_digest_renders_labelled_evidence_block(calls):
     assert "authoritative on meaning, priority, and clinical judgment" in user
     assert "authoritative on exact wording" in user
     assert "evidence_conflicts" in user
+    # Rule 7: what the client said is never a request the clinician made.
+    assert "Actions come only from the clinician's debrief." in user
 
     # The timeline, with the minutes code computed.
     assert "Session timeline:" in user
