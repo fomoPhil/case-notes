@@ -156,3 +156,32 @@ def test_ollama_gemma_reported_when_lmstudio_lacks_it(monkeypatch, tmp_path):
     gemma = by["model_loaded"]
     assert gemma["ok"] is False
     assert "Ollama" in gemma["detail"]
+
+
+def test_ollama_alone_does_not_claim_lm_studio_is_running(monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor.config, "VAULT_DIR", tmp_path / "vault")
+    monkeypatch.setattr(
+        doctor.models, "detect_servers",
+        lambda: _servers(lm_up=False, lm_gemma=None, ol_up=True, ol_gemma="gemma3:12b"),
+    )
+    monkeypatch.setattr(doctor.models, "pick_gemma", lambda: None)
+    by = _by_key(doctor.run_checks())
+    assert by["model_server"]["ok"] is False
+    assert "Ollama" in by["model_loaded"]["detail"]
+
+
+def test_loaded_model_is_named(monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor.config, "VAULT_DIR", tmp_path / "vault")
+    monkeypatch.setattr(doctor.models, "detect_servers", lambda: _servers())
+    monkeypatch.setattr(
+        doctor.models, "pick_gemma",
+        lambda: {"base_url": "http://localhost:1234/v1", "model": "google/gemma-4-12b-qat"},
+    )
+    by = _by_key(doctor.run_checks())
+    assert "google/gemma-4-12b-qat" in by["model_loaded"]["detail"]
+
+
+def test_probe_uses_the_configured_model_url():
+    from debrief import config, models
+
+    assert models._LMSTUDIO_BASE == config.MODEL_BASE_URL

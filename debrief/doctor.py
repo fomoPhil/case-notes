@@ -50,11 +50,10 @@ def run_checks() -> list[dict]:
 
     # --- Model server + gemma model (one probe, two checks) -------------------
     servers = models.detect_servers()
-    reachable = [s for s in servers if s["reachable"]]
     lmstudio = next((s for s in servers if s["provider"] == "lmstudio"), None)
     gemma = models.pick_gemma()
 
-    if reachable:
+    if lmstudio and lmstudio["reachable"]:
         checks.append({
             "key": "model_server",
             "name": "Local AI",
@@ -79,7 +78,7 @@ def run_checks() -> list[dict]:
             "key": "model_loaded",
             "name": "AI model",
             "ok": True,
-            "detail": "The Gemma model is loaded and ready.",
+            "detail": f"{gemma['model']} is loaded and ready.",
             "fix": "",
             "hard": True,
         })

@@ -18,7 +18,7 @@ const App = {
   // Records UI
   nav: "home",            // sidebar highlight: home | client:<id> | lib:worksheets | lib:reference | trash
   recordData: null,        // GET /api/clients/{id} payload
-  recordTab: "sessions",  // sessions | profile | documents
+  recordTab: "sessions",  // sessions | profile | documents | sources
   doc: null,               // current document view payload
   docCrumb: null,          // breadcrumb context for the document view
   library: null,           // GET /api/library payload
@@ -41,6 +41,29 @@ const App = {
   docError: null,
   recordError: null,
   statusTimer: null,       // readiness poll handle
+  // Session material (the Recordings tab). sources is the last GET /api/sources
+  // list, sourcesFor the client it belongs to, so switching client never shows
+  // the previous person's recordings for a frame.
+  sources: null,
+  sourcesFor: null,
+  sourcesLoading: false,
+  sourcesError: null,
+  sourcesTimer: null,      // Recordings tab poll handle, cleared in go()
+  sourcesPainted: null,    // fingerprint of the source list actually on screen
+  sourcesBusy: 0,          // requests the poll must not repaint over
+  sourceStates: null,      // last seen job state per source, for announcements
+  uploads: [],             // in-flight and failed uploads, one line each, per client
+  // The record screen's evidence pick: which sources are ready for this client,
+  // and the one the clinician ticked. Fetched once when the screen opens.
+  debriefFor: null,
+  debriefClient: null,
+  debriefSources: [],
+  debriefSourceId: null,
+  procMode: null,          // "draft" when the processing screen is drafting
+  sourceUploadKind: "session", // session | reference, the upload zone's choice
+  devTimer: null,          // developer panel poll handle
+  devPainted: null,        // fingerprint of what the developer panel shows
+  settingsVaultAsked: false, // readiness refetched once for the vault path
 };
 
 // Mirror of settings_store DEFAULTS: used when /api/settings has not loaded yet
@@ -50,6 +73,7 @@ const SETTINGS_DEFAULTS = {
   note_format: "DAP",
   features: { calendar: true, email: true, verify: true, assistant: true },
   stt_engine: "parakeet",
+  recording_retention_days: 0,
 };
 
 let el = null;             // reassigned each render to the active container
@@ -192,11 +216,47 @@ function fmtDateTimeDisplay(d) {
 
 // Pure, deterministic gap detection over the plan JSON. No LLM involved.
 // Returns a list of nudge descriptors; rendering decides how each looks.
+function isBookable(a) {
+  return a.type === "schedule_followup" && !!a.resolved_datetime && a.enabled !== false;
+}
+// Quoted words in the note that are not in the dictation. The model is told to
+// quote only what was said; this is the check, and it changes nothing.
+function normQuote(t) {
+  return String(t || "").toLowerCase().replace(/[“”"‘’]/g, "").replace(/[\s]+/g, " ").replace(/^[\s.,;:!?'-]+|[\s.,;:!?'-]+$/g, "");
+}
+function ungroundedQuotes(plan) {
+  const said = normQuote((plan && (plan.corrected_transcript || plan.transcript)) || "").replace(/[.,;:!?]/g, "");
+  if (!said) return [];
+  const note = (plan && plan.note) || {};
+  const keys = ((plan.session_meta && plan.session_meta.sections) || []).map(s => s.key);
+  const texts = (keys.length ? keys : ["data", "assessment", "plan"]).map(k => note[k]).filter(Boolean);
+  const found = new Set(note.client_quotes || []);
+  texts.forEach(t => (String(t).match(/"([^"\n]+)"|“([^”\n]+)”/g) || []).forEach(q => found.add(q)));
+  const out = [];
+  found.forEach(q => {
+    const n = normQuote(q).replace(/[.,;:!?]/g, "");
+    if (n && !said.includes(n) && !out.includes(q)) out.push(String(q).replace(/^[“"]|[”"]$/g, ""));
+  });
+  return out;
+}
 function computeNudges(plan) {
   const acts = (plan && plan.actions) || [];
   const nudges = [];
-  if (!acts.some(a => a.type === "schedule_followup")) {
-    nudges.push({ id: "no-followup", text: "No next appointment in this debrief.", sub: "Add one here if you meant to." });
+  const loose = ungroundedQuotes(plan);
+  if (loose.length) {
+    nudges.push({ id: "quotes", text: "Quoted in the note but not in what you said: " + loose.map(q => `"${q}"`).join("; "), sub: "Check the wording before you approve. Nothing was changed." });
+  }
+  // The add-an-appointment row shows whenever nothing ticked will actually be
+  // booked: no follow-up at all, one whose date did not resolve, or one the
+  // clinician unticked because the date was wrong.
+  if (!acts.some(isBookable)) {
+    const followups = acts.filter(a => a.type === "schedule_followup");
+    const unheard = followups.find(a => !a.resolved_datetime);
+    nudges.push(unheard
+      ? { id: "no-followup", text: `Debrief could not work out a date from "${unheard.datetime_utterance || "what you said"}".`, sub: "Add the appointment here." }
+      : followups.length
+        ? { id: "no-followup", text: "No appointment will be booked.", sub: "Add one here if you meant to." }
+        : { id: "no-followup", text: "No next appointment in this debrief.", sub: "Add one here if you meant to." });
   }
   if (!acts.some(a => a.type === "draft_client_email")) {
     nudges.push({ id: "no-email", text: "No email to the client in this debrief." });
@@ -421,8 +481,13 @@ function clearProcTimers() { (App.procTimers || []).forEach(clearTimeout); App.p
 // as though nothing happened.
 function go(state, opts) {
   clearProcTimers();
+  clearSourcesTimer();
+  clearDevTimer();
   App.overflowOpen = false;
   App.state = state;
+  // Arriving at the recorder re-reads which session material is ready, so a
+  // digest that finished while the clinician was elsewhere is offered.
+  if (state === "record") App.debriefFor = null;
   if (!(opts && opts.keepError)) App.error = null;
   if (state === "assistant") App.nav = "assistant";
   else if (state === "setupWizard") App.nav = "setup";
@@ -615,7 +680,7 @@ function enterKey() {
 // Classes for one staggered chunk, or "" when this render must not animate.
 function ent(step) {
   if (!enterOn) return "";
-  const n = Math.min(Math.max(Math.round(step) || 1, 1), 8);
+  const n = Math.min(Math.max(Math.round(step) || 1, 1), 9);
   return "enter d" + n;
 }
 
@@ -1072,6 +1137,34 @@ function renderRecord() {
     </div>
   </div>`);
   stage.querySelector(".backlink").onclick = () => { stopStream(); App.lastRecording = null; go("clients"); };
+
+  // Session evidence, if any is ready for this client. Fetched once when the
+  // screen opens, never polled: nobody should be waiting on a background job
+  // with a client just out of the room.
+  ensureDebriefSources(c.client_id);
+  const evidence = newestReadySource();
+  const showPick = !!evidence && !down;
+  // The checkbox on screen is the only thing that decides what gets attached.
+  // Tick one recording, walk away while a second finishes, and the row that
+  // comes back names the newer one: a pick still held from the older one would
+  // ride along invisibly under a label for a different session.
+  if (App.debriefSourceId && (!showPick || App.debriefSourceId !== evidence.source_id)) {
+    App.debriefSourceId = null;
+  }
+  if (showPick) {
+    const pickId = uid("ev");
+    const row = h(`<label class="ev-pick" for="${pickId}">
+      <input type="checkbox" id="${pickId}" ${App.debriefSourceId === evidence.source_id ? "checked" : ""} />
+      <span class="ev-pick-body">
+        <span class="ev-pick-title">Use the session recording from ${esc(fmtSourceWhen(evidence))} as evidence</span>
+        <span class="ev-pick-desc">Debrief reads its session summary alongside what you say. Your debrief still decides what happens next.</span>
+      </span>
+    </label>`);
+    const cb = row.querySelector("input");
+    cb.onchange = () => { App.debriefSourceId = cb.checked ? evidence.source_id : null; };
+    stage.insertBefore(row, stage.querySelector(".dictate-guide"));
+  }
+
   if (down) {
     stage.querySelector("#recCheck").onclick = async (e) => {
       const btn = e.currentTarget;
@@ -1112,10 +1205,49 @@ function renderRecord() {
   el.appendChild(stage);
 }
 
+// Which of this client's session material is ready to stand behind a debrief.
+// Fetched once each time the record screen opens, never polled: nobody should
+// be waiting on a background job with a client just out of the room. A failure
+// is silent on purpose, because evidence is optional and the recorder has to
+// work without it.
+async function ensureDebriefSources(clientId) {
+  if (!clientId || App.debriefFor === clientId) return;
+  // A different client makes the previous tick meaningless. The same client
+  // arriving again (a retry after a failed debrief) keeps theirs.
+  if (App.debriefClient !== clientId) { App.debriefClient = clientId; App.debriefSourceId = null; }
+  App.debriefFor = clientId;
+  App.debriefSources = [];
+  try {
+    const r = await fetch("/api/sources?client_id=" + encodeURIComponent(clientId));
+    if (!r.ok) return;
+    const data = await r.json();
+    // Ready, and about a session with this client. Reference material is never
+    // offered as evidence: it is not about anybody.
+    App.debriefSources = ((data && data.sources) || [])
+      .filter(row => ((row.rungs || []).indexOf(2) >= 0) && !isReferenceSource(row));
+  } catch (e) { /* the recorder works with or without session evidence */ }
+  // A pick that has since been deleted is not a pick any more.
+  if (App.debriefSourceId && !App.debriefSources.some(r => r.source_id === App.debriefSourceId)) {
+    App.debriefSourceId = null;
+  }
+  if (App.state === "record") render();
+}
+
+// The most recent ready piece. Sources arrive newest first; sorting again keeps
+// that true even if the server's order ever changes.
+function newestReadySource() {
+  const rows = (App.debriefSources || []).slice();
+  rows.sort((a, b) => String(b.captured_at || b.source_id || "").localeCompare(String(a.captured_at || a.source_id || "")));
+  return rows[0] || null;
+}
+
 const MIC_BLOCKED = "macOS is blocking the microphone. Allow it in System Settings, Privacy and Security, Microphone, then try again.";
 const CHECK_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12l5 5L20 6"/></svg>`;
 const LOCK_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>`;
 const ALERT_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 4.5 2.8 20h18.4z"/><path d="M12 10v4.4M12 17.2v.1"/></svg>`;
+// Reveal in Finder, in the sidebar's icon language: a 24-grid stroke path, not
+// a colour emoji.
+const FOLDER_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M4 7.5A1.5 1.5 0 0 1 5.5 6H9l2 2h7.5A1.5 1.5 0 0 1 20 9.5v8A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5z"/></svg>`;
 
 // The one place the privacy promise is stated in full. It is deliberately
 // qualified: the core loop never leaves this Mac, but the optional template
@@ -1144,12 +1276,16 @@ function noteLabel(id) {
 }
 
 function renderProcessing() {
-  const steps = [
-    "Listening back",
-    "Checking clinical terms",
-    `Writing your ${noteLabel()}`,
-    "Working out the follow-ups",
-  ];
+  // A draft from stored material never listens to anything and never has
+  // follow-ups to work out, so it says what it is really doing.
+  const steps = App.procMode === "draft"
+    ? ["Reading the summary of that material", `Writing your ${noteLabel()}`, "Checking it over"]
+    : [
+      "Listening back",
+      "Checking clinical terms",
+      `Writing your ${noteLabel()}`,
+      "Working out the follow-ups",
+    ];
   // A step's state was carried by its class alone, which says nothing to a
   // screen reader. Each step now carries the word for its state as well.
   const STATE_WORD = { done: "done", active: "in progress", todo: "not started yet" };
@@ -1238,7 +1374,7 @@ function approveConsequence(plan, enabled) {
   const name = (plan.client && plan.client.name) || "this client";
   const acts = (plan.actions || []).filter((a, i) => enabled[i]);
   const parts = [`Files the note under ${name}`];
-  const appt = acts.find(a => a.type === "schedule_followup");
+  const appt = acts.find(a => a.type === "schedule_followup" && a.resolved_datetime);
   if (appt) {
     const when = fmtWhenShort(appt.resolved_datetime) || appt.datetime_display || "";
     parts.push(when ? `books ${when}` : "books the appointment");
@@ -1262,12 +1398,31 @@ function refreshApproveConsequence() {
   node.textContent = approveConsequence(App.plan, enabled);
 }
 
+// A plain callout about the session evidence. Never red: none of this is a
+// failure, it is the app saying what it did and did not have to work from.
+function evidenceCallout(text) {
+  return h(`<div class="banner banner-notice ev-callout ${ent(1)}">${esc(text)}</div>`);
+}
+
 function renderReview() {
   const p = App.plan, note = p.note || {};
   el.appendChild(h(`<div class="flow-head ${ent(1)}">
     <h1>Read it over.</h1>
     <p>Nothing is filed or sent yet.</p>
   </div>`));
+
+  // What the note was actually written from. Said before the note, because it
+  // changes how closely the note deserves to be read.
+  if (p.source_status === "processing") {
+    el.appendChild(evidenceCallout("The session recording is still processing. This note was written from your debrief alone."));
+  } else if (p.source_status === "missing") {
+    el.appendChild(evidenceCallout("The session recording was not there to read. This note was written from your debrief alone."));
+  } else if (p.source_status === "reference") {
+    // The server writes this sentence, because what a reference draft is comes
+    // from the same place that decided to treat it as one.
+    el.appendChild(evidenceCallout(p.source_note
+      || "That material is filed as reference, so this note records what was shared rather than a session that happened."));
+  }
 
   const risk = note.risk_present && note.risk ? note.risk : null;
   const notePanel = h(`<div class="panel doc ${ent(1)}"></div>`);
@@ -1315,8 +1470,28 @@ function renderReview() {
   (note.interventions || []).forEach(x => chips.push(`<span class="chip">${esc(x)}</span>`));
   (note.themes || []).forEach(x => chips.push(`<span class="chip theme">${esc(x)}</span>`));
   if (chips.length) notePanel.appendChild(h(`<div class="chips">${chips.join("")}</div>`));
+  // The badge sits with the transcript because that is where the question "what
+  // was this written from" gets asked.
+  if (p.digest_used === true) {
+    notePanel.appendChild(h(`<div class="ev-badge-row"><span class="ev-badge">Session evidence used</span></div>`));
+  }
   notePanel.appendChild(h(`<details class="transcript"><summary>what you said</summary><div class="transcript-note">Your dictation, with clinical terms and names spelled correctly. Nothing else was changed.</div><p>${esc(p.corrected_transcript || p.transcript || "")}</p></details>`));
   el.appendChild(notePanel);
+
+  // Where the recording and the debrief do not agree. Nothing is resolved here
+  // and nothing can be actioned: it is put in front of the clinician because
+  // they are the only one who can say which is right.
+  const conflicts = (p.evidence_conflicts || []).filter(x => String(x || "").trim());
+  if (conflicts.length) {
+    const box = h(`<div class="panel ev-conflicts ${ent(2)}">
+      <h2>The recording and the debrief disagree</h2>
+      <p class="ev-conflicts-note">Nothing has been changed or removed for you. Read these and decide.</p>
+      <ul></ul>
+    </div>`);
+    const ul = box.querySelector("ul");
+    conflicts.forEach(c => ul.appendChild(h(`<li>${esc(String(c))}</li>`)));
+    el.appendChild(box);
+  }
 
   el.appendChild(h(`<h2 class="step-title ${ent(2)}">What happens when you approve</h2>`));
   const actPanel = h(`<div class="panel ${ent(2)}"></div>`);
@@ -1325,9 +1500,14 @@ function renderReview() {
   // action type (calendar booking / email drafts) are hidden: those actions are
   // turned off in settings and cannot run, so offering to add one would mislead.
   const feats = (p.session_meta && p.session_meta.features) || (App.settings && App.settings.features) || {};
+  const noDebrief = p.no_debrief === true;
   let nudges = computeNudges(p);
   if (feats.calendar === false) nudges = nudges.filter(n => n.id !== "no-followup");
   if (feats.email === false) nudges = nudges.filter(n => n.id !== "no-email");
+  // With no debrief there are no actions by design, so "no appointment in this
+  // debrief" would be telling the clinician off for something they never did.
+  // Risk is never suppressed.
+  if (noDebrief) nudges = nudges.filter(n => n.kind === "risk");
   if (nudges.length) {
     const box = h(`<div class="nudges"></div>`);
     // Risk leads. Everything else is housekeeping and reads as such.
@@ -1365,19 +1545,30 @@ function renderReview() {
   }
 
   const list = h(`<div class="actions-list"></div>`);
-  if (!p.actions.length) list.appendChild(h(`<div class="a-sub" style="color:var(--ink-soft)">Nothing to book or send in this debrief. The note is the only thing that gets filed.</div>`));
+  if (noDebrief) {
+    list.appendChild(h(`<div class="ev-callout">No debrief was recorded. This draft came from the session recording alone, so there are no actions to approve. Record a debrief to add your judgment.</div>`));
+  } else if (!p.actions.length) {
+    list.appendChild(h(`<div class="a-sub" style="color:var(--ink-soft)">Nothing to book or send in this debrief. The note is the only thing that gets filed.</div>`));
+  }
   p.actions.forEach((a, i) => {
     const when = a.datetime_display ? `<div class="a-when">${esc(a.datetime_display)}</div>` : "";
     const title = a.type === "schedule_followup" ? "Book follow-up appointment"
                 : a.type === "draft_client_email" ? "Draft client email" : esc(a.type);
+    const undated = a.type === "schedule_followup" && !a.resolved_datetime;
     const sub = a.type === "draft_client_email" && a.attachment_name ? `<div class="a-sub">Attaches the ${esc(a.attachment_name)}</div>`
+              : undated ? `<div class="a-sub">No date. Debrief heard "${esc(a.datetime_utterance || "")}" and could not work it out, so this will not be booked.</div>`
               : a.type === "schedule_followup" && a.title ? `<div class="a-sub">Calendar title: ${esc(a.title)}</div>` : "";
-    const row = h(`<label class="action on">
-      <input type="checkbox" checked data-i="${i}" />
+    const on = a.enabled !== false && !undated;
+    const row = h(`<label class="action ${on ? "on" : "off"}">
+      <input type="checkbox" ${on ? "checked" : ""} ${undated ? "disabled" : ""} data-i="${i}" />
       <div class="body"><div class="a-title">${title}</div>${when}${sub}</div>
     </label>`);
     const cb = row.querySelector("input");
     cb.onchange = () => {
+      const before = p.actions.some(isBookable);
+      a.enabled = cb.checked;
+      // Unticking the only real booking brings back the row that adds one.
+      if (before !== p.actions.some(isBookable)) { render(); return; }
       row.classList.toggle("on", cb.checked);
       row.classList.toggle("off", !cb.checked);
       refreshApproveConsequence();
@@ -1447,7 +1638,12 @@ function confirmDiscard() {
     cancelLabel: "Keep editing",
     confirmLabel: "Discard",
     danger: true,
-    onConfirm: () => { App.plan = null; go("record"); },
+    onConfirm: () => {
+      // The dialog promises the recording goes away, so the server copy does too.
+      const token = App.plan && App.plan.audio_token;
+      if (token) fetch("/api/debrief/discard", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ audio_token: token }) }).catch(() => {});
+      App.plan = null; go("record");
+    },
   });
 }
 
@@ -1866,16 +2062,23 @@ async function onRecordingStopped() {
 // throwing away a session the clinician has already spoken.
 async function processRecording(blob) {
   App.lastRecording = blob;
+  // This is a debrief, whatever the last thing through the processing screen
+  // was. A draft's step list left behind here would narrate the wrong work.
+  App.procMode = null;
   announce("Recording stopped. Debrief is writing your note.");
   go("processing");
   const fd = new FormData();
   fd.append("audio", blob, "debrief.webm");
   fd.append("client_id", App.client.client_id);
+  // Only when the clinician ticked it. An untouched box sends nothing, and a
+  // debrief with no source behaves exactly as it always has.
+  if (App.debriefSourceId) fd.append("source_id", App.debriefSourceId);
   try {
     const r = await fetch("/api/debrief", { method: "POST", body: fd });
     if (!r.ok) throw await failure(r);
     App.plan = await r.json();
     App.lastRecording = null;
+    App.debriefSourceId = null;
     go("review");
   } catch (e) {
     // The reason travels with them; the audio stays put. renderRecord offers
@@ -1889,7 +2092,6 @@ async function executePlan() {
   const boxes = Array.from(document.querySelectorAll(".action input[type=checkbox]"));
   const plan = JSON.parse(JSON.stringify(App.plan));
   boxes.forEach(b => { const i = +b.dataset.i; if (plan.actions[i]) plan.actions[i].enabled = b.checked; });
-  plan.verify = true;
   go("executing");
   try {
     const r = await fetch("/api/execute", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(plan) });
@@ -2011,6 +2213,21 @@ async function openClient(c) {
   App.recordData = null;
   App.error = null;
   App.recordError = null;
+  // Another person's session material must never be on screen, even for the
+  // frame before this client's list arrives.
+  clearSourcesTimer();
+  App.sources = null;
+  App.sourcesFor = null;
+  App.sourcesError = null;
+  App.sourceStates = null;
+  App.sourcesPainted = null;
+  // Whose material this is, asked fresh for each person. A "reference" left
+  // ticked from the last client is how a session lands as reference material.
+  App.sourceUploadKind = "session";
+  // Upload lines survive the trip. Only another client's finished lines are
+  // dropped: a failure is news the clinician has not read yet, and an upload
+  // still running owns its line until it is done.
+  App.uploads = (App.uploads || []).filter(u => u.client_id === c.client_id || u.state !== "done");
   render();
   try {
     const r = await fetch("/api/clients/" + encodeURIComponent(c.client_id));
@@ -2021,6 +2238,9 @@ async function openClient(c) {
 }
 
 function renderClientRecord() {
+  // Every repaint of this screen drops the Recordings poll; the tab that needs
+  // it starts a fresh one below. That is what keeps it off the other tabs.
+  clearSourcesTimer();
   const d = App.recordData;
   const c = App.client || {};
   const name = (d && d.profile && d.profile.name) || c.name || "Client";
@@ -2056,6 +2276,7 @@ function renderClientRecord() {
     <button class="ctab ${App.recordTab === "sessions" ? "on" : ""}" data-tab="sessions">Sessions</button>
     <button class="ctab ${App.recordTab === "profile" ? "on" : ""}" data-tab="profile">Profile</button>
     <button class="ctab ${App.recordTab === "documents" ? "on" : ""}" data-tab="documents">Documents</button>
+    <button class="ctab ${App.recordTab === "sources" ? "on" : ""}" data-tab="sources">Recordings</button>
   </div>`);
   tabs.querySelectorAll(".ctab").forEach(t => t.onclick = () => { App.recordTab = t.dataset.tab; render(); });
   el.appendChild(tabs);
@@ -2063,11 +2284,12 @@ function renderClientRecord() {
   // The record jumped from the client's name straight to a session card. The
   // active tab is the section heading; it is already on screen as the selected
   // tab, so the heading itself is for assistive technology only.
-  const TAB_NAME = { sessions: "Sessions", profile: "Profile", documents: "Documents" };
+  const TAB_NAME = { sessions: "Sessions", profile: "Profile", documents: "Documents", sources: "Recordings" };
   el.appendChild(h(`<h2 class="visually-hidden">${esc(TAB_NAME[App.recordTab] || "Sessions")}</h2>`));
 
   if (App.recordTab === "sessions") renderSessionsTab(d);
   else if (App.recordTab === "profile") renderProfileTab(d);
+  else if (App.recordTab === "sources") renderSourcesTab(d);
   else renderDocumentsTab(d);
 }
 
@@ -2180,6 +2402,7 @@ function buildDocCard(doc, d) {
     ${iconBtnHTML("✎", "Rename " + doc.title)}
     ${iconBtnHTML("⬇", "Download " + doc.title + " as PDF")}
     ${iconBtnHTML("✉", "Email " + doc.title + " to the client")}
+    ${iconBtnHTML(FOLDER_SVG, "Reveal " + doc.title + " in Finder")}
   </div>`);
   const isMd = doc.path.toLowerCase().endsWith(".md");
   card.onclick = () => {
@@ -2187,10 +2410,11 @@ function buildDocCard(doc, d) {
     else if (doc.path.toLowerCase().endsWith(".pdf")) downloadPdf(doc.path);
     else post("/api/open", { path: doc.path });  // open images/docx in their native app
   };
-  const [renameBtn, dlBtn, emailBtn] = acts.querySelectorAll(".iconbtn");
+  const [renameBtn, dlBtn, emailBtn, revealBtn] = acts.querySelectorAll(".iconbtn");
   renameBtn.onclick = () => inlineRenameCard(card, doc, d);
   dlBtn.onclick = () => { if (isMd || doc.path.toLowerCase().endsWith(".pdf")) downloadPdf(doc.path); else post("/api/open", { path: doc.path }); };
   emailBtn.onclick = () => emailDocument(d.client_id, doc.path);
+  revealBtn.onclick = () => revealPath(parentFolder(doc.path));
   wrap.appendChild(card);
   wrap.appendChild(acts);
   return wrap;
@@ -2242,6 +2466,1541 @@ async function uploadFile(file, clientId) {
     if (!r.ok) throw await failure(r);
     openClient(App.client);
   } catch (e) { App.error = errOf(e); render(); }
+}
+
+// ===========================================================================
+// Session recordings: the Recordings tab.
+//
+// This is where session material lives: what was recorded, what was imported,
+// and exactly how far Debrief has got with each piece. It leads with consent
+// because nothing here may start without it, and every stage is named in plain
+// words rather than hidden behind a spinner that says nothing.
+// ===========================================================================
+
+// What the API accepts. Said twice on purpose: once to the file picker, once to
+// the clinician. Kept in step with _SOURCE_ALLOWED_EXTS in app.py.
+const SOURCE_ACCEPT = ".m4a,.mp3,.wav,.aac,.mp4,.mov,.webm,.vtt,.srt,.txt,.md,.pdf,.docx";
+const SOURCE_ACCEPT_TEXT = "Audio (.m4a, .mp3, .wav, .aac), video (.mp4, .mov, .webm), transcripts (.vtt, .srt), and documents (.txt, .md, .pdf, .docx).";
+
+// Said under the consent button, always, whichever way the flag is set. It
+// names whose job consent is and stops there: recording law varies and this app
+// takes no position on it.
+const CONSENT_RESPONSIBILITY = "Recording or importing a session needs the client's consent. Obtaining and documenting it is your responsibility.";
+const CONSENT_BLOCKED = "No recording consent is recorded for this client, so nothing can be brought in yet. Record the consent above first.";
+
+// Provenance in the clinician's words. The distinction that matters is whether
+// something is word for word, so it is never left to a technical noun.
+const SOURCE_KIND_LABEL = {
+  live_recording: "Audio recording",
+  uploaded_audio: "Audio recording",
+  uploaded_video: "Video (audio kept)",
+  transcript_file: "Transcript",
+  pasted_transcript: "Pasted transcript",
+  third_party_summary: "AI summary",
+  clinician_notes: "Your notes",
+  // Two kinds, one label. Which container it arrived in is the app's business;
+  // what it is FOR is the clinician's, and that is the same answer for both.
+  reference_recording: "Reference material",
+  reference_document: "Reference material",
+};
+
+// Material that is not a session with anybody. Mirrors REFERENCE_KINDS in
+// debrief/sources.py.
+const SOURCE_REFERENCE_KINDS = new Set(["reference_recording", "reference_document"]);
+function isReferenceSource(row) {
+  return SOURCE_REFERENCE_KINDS.has(String((row && row.kind) || ""))
+    || String((row && row.source_status) || "") === "reference";
+}
+
+// Said wherever an unanswered question blocks something. The answer is one tap
+// away on the card, so the sentence points at it.
+const SOURCE_UNCONFIRMED = "Debrief is not sure what this material is yet. Answer the question above first, so the note says where it came from and means it.";
+
+// The files a source keeps, by name. Mirrors RUNG_FILES and its neighbours in
+// debrief/recstore.py.
+const SOURCE_FILES = {
+  corrected: "transcript.md",
+  raw: "transcript-raw.md",
+  original: "source-text.md",
+};
+
+function sourcePath(clientId, sourceId, file) {
+  return `Recordings/${clientId}/${sourceId}/${file}`;
+}
+
+// The folder everything for one piece of material lives in. Reveal opens it,
+// so this is what every reveal on this screen asks for.
+function sourceFolder(clientId, sourceId) {
+  return `Recordings/${clientId}/${sourceId}`;
+}
+
+// The folder something sits in, for a reveal that should show the real file
+// rather than the rendered PDF a markdown reveal opens.
+function parentFolder(path) {
+  const parts = String(path || "").split("/");
+  parts.pop();
+  return parts.join("/") || VAULT_ROOT_PATH;
+}
+
+// The vault itself. "." is the one relative path that names the root, and the
+// server's guard resolves it to exactly that and no further.
+const VAULT_ROOT_PATH = ".";
+const SOURCE_PRODUCER_LABEL = {
+  debrief: "Recorded in Debrief",
+  zoom: "From Zoom",
+  otter: "From Otter",
+  granola: "From Granola",
+  clinician: "Written by you",
+};
+
+// Job stages, as a title on the card and as a clause inside a failure sentence.
+const JOB_STAGE_LABEL = {
+  transcribing: "Transcribing",
+  correcting: "Correcting vocabulary",
+  digesting: "Building the session summary",
+};
+const JOB_STAGE_PLAIN = {
+  transcribing: "transcribing",
+  correcting: "correcting vocabulary",
+  digesting: "building the session summary",
+};
+
+// Material that came from a microphone or a camera. Mirrors MEDIA_KINDS in
+// debrief/sources.py: these are the ones that can have audio to delete.
+const SOURCE_MEDIA_KINDS = new Set(["live_recording", "uploaded_audio", "uploaded_video"]);
+
+const SOURCES_POLL_MS = 4000;
+const JOB_ACTIVE = new Set(["queued", "running", "waiting"]);
+
+function sourceKindLabel(kind) { return SOURCE_KIND_LABEL[String(kind || "")] || "Session material"; }
+
+// The amendment a connection appends, previewed before it is appended. Mirrors
+// sources.amendment_line word for word: showing the clinician a sentence that
+// is not the one that lands in the record would be worse than showing nothing.
+const AMEND_KIND_LABEL = {
+  live_recording: "an audio recording made in Debrief",
+  uploaded_audio: "an audio recording",
+  uploaded_video: "a video recording",
+  transcript_file: "a transcript",
+  pasted_transcript: "a pasted transcript",
+  third_party_summary: "a meeting tool's AI summary",
+  clinician_notes: "the clinician's own notes",
+  reference_recording: "a recording",
+  reference_document: "a document",
+};
+const AMEND_VERBATIM_TRAIL = "Word for word transcript and summary live beside it.";
+const AMEND_SUMMARY_TRAIL = "The text and summary live beside it.";
+
+function amendmentPreview(row, clientId) {
+  const lead = isReferenceSource(row) ? "Reference material connected" : "Session evidence connected";
+  const label = AMEND_KIND_LABEL[String(row.kind || "")] || "material";
+  const when = row.session_date || "an unrecorded date";
+  const trail = row.verbatim ? AMEND_VERBATIM_TRAIL : AMEND_SUMMARY_TRAIL;
+  return `${lead}: ${label} from ${when}, stored in the vault at Recordings/${clientId}/${row.source_id}/. ${trail}`;
+}
+
+// "25 July 2026" from a plain wall-clock date. Read by regex, never through
+// Date(iso), so no timezone can slide the day the consent was given.
+function fmtDayLong(value) {
+  const m = isoDatePart(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return "";
+  return `${+m[3]} ${MONTHS_LONG[+m[2] - 1]} ${m[1]}`;
+}
+
+// When a piece of session material was captured, for a card heading.
+function fmtSourceWhen(row) {
+  const captured = (row && row.captured_at) || "";
+  return fmtWhenShort(captured) || fmtDayLong(captured) || String(row && row.source_id ? row.source_id : "");
+}
+
+function consentState(d) {
+  const pf = (d && d.profile) || {};
+  return { granted: pf.recording_consent === true, date: isoDatePart(pf.recording_consent_date) };
+}
+
+function sourceJobActive(row) {
+  return !!(row && row.job && JOB_ACTIVE.has(String(row.job.state || "")));
+}
+
+// ---------------------------------------------------------------------------
+// Fetching, and the poll that only runs while something is actually happening.
+// ---------------------------------------------------------------------------
+
+function clearSourcesTimer() {
+  if (App.sourcesTimer) { clearTimeout(App.sourcesTimer); App.sourcesTimer = null; }
+}
+
+// Say out loud when a piece of material finishes or fails. A clinician who has
+// walked away from the screen still gets told, and nothing announces twice.
+function announceSourceChanges(rows) {
+  const before = App.sourceStates || {};
+  const now = {};
+  const said = [];
+  rows.forEach(row => {
+    const id = String(row.source_id || "");
+    const state = String((row.job && row.job.state) || "");
+    now[id] = state;
+    if (!App.sourceStates || before[id] === state) return;
+    const when = fmtDayLong(row.session_date) || fmtSourceWhen(row);
+    if (state === "done") {
+      said.push(isReferenceSource(row)
+        ? `The reference material from ${when} is ready to read.`
+        : `The session material from ${when} is ready to use in a debrief.`);
+    }
+    if (state === "failed") said.push(`The material from ${when} could not be finished.`);
+  });
+  App.sourceStates = now;
+  if (said.length) announce(said.join(" "));
+}
+
+// Whose record is open. A reply about anyone else is not this screen's news.
+function currentRecordClientId() {
+  return String((App.client && App.client.client_id)
+    || (App.recordData && App.recordData.client_id) || "");
+}
+
+// True while this client's Recordings tab is the thing on screen.
+function onSourcesTab(clientId) {
+  return App.state === "clientRecord"
+    && App.recordTab === "sources"
+    && currentRecordClientId() === String(clientId);
+}
+
+// quiet:true is a poll. A poll that fails keeps what is on screen rather than
+// replacing a working list with a banner over a blip.
+async function refreshSources(clientId, opts) {
+  const quiet = !!(opts && opts.quiet);
+  let rows = null;
+  let failed = null;
+  try {
+    const r = await fetch("/api/sources?client_id=" + encodeURIComponent(clientId));
+    if (!r.ok) throw await failure(r);
+    const data = await r.json();
+    rows = (data && data.sources) || [];
+  } catch (e) {
+    failed = errOf(e);
+  }
+  // A slow reply for a client who has since been closed is dropped whole:
+  // nothing written, nothing announced. Otherwise one person's recordings
+  // land in the next person's record, which is the worst bug this screen
+  // could have.
+  if (currentRecordClientId() !== String(clientId)) return false;
+  if (failed) {
+    if (quiet) return false;
+    App.sources = [];
+    App.sourcesError = failed;
+  } else {
+    App.sources = rows;
+    App.sourcesError = null;
+    announceSourceChanges(rows);
+  }
+  // Set on both paths, so a failure shows its banner instead of refetching
+  // forever behind it.
+  App.sourcesFor = String(clientId);
+  return true;
+}
+
+// Everything the tab draws from a source, in one string. Two equal fingerprints
+// mean a repaint would put back exactly what is already there.
+function sourcesFingerprint(rows) {
+  return (rows || []).map(row => {
+    const job = row.job || {};
+    return [
+      row.source_id,
+      row.needs_confirmation ? 1 : 0,
+      row.has_audio ? 1 : 0,
+      (row.rungs || []).join("."),
+      // Everything else the card draws. A date corrected in another window, a
+      // flip to reference material, a note connected somewhere else: each of
+      // them changes this card, so each of them has to reach it.
+      row.kind || "",
+      row.session_date || "",
+      (row.linked_notes || []).join(","),
+      job.state || "", job.stage || "", job.done || 0, job.total || 0, job.error || "",
+    ].join("~");
+  }).join("|");
+}
+
+// A repaint in the middle of something is a repaint that takes the thing away:
+// an open menu closes, a button mid-request comes back enabled and clickable a
+// second time, and focus lands on the body. The tick waits instead.
+function sourcesInteractionLive() {
+  if ((App.sourcesBusy || 0) > 0) return true;
+  // An open menu, or a date the clinician is halfway through typing.
+  return !!document.querySelector(".src-menu-wrap .overflow-menu, .src-date-edit");
+}
+
+// Wrap a request that the poll must not repaint over.
+async function withSourcesBusy(fn) {
+  App.sourcesBusy = (App.sourcesBusy || 0) + 1;
+  try {
+    return await fn();
+  } finally {
+    App.sourcesBusy = Math.max(0, (App.sourcesBusy || 1) - 1);
+  }
+}
+
+// pending:true keeps the timer alive for a change that is waiting to be
+// painted, even once every job has finished. Without it, a job that completes
+// while a menu is open would leave its news stranded until the next render.
+function scheduleSourcesPoll(clientId, opts) {
+  clearSourcesTimer();
+  const pending = !!(opts && opts.pending);
+  if (!pending && !(App.sources || []).some(sourceJobActive)) return;
+  App.sourcesTimer = setTimeout(async () => {
+    App.sourcesTimer = null;
+    // The screen may have moved on between ticks. Nothing here repaints another
+    // screen, and nothing schedules the next tick from anywhere but a render of
+    // this tab or from the tick itself when it decides not to paint.
+    if (!onSourcesTab(clientId)) return;
+    await refreshSources(clientId, { quiet: true });
+    if (!onSourcesTab(clientId)) return;
+    // App.sourcesPainted holds what is actually on screen, never the last
+    // response, so a repaint that has to wait is not lost.
+    const changed = sourcesFingerprint(App.sources) !== App.sourcesPainted;
+    if (!changed) { scheduleSourcesPoll(clientId); return; }
+    // The clinician is in the middle of something: a repaint would close their
+    // menu, re-enable a button mid request, and drop their focus. Wait, and
+    // paint on the first tick that arrives with nothing in the way.
+    if (sourcesInteractionLive()) { scheduleSourcesPoll(clientId, { pending: true }); return; }
+    render();
+  }, SOURCES_POLL_MS);
+}
+
+// ---------------------------------------------------------------------------
+// The tab itself.
+// ---------------------------------------------------------------------------
+
+function renderSourcesTab(d) {
+  const cid = String(d.client_id || (App.client && App.client.client_id) || "");
+  const wrap = h(`<div class="srcs"></div>`);
+  const consent = consentState(d);
+  wrap.appendChild(buildConsentCard(d, cid, consent));
+  wrap.appendChild(buildSourceDrop(cid, consent.granted));
+
+  if (App.sourcesFor !== cid) {
+    if (!App.sourcesLoading) {
+      App.sourcesLoading = true;
+      refreshSources(cid).then(() => {
+        App.sourcesLoading = false;
+        if (onSourcesTab(cid)) render();
+      });
+    }
+    App.sourcesPainted = null;
+    wrap.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Looking for session material...</div></div>`));
+    el.appendChild(wrap);
+    return;
+  }
+
+  const rows = App.sources || [];
+  rows.filter(r => r.needs_confirmation).forEach(r => wrap.appendChild(buildConfirmBanner(r, cid)));
+
+  if (App.sourcesError) {
+    // "Nothing here yet" would be a lie when the list is what failed. A dead
+    // end needs a way out, so the banner carries the retry rather than making
+    // the clinician close the record and open it again.
+    const box = errorBanner(App.sourcesError);
+    const bar = h(`<div class="dead-end-actions"></div>`);
+    const again = h(`<button type="button" class="btn btn-primary btn-compact">Try again</button>`);
+    again.onclick = () => {
+      App.sourcesError = null;
+      App.sourcesFor = null;
+      render();
+    };
+    bar.appendChild(again);
+    box.appendChild(bar);
+    wrap.appendChild(box);
+  } else if (!rows.length) {
+    wrap.appendChild(emptyState({
+      title: "No session material yet",
+      body: "Bring in a recording, a transcript, or a meeting tool export and Debrief will read it, ready to sit alongside your next debrief for this client.",
+      note: "Audio stays on this Mac until you delete it.",
+      wide: true,
+    }));
+  } else {
+    const list = h(`<div class="src-list"></div>`);
+    rows.forEach(r => list.appendChild(buildSourceCard(r, cid)));
+    wrap.appendChild(list);
+  }
+
+  el.appendChild(wrap);
+  // What is now actually on screen. The poll compares against this, never
+  // against the last response, so a repaint it had to defer still happens.
+  App.sourcesPainted = sourcesFingerprint(rows);
+  scheduleSourcesPoll(cid);
+}
+
+// ---------------------------------------------------------------------------
+// Consent.
+// ---------------------------------------------------------------------------
+
+function buildConsentCard(d, clientId, consent) {
+  const state = consent.granted
+    ? (consent.date ? `Recording consent on file, dated ${fmtDayLong(consent.date)}` : "Recording consent on file")
+    : "No recording consent recorded";
+  const card = h(`<div class="rcard src-consent">
+    <div class="src-consent-head">
+      <h3>Consent to record</h3>
+      <span class="rchip ${consent.granted ? "ok" : "wait"}">${consent.granted ? "On file" : "Not recorded"}</span>
+    </div>
+    <div class="src-consent-state">${esc(state)}</div>
+    <div class="src-consent-actions">
+      <button type="button" class="btn btn-ghost btn-compact" id="consentToggle">${consent.granted ? "Withdraw consent" : "Record consent"}</button>
+    </div>
+    <p class="src-consent-note">${esc(CONSENT_RESPONSIBILITY)}</p>
+  </div>`);
+  const btn = card.querySelector("#consentToggle");
+  btn.onclick = () => setRecordingConsent(clientId, !consent.granted, btn);
+  return card;
+}
+
+async function setRecordingConsent(clientId, granted, btn) {
+  const original = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "Saving..."; }
+  try {
+    const r = await withSourcesBusy(() => fetch("/api/clients/" + encodeURIComponent(clientId) + "/recording-consent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ granted: !!granted }),
+    }));
+    if (!r.ok) throw await failure(r);
+    const data = await r.json();
+    // Patch the record in place rather than reopening the client: reopening
+    // would drop the clinician back on the Sessions tab mid task.
+    if (App.recordData) {
+      App.recordData.profile = App.recordData.profile || {};
+      App.recordData.profile.recording_consent = !!data.granted;
+      App.recordData.profile.recording_consent_date = data.date || "";
+    }
+    announce(data.granted ? "Recording consent recorded." : "Recording consent withdrawn.");
+    render();
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = original; }
+    toastError(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Bringing material in: drop, browse, or paste.
+// ---------------------------------------------------------------------------
+
+function buildSourceDrop(clientId, granted) {
+  const zone = h(`<div class="srcdrop${granted ? "" : " off"}"${granted ? "" : ' aria-disabled="true"'}>
+    <div class="srcdrop-title">Bring in session material</div>
+    <div class="srcdrop-hint">${granted
+      ? "Drag files here, or choose them from your Mac. Video is kept as audio only."
+      : esc(CONSENT_BLOCKED)}</div>
+  </div>`);
+
+  const input = h(`<input type="file" class="visually-hidden" multiple accept="${SOURCE_ACCEPT}" />`);
+  input.onchange = () => {
+    const files = Array.from(input.files || []);
+    input.value = "";
+    if (files.length) uploadSources(files, clientId);
+  };
+
+  // What the material IS, asked before it arrives rather than corrected after.
+  // Reference material is never used as evidence about this client, so getting
+  // this right at the door keeps a talk about anxiety out of somebody's notes.
+  const kindGroup = uid("upk");
+  const kinds = h(`<div class="srcdrop-kinds" role="radiogroup" aria-label="What is this material">
+    <label class="srcdrop-kind">
+      <input type="radio" name="${kindGroup}" value="session" ${App.sourceUploadKind === "reference" ? "" : "checked"} />
+      <span>
+        <span class="srcdrop-kind-title">Session recording</span>
+        <span class="srcdrop-kind-desc">Material from a session with this client.</span>
+      </span>
+    </label>
+    <label class="srcdrop-kind">
+      <input type="radio" name="${kindGroup}" value="reference" ${App.sourceUploadKind === "reference" ? "checked" : ""} />
+      <span>
+        <span class="srcdrop-kind-title">Reference material</span>
+        <span class="srcdrop-kind-desc">A talk, an article, something you saved to read again.</span>
+      </span>
+    </label>
+  </div>`);
+  kinds.querySelectorAll("input").forEach(input2 => {
+    if (!granted) input2.disabled = true;
+    input2.onchange = () => { if (input2.checked) App.sourceUploadKind = input2.value; };
+  });
+  zone.appendChild(kinds);
+
+  const actions = h(`<div class="srcdrop-actions"></div>`);
+  const choose = h(`<button type="button" class="btn btn-primary btn-compact">Choose files</button>`);
+  const paste = h(`<button type="button" class="btn btn-ghost btn-compact">Paste a transcript</button>`);
+  if (!granted) { choose.disabled = true; paste.disabled = true; }
+  choose.onclick = () => input.click();
+  paste.onclick = () => openPasteSheet(clientId);
+  actions.appendChild(choose);
+  actions.appendChild(paste);
+  zone.appendChild(actions);
+  zone.appendChild(input);
+  zone.appendChild(h(`<div class="srcdrop-accepts">${esc(SOURCE_ACCEPT_TEXT)}</div>`));
+
+  zone.addEventListener("dragover", (e) => {
+    // Held on both paths. Without it the browser takes the drop itself and
+    // navigates the whole tab to the file, which loses the record entirely.
+    e.preventDefault();
+    if (granted) zone.classList.add("drop-active");
+  });
+  zone.addEventListener("dragleave", () => zone.classList.remove("drop-active"));
+  zone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    zone.classList.remove("drop-active");
+    const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+    if (!granted) {
+      // Nothing is uploaded and nothing is lost: the reason is said instead.
+      if (files.length) { toast(CONSENT_BLOCKED, null, true); }
+      return;
+    }
+    if (files.length) uploadSources(files, clientId);
+  });
+
+  const lines = h(`<div class="src-uploads"></div>`);
+  // One client's upload lines never appear on another's tab.
+  (App.uploads || []).filter(u => u.client_id === clientId).forEach(u => lines.appendChild(buildUploadLine(u)));
+  zone.appendChild(lines);
+  return zone;
+}
+
+function buildUploadLine(u) {
+  const pct = Math.max(0, Math.min(100, Math.round(u.pct || 0)));
+  const state = u.state === "done" ? "Brought in"
+    : u.state === "failed" ? "Could not be brought in"
+    : pct >= 100 ? "Reading it" : `Uploading ${pct}%`;
+  const line = h(`<div class="src-upl ${esc(u.state)}" data-upl="${esc(u.id)}">
+    <div class="src-upl-top">
+      <span class="src-upl-name">${esc(u.name)}</span>
+      <span class="src-upl-state">${esc(state)}</span>
+    </div>
+    <div class="src-upl-bar" aria-hidden="true"><span style="width:${pct}%"></span></div>
+  </div>`);
+  if (u.state === "failed") {
+    line.querySelector(".src-upl-bar").remove();
+    if (u.error) line.appendChild(h(`<div class="src-upl-err">${esc(u.error)}</div>`));
+    const dismiss = h(`<button type="button" class="btn btn-ghost btn-compact src-upl-dismiss">Dismiss</button>`);
+    dismiss.onclick = () => {
+      App.uploads = (App.uploads || []).filter(x => x.id !== u.id);
+      render();
+    };
+    line.appendChild(dismiss);
+  }
+  return line;
+}
+
+// Repaint one upload line in place. A full render every progress event would
+// fight the clinician's scroll position; a poll tick rebuilds from App.uploads
+// anyway, so the state and the screen cannot drift apart.
+function paintUploadLine(u) {
+  const live = document.querySelector(`.src-upl[data-upl="${u.id}"]`);
+  if (live) live.replaceWith(buildUploadLine(u));
+}
+
+// One file, with real progress. XHR rather than fetch purely because a 2 GB
+// video deserves a percentage instead of a frozen line.
+function uploadSourceFile(file, clientId, onProgress) {
+  return new Promise((resolve, reject) => {
+    const fd = new FormData();
+    fd.append("client_id", clientId);
+    // Declared only when the clinician said "reference". The server decides
+    // which of the two reference kinds a file becomes: audio has to be
+    // transcribed either way, and that is not theirs to pick.
+    if (App.sourceUploadKind === "reference") fd.append("declared_kind", "reference_document");
+    fd.append("file", file, file.name);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/sources/upload");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress((e.loaded / e.total) * 100);
+    };
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText || "{}"); } catch (err) { data = {}; }
+      if (xhr.status >= 200 && xhr.status < 300) { resolve(data); return; }
+      const err = new Error(httpError(xhr.status, data).text);
+      err.debrief = httpError(xhr.status, data);
+      reject(err);
+    };
+    xhr.onerror = () => reject(new Error("Debrief could not reach its own server. " + SERVER_ERROR_FIX));
+    xhr.onabort = () => reject(new Error("That upload was stopped."));
+    xhr.send(fd);
+  });
+}
+
+// Several files at once upload one after another, each with its own line. One
+// model server means they would queue anyway, and a serial upload keeps the
+// failure of one file from taking the others with it.
+async function uploadSources(files, clientId) {
+  // Every line carries the client it belongs to, so a batch that is still
+  // running when the clinician opens somebody else keeps its own lines to
+  // itself and finds them again on the way back.
+  const batch = files.map(f => ({
+    id: uid("upl"), client_id: clientId, name: f.name || "file", pct: 0, state: "uploading", error: "",
+  }));
+  App.uploads = (App.uploads || []).concat(batch);
+  render();
+  announce(files.length === 1 ? "Uploading one file." : `Uploading ${files.length} files.`);
+
+  for (let i = 0; i < files.length; i++) {
+    const entry = batch[i];
+    try {
+      const result = await uploadSourceFile(files[i], clientId, (pct) => {
+        entry.pct = pct;
+        paintUploadLine(entry);
+      });
+      entry.pct = 100;
+      entry.state = "done";
+      // The material is stored either way. A queue that could not take the job
+      // is said out loud rather than left as a card that never moves.
+      if (result && result.job_error) toast(String(result.job_error), null, true);
+    } catch (e) {
+      entry.state = "failed";
+      entry.error = errText(e);
+    }
+    paintUploadLine(entry);
+  }
+
+  const failed = batch.filter(u => u.state === "failed").length;
+  const brought = batch.length - failed;
+  // The cards below are the real confirmation, so a finished line has done its
+  // job. Only this batch's finished lines go: a failed one stays put with its
+  // reason, and another client's batch is none of this one's business.
+  const finished = new Set(batch.filter(u => u.state === "done").map(u => u.id));
+  App.uploads = (App.uploads || []).filter(u => !finished.has(u.id));
+  // Back to "session recording" for the next drop. This is what this drop was,
+  // not a setting: a "reference" left ticked from ten minutes ago is how a
+  // session recording gets filed as an article nobody will ever look for.
+  App.sourceUploadKind = "session";
+  await refreshSources(clientId);
+  if (brought) announce(brought === 1 ? "One file was brought in." : `${brought} files were brought in.`);
+  if (failed) announce(failed === 1 ? "One file could not be brought in." : `${failed} files could not be brought in.`, true);
+  if (onSourcesTab(clientId)) render();
+}
+
+function openPasteSheet(clientId) {
+  const titleId = uid("dlg");
+  const textId = uid("paste");
+  const backdrop = h(`<div class="modal-backdrop"><div class="modal paste-modal">
+    <h4 id="${titleId}">Paste a transcript</h4>
+    <p class="ac-lead">Paste the text below, then tell Debrief what it is. This matters: a write up must never be quoted as the client's own words.</p>
+    <div class="ac-error" role="alert" hidden></div>
+    <label class="visually-hidden" for="${textId}">The text to bring in</label>
+    <textarea class="set-textarea paste-area" id="${textId}" rows="9" spellcheck="false" placeholder="Paste here"></textarea>
+    <div class="set-radios paste-kinds">
+      <label class="set-radio">
+        <input type="radio" name="pasteKind" value="pasted_transcript" checked />
+        <span class="set-radio-body"><span class="set-radio-title">Word for word transcript</span><span class="set-radio-desc">Exactly what was said, from a recording or a meeting tool.</span></span>
+      </label>
+      <label class="set-radio">
+        <input type="radio" name="pasteKind" value="clinician_notes" />
+        <span class="set-radio-body"><span class="set-radio-title">My own notes</span><span class="set-radio-desc">Your write up of the session. Debrief reads it, and never quotes from it.</span></span>
+      </label>
+    </div>
+    <div class="confirm-actions">
+      <button class="btn btn-ghost" id="pasteCancel">Cancel</button>
+      <button class="btn btn-primary" id="pasteSave">Bring it in</button>
+    </div>
+  </div></div>`);
+
+  const area = backdrop.querySelector(".paste-area");
+  const errBox = backdrop.querySelector(".ac-error");
+  const showError = (msg) => { errBox.textContent = String(msg || ""); errBox.hidden = !msg; };
+  const save = backdrop.querySelector("#pasteSave");
+  let close = () => backdrop.remove();
+
+  const submit = async () => {
+    const text = area.value.trim();
+    if (!text) { showError("Paste the text first."); area.focus(); return; }
+    const picked = backdrop.querySelector('input[name="pasteKind"]:checked');
+    showError("");
+    save.disabled = true;
+    const original = save.textContent;
+    save.textContent = "Bringing it in...";
+    try {
+      const r = await withSourcesBusy(() => fetch("/api/sources/paste", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_id: clientId, text, kind: (picked && picked.value) || "pasted_transcript" }),
+      }));
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        showError(apiErr(data, r.status));
+        save.disabled = false; save.textContent = original;
+        return;
+      }
+      close();
+      await refreshSources(clientId);
+      announce("The pasted text was brought in.");
+      if (data && data.job_error) toast(String(data.job_error), null, true);
+      if (onSourcesTab(clientId)) render();
+    } catch (e) {
+      showError("Debrief could not reach its own server. " + SERVER_ERROR_FIX);
+      save.disabled = false; save.textContent = original;
+    }
+  };
+
+  backdrop.querySelector("#pasteCancel").onclick = () => close();
+  save.onclick = submit;
+  backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
+  close = openDialog({
+    backdrop,
+    sheet: backdrop.querySelector(".modal"),
+    labelId: titleId,
+    initialFocus: area,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The one question that stops a summary being filed as a quote.
+// ---------------------------------------------------------------------------
+
+function buildConfirmBanner(row, clientId) {
+  const qId = uid("cfm");
+  const guess = sourceKindLabel(row.kind).toLowerCase();
+  const banner = h(`<div class="src-confirm" role="group" aria-labelledby="${qId}">
+    <div class="src-confirm-q" id="${qId}">Is this word for word, or an AI summary?</div>
+    <div class="src-confirm-sub">The file you brought in from ${esc(fmtSourceWhen(row))} looks like ${esc(guess)}, but Debrief is not sure enough to act on it. It will not read this until you say.</div>
+    <div class="src-confirm-btns">
+      <button type="button" class="btn btn-primary btn-compact" data-a="verbatim">Word for word</button>
+      <button type="button" class="btn btn-ghost btn-compact" data-a="summary">AI summary</button>
+    </div>
+  </div>`);
+  const buttons = Array.from(banner.querySelectorAll(".src-confirm-btns button"));
+  buttons.forEach(btn => {
+    btn.onclick = () => {
+      buttons.forEach(b => { b.disabled = true; });
+      confirmSource(row, clientId, btn.dataset.a === "verbatim", buttons);
+    };
+  });
+  return banner;
+}
+
+async function confirmSource(row, clientId, verbatim, buttons) {
+  try {
+    await withSourcesBusy(async () => {
+      const r = await fetch("/api/sources/" + encodeURIComponent(row.source_id) + "/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_id: clientId,
+          verbatim: !!verbatim,
+          produced_by: String(row.produced_by || "unknown"),
+        }),
+      });
+      if (!r.ok) throw await failure(r);
+      await r.json().catch(() => ({}));
+      // Re-read rather than patch: the answer changes the kind, the rung, and
+      // whether a job is now queued, and the banner has to be gone afterwards.
+      await refreshSources(clientId);
+    });
+    announce(verbatim ? "Marked as word for word. Debrief is reading it now." : "Marked as an AI summary. Debrief will never quote from it.");
+    if (onSourcesTab(clientId)) render();
+  } catch (e) {
+    buttons.forEach(b => { b.disabled = false; });
+    toastError(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// One card per piece of material.
+// ---------------------------------------------------------------------------
+
+// The honest stage line: what is happening, or what happened, never a spinner
+// that means "something, somewhere". tone drives colour only.
+function sourceStage(row) {
+  const job = (row && row.job) || null;
+  const rungs = (row && row.rungs) || [];
+  const state = String((job && job.state) || "");
+  if (state === "queued") return { text: "Waiting its turn", tone: "wait" };
+  if (state === "running") {
+    const label = JOB_STAGE_LABEL[String(job.stage || "")] || "Working through it";
+    const total = Number(job.total) || 0;
+    const done = Number(job.done) || 0;
+    return {
+      text: total > 1 ? `${label} (${done} of ${total})` : label,
+      tone: "wait",
+      done, total,
+    };
+  }
+  if (state === "waiting") return { text: "Paused while you debrief", tone: "wait" };
+  // Reference material is never evidence in a debrief, so it never says it is
+  // ready to be one.
+  if (rungs.indexOf(2) >= 0) {
+    return { text: isReferenceSource(row) ? "Ready to read" : "Ready to use in a debrief", tone: "good" };
+  }
+  if (state === "failed") {
+    const where = JOB_STAGE_PLAIN[String(job.stage || "")];
+    return {
+      text: where ? `Failed at ${where}. Earlier steps were kept.` : "Failed. Earlier steps were kept.",
+      tone: "bad",
+      error: String(job.error || ""),
+    };
+  }
+  if (state === "cancelled") return { text: "Stopped", tone: "wait" };
+  if (row && row.needs_confirmation) return { text: "Waiting on your answer above", tone: "wait" };
+  if (state === "done") return { text: "Finished without a session summary", tone: "bad" };
+  return { text: "Stored. Nothing is processing it yet.", tone: "wait" };
+}
+
+function sourceChips(row) {
+  const reference = isReferenceSource(row);
+  const chips = [`<span class="src-chip${reference ? " ref" : ""}">${esc(sourceKindLabel(row.kind))}</span>`];
+  const producer = SOURCE_PRODUCER_LABEL[String(row.produced_by || "")];
+  // Who made it is a claim about a session write up. Reference material has no
+  // session and no author worth naming here, so the chip stays off it.
+  if (producer && !reference) chips.push(`<span class="src-chip">${esc(producer)}</span>`);
+  chips.push(row.verbatim
+    ? `<span class="src-chip strong">Word for word</span>`
+    : `<span class="src-chip strong">Summary</span>`);
+  const mins = Number(row.duration_min);
+  if (Number.isFinite(mins) && mins > 0) chips.push(`<span class="src-chip">${esc(mins + " " + plural(mins, "minute"))}</span>`);
+  if (row.partial) chips.push(`<span class="src-chip warn">Interrupted</span>`);
+  return chips.join("");
+}
+
+// The heading date is when the session happened; when the file arrived is a
+// different fact and sits underneath as one. Reference material has no session,
+// so its date is said as the date of the material.
+function sourceHeadline(row) {
+  const when = fmtDayLong(row.session_date) || fmtSourceWhen(row);
+  return isReferenceSource(row) ? `Reference material from ${when}` : when;
+}
+
+function buildSourceCard(row, clientId) {
+  const stage = sourceStage(row);
+  const reference = isReferenceSource(row);
+  const card = h(`<div class="rcard src-card">
+    <div class="src-head">
+      <div class="src-headings">
+        <div class="src-when-row">
+          <h3 class="src-when">${esc(sourceHeadline(row))}</h3>
+        </div>
+        <div class="src-added">added ${esc(fmtDayLong(row.captured_at) || fmtSourceWhen(row))}</div>
+        <div class="src-chips">${sourceChips(row)}</div>
+      </div>
+    </div>
+    <div class="src-stage ${esc(stage.tone)}">${esc(stage.text)}</div>
+  </div>`);
+
+  // Correcting the date is a normal thing to need: material is brought in days
+  // after the session it belongs to.
+  const editDate = h(`<button type="button" class="iconbtn src-date-edit-btn" aria-label="Change the date for the material from ${esc(sourceHeadline(row))}"><span aria-hidden="true">✎</span></button>`);
+  editDate.onclick = () => beginSessionDateEdit(card, row, clientId);
+  card.querySelector(".src-when-row").appendChild(editDate);
+
+  if (stage.total > 1) {
+    const pct = Math.max(0, Math.min(100, Math.round((stage.done / stage.total) * 100)));
+    card.appendChild(h(`<div class="src-prog" aria-hidden="true"><span style="width:${pct}%"></span></div>`));
+  }
+  if (stage.error) card.appendChild(technicalDetails(stage.error));
+
+  // Where this material ended up. A note it was connected to is one click away
+  // from the material itself, in both directions.
+  const links = (row.linked_notes || []).filter(p => String(p || "").trim());
+  if (links.length) {
+    const box = h(`<div class="src-links"><span class="src-links-label">Connected to</span></div>`);
+    links.forEach(path => {
+      const session = ((App.recordData && App.recordData.sessions) || []).find(s => s.path === path);
+      const label = (session && sessionCardTitle(session)) || String(path).split("/").pop();
+      const chip = h(`<button type="button" class="src-link-chip">${esc(label)}</button>`);
+      chip.onclick = () => openDocument(path, {
+        client: App.recordData, section: "Sessions", title: (session && session.title) || "",
+      });
+      box.appendChild(chip);
+    });
+    card.appendChild(box);
+  }
+
+  const foot = h(`<div class="src-foot"></div>`);
+  const rungs = row.rungs || [];
+  if (rungs.indexOf(2) >= 0) {
+    const view = h(`<button type="button" class="btn btn-ghost btn-compact">${reference ? "View summary" : "View session summary"}</button>`);
+    view.onclick = () => openDigestSheet(row, clientId);
+    foot.appendChild(view);
+  }
+  // Word for word is the whole trust question: a clinician has to be able to
+  // read what the machine actually heard, not only what it made of it.
+  if (rungs.indexOf(1) >= 0 || rungs.indexOf(0) >= 0) {
+    const words = h(`<button type="button" class="btn btn-ghost btn-compact">View word for word</button>`);
+    words.onclick = () => openWordForWord(row, clientId);
+    foot.appendChild(words);
+  }
+  if (!row.has_audio && SOURCE_MEDIA_KINDS.has(String(row.kind || ""))) {
+    foot.appendChild(h(`<span class="src-note">No audio stored. The transcript and summary were kept.</span>`));
+  }
+
+  const menuWrap = h(`<div class="src-menu-wrap"></div>`);
+  const more = h(`<button type="button" class="iconbtn src-more" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for the material from ${esc(sourceHeadline(row))}"><span aria-hidden="true">···</span></button>`);
+  more.onclick = () => toggleSourceMenu(menuWrap, more, row, clientId);
+  menuWrap.appendChild(more);
+  foot.appendChild(h(`<span class="grow"></span>`));
+  foot.appendChild(menuWrap);
+  card.appendChild(foot);
+  return card;
+}
+
+// ---------------------------------------------------------------------------
+// Correcting the session date.
+// ---------------------------------------------------------------------------
+
+function beginSessionDateEdit(card, row, clientId) {
+  const holder = card.querySelector(".src-when-row");
+  if (!holder || holder.querySelector(".src-date-edit")) return;
+  const fieldId = uid("sd");
+  const box = h(`<div class="src-date-edit">
+    <label class="visually-hidden" for="${fieldId}">The date this material is from</label>
+    <input type="date" id="${fieldId}" class="src-date-input" value="${esc(isoDatePart(row.session_date))}" />
+    <button type="button" class="btn btn-primary btn-compact src-date-save">Save</button>
+    <button type="button" class="btn btn-ghost btn-compact src-date-cancel">Cancel</button>
+  </div>`);
+  const err = h(`<div class="src-date-err" role="alert" hidden></div>`);
+  holder.innerHTML = "";
+  holder.appendChild(box);
+  // Beside the field, which means inside the field's own container: the card is
+  // not this row's parent, and asking it to insert here is how a small edit
+  // takes the whole card down.
+  holder.insertAdjacentElement("afterend", err);
+  const input = box.querySelector("input");
+  input.focus();
+
+  // Escape means cancel, and it has to mean it: the poll can repaint this card
+  // out from under an open editor otherwise, so sourcesInteractionLive() holds
+  // it off while this field is on screen.
+  const cancel = () => { if (onSourcesTab(clientId)) render(); };
+  const save = async () => {
+    const value = input.value;
+    err.hidden = true;
+    box.querySelectorAll("button").forEach(b => { b.disabled = true; });
+    try {
+      await withSourcesBusy(async () => {
+        const r = await fetch("/api/sources/" + encodeURIComponent(row.source_id) + "/session-date", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ client_id: clientId, session_date: value }),
+        });
+        if (!r.ok) throw await failure(r);
+        await r.json().catch(() => ({}));
+        await refreshSources(clientId);
+      });
+      announce("The date was saved.");
+      if (onSourcesTab(clientId)) render();
+    } catch (e) {
+      // Beside the field, not in a toast that floats away from the thing it is
+      // about. The server's own sentence names the format it wants.
+      err.textContent = errText(e);
+      err.hidden = false;
+      box.querySelectorAll("button").forEach(b => { b.disabled = false; });
+      input.focus();
+    }
+  };
+  box.querySelector(".src-date-save").onclick = save;
+  box.querySelector(".src-date-cancel").onclick = cancel;
+  input.onkeydown = (e) => {
+    if (e.key === "Enter") { e.preventDefault(); save(); }
+    if (e.key === "Escape") { e.preventDefault(); cancel(); }
+  };
+}
+
+// The same contract as the document overflow menu: a real menu, Escape closes
+// it, tabbing out of either end closes it, focus comes back to the trigger.
+function toggleSourceMenu(wrap, trigger, row, clientId) {
+  const existing = wrap.querySelector(".overflow-menu");
+  if (existing) { closeSourceMenu(wrap, trigger); return; }
+  const reference = isReferenceSource(row);
+  // An unanswered provenance question blocks anything that would put a claim
+  // about this material into a clinical record. The reason travels with the
+  // disabled item rather than being discovered by clicking it.
+  const blocked = !!row.needs_confirmation;
+  // One id, minted once, on the sentence itself further down. Pointing at an
+  // id nothing carries is the same as saying nothing.
+  const whyId = uid("why");
+  const blockedAttrs = blocked ? ` disabled title="${esc(SOURCE_UNCONFIRMED)}" aria-describedby="${whyId}"` : "";
+  const menu = h(`<div class="overflow-menu" role="menu" aria-label="Actions for the material from ${esc(sourceHeadline(row))}">
+    <button type="button" role="menuitem" data-a="connect"${blockedAttrs}>Connect to a session note</button>
+    <button type="button" role="menuitem" data-a="draft"${blockedAttrs}>Draft a note from this</button>
+    <button type="button" role="menuitem" data-a="ref">${reference ? "Treat as a session recording" : "Treat as reference material"}</button>
+    <button type="button" role="menuitem" data-a="reveal">Reveal in Finder</button>
+    ${row.has_audio ? `<button type="button" role="menuitem" data-a="audio">Delete audio only</button>` : ""}
+    <button type="button" role="menuitem" class="danger" data-a="all">${reference ? "Delete this material" : "Delete recording"}</button>
+  </div>`);
+  wrap.appendChild(menu);
+  trigger.setAttribute("aria-expanded", "true");
+  if (blocked) menu.appendChild(h(`<div class="overflow-why" id="${whyId}">${esc(SOURCE_UNCONFIRMED)}</div>`));
+
+  const connectBtn = menu.querySelector('[data-a="connect"]');
+  if (!blocked) connectBtn.onclick = () => { closeSourceMenu(wrap, trigger); openConnectSheet(row, clientId); };
+  const draftBtn = menu.querySelector('[data-a="draft"]');
+  if (!blocked) draftBtn.onclick = () => { closeSourceMenu(wrap, trigger); draftFromSource(row, clientId); };
+
+  menu.querySelector('[data-a="ref"]').onclick = () => {
+    closeSourceMenu(wrap, trigger);
+    confirmModal({
+      title: reference ? "File this as a session recording?" : "File this as reference material?",
+      body: reference
+        ? "Debrief will read it as material from a session with this client, and it can be used as evidence in a debrief. Its summary is rebuilt, which takes a few minutes."
+        : "Reference material is something you saved to read again, not a session with this client. It is never used as evidence in a debrief, and its summary is rebuilt in the reference shape, which takes a few minutes.",
+      cancelLabel: "Leave it",
+      confirmLabel: reference ? "File as a session" : "File as reference",
+      onConfirm: () => setSourceReference(row, clientId, !reference),
+    });
+  };
+  menu.querySelector('[data-a="reveal"]').onclick = () => {
+    closeSourceMenu(wrap, trigger);
+    revealPath(sourceFolder(clientId, row.source_id));
+  };
+
+  const audioBtn = menu.querySelector('[data-a="audio"]');
+  if (audioBtn) audioBtn.onclick = () => {
+    closeSourceMenu(wrap, trigger);
+    confirmModal({
+      title: "Delete the audio only?",
+      body: "The audio file is removed from this Mac for good. The transcript and the session summary stay, so the note keeps its evidence trail.",
+      cancelLabel: "Keep it",
+      confirmLabel: "Delete audio",
+      danger: true,
+      onConfirm: () => deleteSource(row, clientId, true),
+    });
+  };
+  menu.querySelector('[data-a="all"]').onclick = () => {
+    closeSourceMenu(wrap, trigger);
+    confirmModal({
+      title: reference ? "Delete this material?" : "Delete this recording?",
+      body: "Everything stored for it goes to Trash, where it stays for 30 days before it is gone. Notes you have already filed are not touched.",
+      cancelLabel: "Keep it",
+      confirmLabel: reference ? "Delete material" : "Delete recording",
+      danger: true,
+      onConfirm: () => deleteSource(row, clientId, false),
+    });
+  };
+
+  const closer = (e) => { if (!wrap.contains(e.target)) closeSourceMenu(wrap, trigger); };
+  const onKey = (e) => {
+    if (e.key === "Escape") { e.preventDefault(); closeSourceMenu(wrap, trigger, true); return; }
+    if (e.key !== "Tab") return;
+    const items = Array.from(menu.querySelectorAll("button"));
+    const last = items[items.length - 1];
+    if (!e.shiftKey && document.activeElement === last) closeSourceMenu(wrap, trigger);
+    else if (e.shiftKey && document.activeElement === items[0]) closeSourceMenu(wrap, trigger);
+  };
+  const onFocusOut = () => setTimeout(() => {
+    if (wrap.isConnected && !wrap.contains(document.activeElement)) closeSourceMenu(wrap, trigger);
+  }, 0);
+  wrap._menuTeardown = () => {
+    document.removeEventListener("click", closer);
+    document.removeEventListener("keydown", onKey, true);
+    wrap.removeEventListener("focusout", onFocusOut);
+  };
+  document.addEventListener("keydown", onKey, true);
+  wrap.addEventListener("focusout", onFocusOut);
+  setTimeout(() => document.addEventListener("click", closer), 0);
+  // The first item somebody can actually use. A disabled item cannot take
+  // focus, so landing on it would leave the keyboard nowhere.
+  const first = Array.from(menu.querySelectorAll("button")).find(b => !b.disabled);
+  if (first) first.focus();
+}
+
+function closeSourceMenu(wrap, trigger, refocus) {
+  const menu = wrap.querySelector(".overflow-menu");
+  if (!menu) return;
+  if (wrap._menuTeardown) { wrap._menuTeardown(); wrap._menuTeardown = null; }
+  menu.remove();
+  if (trigger && trigger.isConnected) {
+    trigger.setAttribute("aria-expanded", "false");
+    if (refocus) trigger.focus();
+  }
+}
+
+async function deleteSource(row, clientId, audioOnly) {
+  const url = "/api/sources/" + encodeURIComponent(row.source_id)
+    + "?client_id=" + encodeURIComponent(clientId)
+    + (audioOnly ? "&audio_only=true" : "");
+  try {
+    await withSourcesBusy(async () => {
+      const r = await fetch(url, { method: "DELETE" });
+      if (!r.ok) throw await failure(r);
+      await r.json().catch(() => ({}));
+      await refreshSources(clientId);
+    });
+    toast(audioOnly ? "Audio deleted. The transcript and summary were kept." : "Moved to Trash.");
+    if (onSourcesTab(clientId)) render();
+  } catch (e) { toastError(e); }
+}
+
+// ---------------------------------------------------------------------------
+// Reveal in Finder.
+//
+// One call, one shape, everywhere something on screen exists as bytes on disk.
+// A file is revealed inside its folder, a folder is opened; the callers here
+// ask for folders, because "where is this" is a question about a folder.
+// ---------------------------------------------------------------------------
+
+async function revealPath(path) {
+  try {
+    const r = await fetch("/api/reveal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    if (!r.ok) throw await failure(r);
+  } catch (e) {
+    toastError(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Session material or reference material.
+// ---------------------------------------------------------------------------
+
+async function setSourceReference(row, clientId, reference) {
+  try {
+    await withSourcesBusy(async () => {
+      const r = await fetch("/api/sources/" + encodeURIComponent(row.source_id) + "/reference", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_id: clientId, reference: !!reference }),
+      });
+      if (!r.ok) throw await failure(r);
+      await r.json().catch(() => ({}));
+      await refreshSources(clientId);
+    });
+    announce(reference
+      ? "Filed as reference material. Debrief is rebuilding its summary."
+      : "Filed as material from a session. Debrief is rebuilding its summary.");
+    if (onSourcesTab(clientId)) render();
+  } catch (e) { toastError(e); }
+}
+
+// ---------------------------------------------------------------------------
+// Connecting material to a note that is already filed.
+//
+// Two steps in one sheet: pick the note, then read the exact sentence that will
+// be appended to it. A filed note is never rewritten, so the clinician should
+// see the words before they become part of the record.
+// ---------------------------------------------------------------------------
+
+function openConnectSheet(row, clientId) {
+  const titleId = uid("dlg");
+  const backdrop = h(`<div class="modal-backdrop"><div class="modal connect-modal">
+    <h4 id="${titleId}">Connect to a session note</h4>
+    <p class="ac-lead">The note gains a dated amendment saying this material exists and where it lives. Nothing already in the note is changed.</p>
+    <div class="ac-error" role="alert" hidden></div>
+    <div class="connect-body"></div>
+  </div></div>`);
+  const body = backdrop.querySelector(".connect-body");
+  const errBox = backdrop.querySelector(".ac-error");
+  const showError = (msg) => { errBox.textContent = String(msg || ""); errBox.hidden = !msg; };
+  let close = () => backdrop.remove();
+
+  const sessions = ((App.recordData && App.recordData.sessions) || []).slice()
+    .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+
+  const pickStep = () => {
+    body.innerHTML = "";
+    showError("");
+    if (!sessions.length) {
+      body.appendChild(h(`<p class="connect-empty">No notes are filed for this client yet. File one first, or draft one from this material, and then connect them.</p>`));
+      const bar = h(`<div class="confirm-actions"><button class="btn btn-primary">Close</button></div>`);
+      bar.querySelector("button").onclick = () => close();
+      body.appendChild(bar);
+      return;
+    }
+    const list = h(`<div class="connect-list"></div>`);
+    sessions.forEach(s => {
+      const row2 = h(`<button type="button" class="connect-pick">
+        <span class="connect-pick-title">${esc(sessionCardTitle(s))}</span>
+        <span class="connect-pick-meta">${esc(fmtDayLong(s.date) || s.date || "")}</span>
+      </button>`);
+      row2.onclick = () => confirmStep(s);
+      list.appendChild(row2);
+    });
+    body.appendChild(list);
+    const bar = h(`<div class="confirm-actions"><button class="btn btn-ghost">Cancel</button></div>`);
+    bar.querySelector("button").onclick = () => close();
+    body.appendChild(bar);
+  };
+
+  const confirmStep = (session) => {
+    body.innerHTML = "";
+    showError("");
+    body.appendChild(h(`<div class="connect-chosen">
+      <span class="connect-chosen-label">Connecting to</span>
+      <span class="connect-chosen-title">${esc(sessionCardTitle(session))}</span>
+    </div>`));
+    body.appendChild(h(`<div class="connect-amend-label">This sentence is appended to the note, dated today:</div>`));
+    const quote = h(`<blockquote class="connect-amend"></blockquote>`);
+    // textContent, not markup: this is a sentence, and it is about to become
+    // part of a clinical record.
+    quote.textContent = amendmentPreview(row, clientId);
+    body.appendChild(quote);
+    const bar = h(`<div class="confirm-actions">
+      <button class="btn btn-ghost" data-a="back">Back</button>
+      <button class="btn btn-primary" data-a="go">Connect</button>
+    </div>`);
+    bar.querySelector('[data-a="back"]').onclick = pickStep;
+    const go = bar.querySelector('[data-a="go"]');
+    go.onclick = async () => {
+      go.disabled = true;
+      const original = go.textContent;
+      go.textContent = "Connecting...";
+      try {
+        const result = await withSourcesBusy(async () => {
+          const r = await fetch("/api/sources/" + encodeURIComponent(row.source_id) + "/assign", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ client_id: clientId, note_path: session.path }),
+          });
+          if (!r.ok) throw await failure(r);
+          return await r.json();
+        });
+        close();
+        await refreshSources(clientId);
+        if (result && result.already_linked) {
+          toast("Already connected. Nothing was added to the note.");
+          announce("Already connected. Nothing was added to the note.");
+        } else {
+          toast("Connected. The note carries a dated amendment.");
+          announce("Connected. The note carries a dated amendment.");
+        }
+        if (onSourcesTab(clientId)) render();
+      } catch (e) {
+        showError(errText(e));
+        go.disabled = false;
+        go.textContent = original;
+      }
+    };
+    body.appendChild(bar);
+    go.focus();
+  };
+
+  pickStep();
+  backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
+  close = openDialog({
+    backdrop,
+    sheet: backdrop.querySelector(".modal"),
+    labelId: titleId,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Drafting a note from stored material.
+//
+// The plan comes back in the shape the review screen already knows, so it lands
+// there and is edited, approved, and filed exactly like a debriefed note.
+// ---------------------------------------------------------------------------
+
+async function draftFromSource(row, clientId) {
+  App.procMode = "draft";
+  announce("Writing a draft from this material.");
+  go("processing");
+  try {
+    const r = await fetch("/api/sources/" + encodeURIComponent(row.source_id) + "/draft", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client_id: clientId }),
+    });
+    if (!r.ok) throw await failure(r);
+    App.plan = await r.json();
+    App.procMode = null;
+    go("review");
+  } catch (e) {
+    // Straight back to the material it came from, with the reason. Nothing was
+    // filed and nothing was lost: the material is exactly where it was.
+    App.procMode = null;
+    App.error = errOf(e);
+    App.state = "clientRecord";
+    App.recordTab = "sources";
+    render();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The session summary, read back.
+//
+// digest.json is what the code reads, so this sheet renders that rather than a
+// second copy of it. Every value is put on screen as text, never as markup.
+// ---------------------------------------------------------------------------
+
+function digestList(items, empty) {
+  const box = h(`<ul class="digest-list"></ul>`);
+  const rows = (items || []).filter(x => String(x == null ? "" : x).trim());
+  if (!rows.length) { return h(`<p class="digest-empty">${esc(empty)}</p>`); }
+  rows.forEach(x => box.appendChild(h(`<li>${esc(String(x))}</li>`)));
+  return box;
+}
+
+function digestSection(title, node) {
+  const sec = h(`<section class="digest-sec"><h5>${esc(title)}</h5></section>`);
+  sec.appendChild(node);
+  return sec;
+}
+
+// Reference material is summarised in its own shape, and the difference is the
+// point: no client statements, no risk block, nothing that would read as a
+// claim about a session that never happened. The renderer refuses to draw those
+// sections at all rather than drawing them empty.
+function buildReferenceBody(digest) {
+  const body = h(`<div class="digest-body"></div>`);
+  const title = String(digest.title || "").trim();
+  if (title) body.appendChild(h(`<h5 class="digest-title">${esc(title)}</h5>`));
+  const mins = Number(digest.duration_min);
+  if (Number.isFinite(mins) && mins > 0) {
+    body.appendChild(h(`<p class="digest-meta">${esc(mins + " " + plural(mins, "minute"))}</p>`));
+  }
+  const summary = String(digest.summary || "").trim();
+  body.appendChild(digestSection("Summary", summary
+    ? h(`<p class="digest-para">${esc(summary)}</p>`)
+    : h(`<p class="digest-empty">No summary was produced for this material.</p>`)));
+
+  const segments = (digest.segments || []).filter(s => s && typeof s === "object");
+  const timeline = h(`<div class="digest-timeline"></div>`);
+  if (!segments.length) timeline.appendChild(h(`<p class="digest-empty">No timeline was produced for this material.</p>`));
+  segments.forEach(s => {
+    const start = Number(s.start_min);
+    const stamp = Number.isFinite(start) ? `${start} min` : "";
+    timeline.appendChild(h(`<div class="digest-seg">
+      ${stamp ? `<span class="digest-when">${esc(stamp)}</span>` : ""}
+      <span class="digest-seg-body">
+        <b>${esc(String(s.topic || "Untitled"))}</b>
+        <span>${esc(String(s.summary || ""))}</span>
+      </span>
+    </div>`));
+  });
+  body.appendChild(digestSection("Timeline", timeline));
+  body.appendChild(digestSection("Key points", digestList(digest.key_points, "None recorded.")));
+  body.appendChild(digestSection("Practices or suggestions", digestList(digest.practices_or_suggestions, "None recorded.")));
+  body.appendChild(digestSection("Topics", digestList(digest.topics, "None recorded.")));
+  return body;
+}
+
+function buildDigestBody(digest) {
+  if (String(digest.kind || "").toLowerCase() === "reference") return buildReferenceBody(digest);
+  const body = h(`<div class="digest-body"></div>`);
+  const mins = Number(digest.duration_min);
+  const meta = [
+    Number.isFinite(mins) && mins > 0 ? `${mins} ${plural(mins, "minute")}` : "Length not known",
+    digest.diarized ? "Speakers separated" : "Speakers not separated",
+  ].join(" · ");
+  body.appendChild(h(`<p class="digest-meta">${esc(meta)}</p>`));
+
+  const segments = (digest.segments || []).filter(s => s && typeof s === "object");
+  const timeline = h(`<div class="digest-timeline"></div>`);
+  if (!segments.length) timeline.appendChild(h(`<p class="digest-empty">No timeline was produced for this material.</p>`));
+  segments.forEach(s => {
+    const start = Number(s.start_min);
+    const stamp = Number.isFinite(start) ? `${start} min` : "";
+    timeline.appendChild(h(`<div class="digest-seg">
+      ${stamp ? `<span class="digest-when">${esc(stamp)}</span>` : ""}
+      <span class="digest-seg-body">
+        <b>${esc(String(s.topic || "Untitled"))}</b>
+        <span>${esc(String(s.summary || ""))}</span>
+      </span>
+    </div>`));
+  });
+  body.appendChild(digestSection("Timeline", timeline));
+
+  body.appendChild(digestSection("Themes", digestList(digest.themes, "None recorded.")));
+
+  const interventions = (digest.interventions_observed || []).filter(x => x && typeof x === "object");
+  body.appendChild(digestSection("Interventions observed", digestList(
+    interventions.map(x => {
+      const response = String(x.client_response || "").trim();
+      return String(x.name || "").trim() + (response ? `: ${response}` : "");
+    }),
+    "None recorded.",
+  )));
+
+  const statements = (digest.client_statements || []).filter(x => x && typeof x === "object");
+  body.appendChild(digestSection("Client statements", digestList(
+    statements.map(x => `"${String(x.quote || "").trim()}" (attribution ${String(x.attribution_confidence || "unknown")})`),
+    "No word for word client statements were captured from this material.",
+  )));
+
+  const riskBox = h(`<div></div>`);
+  if (digest.risk_language_present) {
+    riskBox.appendChild(h(`<p class="digest-risk">Language that may bear on risk appeared in this session. This is a flag for your attention, not an assessment.</p>`));
+    riskBox.appendChild(digestList((digest.risk_excerpts || []).map(x => `"${String(x).trim()}"`), "No word for word excerpt is available."));
+  } else {
+    riskBox.appendChild(h(`<p class="digest-empty">None noted.</p>`));
+  }
+  body.appendChild(digestSection("Risk language", riskBox));
+
+  body.appendChild(digestSection("Practices or homework", digestList(digest.practices_or_homework, "None recorded.")));
+  body.appendChild(digestSection("Unresolved threads", digestList(digest.unresolved_threads, "None recorded.")));
+  body.appendChild(digestSection("Notable shifts", digestList(digest.notable_shifts, "None recorded.")));
+  return body;
+}
+
+// "The session on 20 July 2026, added 27 July 2026", or the reference form of
+// the same two facts. Both dates are true and they answer different questions.
+function sourceDialogLead(row) {
+  const when = fmtDayLong(row.session_date) || fmtSourceWhen(row);
+  const added = fmtDayLong(row.captured_at);
+  const tail = added ? `, added ${added}` : "";
+  return isReferenceSource(row)
+    ? `Reference material from ${when}${tail}.`
+    : `The session on ${when}${tail}.`;
+}
+
+async function openDigestSheet(row, clientId) {
+  const titleId = uid("dlg");
+  const reference = isReferenceSource(row);
+  const backdrop = h(`<div class="modal-backdrop"><div class="modal digest-modal">
+    <h4 id="${titleId}">${reference ? "Summary" : "Session summary"}</h4>
+    <p class="ac-lead">${esc(sourceDialogLead(row))} ${reference
+      ? "This is what the material itself says. It is never used as evidence about this client."
+      : "This is what Debrief heard, kept as evidence for a note. It is never the note itself."}</p>
+    <div class="digest-slot"><div class="panel processing"><div class="spinner"></div><div class="label">Opening the summary...</div></div></div>
+    <div class="confirm-actions">
+      <button class="btn btn-ghost" id="digestReveal">Reveal in Finder</button>
+      <button class="btn btn-primary" id="digestClose">Close</button>
+    </div>
+  </div></div>`);
+  let close = () => backdrop.remove();
+  backdrop.querySelector("#digestClose").onclick = () => close();
+  backdrop.querySelector("#digestReveal").onclick = () =>
+    revealPath(sourceFolder(clientId, row.source_id));
+  backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
+  close = openDialog({
+    backdrop,
+    sheet: backdrop.querySelector(".modal"),
+    labelId: titleId,
+    initialFocus: backdrop.querySelector("#digestClose"),
+  });
+
+  const slot = backdrop.querySelector(".digest-slot");
+  try {
+    const r = await fetch("/api/sources/" + encodeURIComponent(row.source_id) + "/digest?client_id=" + encodeURIComponent(clientId));
+    if (!r.ok) throw await failure(r);
+    const digest = await r.json();
+    if (!backdrop.isConnected) return;
+    slot.innerHTML = "";
+    slot.appendChild(buildDigestBody(digest || {}));
+  } catch (e) {
+    if (!backdrop.isConnected) return;
+    slot.innerHTML = "";
+    slot.appendChild(errorBanner(errOf(e)));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Word for word.
+//
+// The whole trust question in one dialog: what did the machine actually hear,
+// before anything was made of it. Three versions of the same material, each
+// labelled with what it is, and the text is put on screen with textContent so
+// what is read is exactly what is on disk.
+// ---------------------------------------------------------------------------
+
+const WORD_VERSIONS = [
+  { key: "corrected", file: SOURCE_FILES.corrected, label: "Corrected", note: "Names and clinical terms spelled the way you use them. Nothing else was changed." },
+  { key: "raw", file: SOURCE_FILES.raw, label: "Raw", note: "Exactly what was heard, before vocabulary correction." },
+  { key: "original", file: SOURCE_FILES.original, label: "Original text", note: "The file as it arrived." },
+];
+
+async function readSourceFile(clientId, sourceId, file) {
+  const r = await fetch("/api/notes?path=" + encodeURIComponent(sourcePath(clientId, sourceId, file)));
+  if (!r.ok) throw await failure(r);
+  const data = await r.json();
+  return String((data && data.markdown) || "");
+}
+
+function openWordForWord(row, clientId) {
+  const titleId = uid("dlg");
+  const rungs = row.rungs || [];
+  // Only the versions this source actually has. The original text is not
+  // recorded in the row, so it is asked for once when the dialog opens and the
+  // button appears only if the answer is yes.
+  const available = WORD_VERSIONS.filter(v =>
+    (v.key === "corrected" && rungs.indexOf(1) >= 0)
+    || (v.key === "raw" && rungs.indexOf(0) >= 0));
+
+  const backdrop = h(`<div class="modal-backdrop"><div class="modal word-modal">
+    <h4 id="${titleId}">Word for word</h4>
+    <p class="ac-lead">${esc(sourceDialogLead(row))}</p>
+    <div class="word-tabs" role="group" aria-label="Which version to read"></div>
+    <p class="word-note"></p>
+    <div class="word-slot"><div class="panel processing"><div class="spinner"></div><div class="label">Opening the text...</div></div></div>
+    <div class="confirm-actions">
+      <button class="btn btn-ghost" id="wordReveal">Reveal in Finder</button>
+      <button class="btn btn-primary" id="wordClose">Close</button>
+    </div>
+  </div></div>`);
+  const tabs = backdrop.querySelector(".word-tabs");
+  const noteLine = backdrop.querySelector(".word-note");
+  const slot = backdrop.querySelector(".word-slot");
+  const cache = {};
+  let current = available.length ? available[0].key : "corrected";
+  let close = () => backdrop.remove();
+
+  const show = async (version) => {
+    current = version.key;
+    Array.from(tabs.querySelectorAll("button")).forEach(b => {
+      b.setAttribute("aria-pressed", String(b.dataset.k === version.key));
+      b.classList.toggle("on", b.dataset.k === version.key);
+    });
+    noteLine.textContent = version.note;
+    if (cache[version.key] === undefined) {
+      slot.innerHTML = "";
+      slot.appendChild(h(`<div class="panel processing"><div class="spinner"></div><div class="label">Opening the text...</div></div>`));
+      try {
+        cache[version.key] = await readSourceFile(clientId, row.source_id, version.file);
+      } catch (e) {
+        if (!backdrop.isConnected) return;
+        slot.innerHTML = "";
+        slot.appendChild(errorBanner(errOf(e)));
+        return;
+      }
+    }
+    if (!backdrop.isConnected || current !== version.key) return;
+    slot.innerHTML = "";
+    const pre = h(`<pre class="word-text" tabindex="0"></pre>`);
+    // textContent: this is a transcript, and a transcript that renders as
+    // markup is a transcript that is no longer word for word.
+    pre.textContent = cache[version.key] || "This version is empty.";
+    slot.appendChild(pre);
+  };
+
+  const paintTabs = (versions) => {
+    tabs.innerHTML = "";
+    versions.forEach(v => {
+      const btn = h(`<button type="button" class="word-tab" data-k="${esc(v.key)}" aria-pressed="false">${esc(v.label)}</button>`);
+      btn.onclick = () => show(v);
+      tabs.appendChild(btn);
+    });
+  };
+
+  paintTabs(available);
+  backdrop.querySelector("#wordClose").onclick = () => close();
+  backdrop.querySelector("#wordReveal").onclick = () =>
+    revealPath(sourceFolder(clientId, row.source_id));
+  backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
+  close = openDialog({
+    backdrop,
+    sheet: backdrop.querySelector(".modal"),
+    labelId: titleId,
+    initialFocus: backdrop.querySelector("#wordClose"),
+  });
+
+  if (available.length) show(available[0]);
+  else {
+    slot.innerHTML = "";
+    slot.appendChild(h(`<p class="digest-empty">There is no transcript for this material yet.</p>`));
+  }
+
+  // The original file is the one version the source row cannot vouch for, so it
+  // is asked for rather than assumed. A missing one simply never appears.
+  readSourceFile(clientId, row.source_id, SOURCE_FILES.original).then(text => {
+    if (!backdrop.isConnected) return;
+    const original = WORD_VERSIONS.find(v => v.key === "original");
+    cache.original = text;
+    available.push(original);
+    paintTabs(available);
+    const active = available.find(v => v.key === current) || original;
+    Array.from(tabs.querySelectorAll("button")).forEach(b => {
+      b.setAttribute("aria-pressed", String(b.dataset.k === active.key));
+      b.classList.toggle("on", b.dataset.k === active.key);
+    });
+    if (!available.some(v => v.key === current)) show(original);
+  }).catch(() => { /* no original text stored, so no tab for it */ });
 }
 
 async function renameDocument(path, newTitle) {
@@ -2653,9 +4412,11 @@ function renderLibrary() {
       <div class="lib-row">
         <span class="rchip ${isAgent ? "agent" : "ok"}"><span aria-hidden="true">${isAgent ? "✦ " : ""}</span>${isAgent ? "Assistant" : "Template"}</span>
         <button type="button" class="lib-send" aria-label="Email ${esc(it.title)} to a client">Email to client…</button>
+        ${iconBtnHTML(FOLDER_SVG, "Reveal " + it.title + " in Finder")}
       </div>
     </div>`);
     card.querySelector(".lib-send").onclick = () => pickClientThen(cid => emailDocument(cid, it.path));
+    card.querySelector(".iconbtn").onclick = () => revealPath(parentFolder(it.path));
     card.querySelector(".libcard-open").onclick = () => openDocument(it.path, { section: which === "reference" ? "Reference" : "Worksheets", title: it.title });
     grid.appendChild(card);
   });
@@ -2836,6 +4597,70 @@ const FEATURE_ROWS = [
 ];
 
 const STT_DOWNLOAD_HINT = "First transcription after switching may take a minute while the model downloads.";
+
+// Retention. 0 means keep until the clinician deletes it, which is the default,
+// so the sentence has to say what that actually accumulates.
+const RETENTION_TITLE = "Keeping recordings";
+const RETENTION_COPY = "Session audio stays on this Mac until you delete it. If you prefer, Debrief can delete audio automatically after a number of days. Transcripts and session summaries are always kept.";
+const RETENTION_DEFAULT_DAYS = 30;
+const RETENTION_MAX_DAYS = 3650;
+
+// A whole number of days, or 0 for keep. Anything unreadable reads as keep,
+// which is the option that never deletes anything by accident.
+function retentionDays(value) {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(n, RETENTION_MAX_DAYS);
+}
+
+// The radio pair plus its day count, used identically in the wizard and in
+// Settings. onChange gets 0 (keep) or a positive number of days.
+function buildRetentionControl(current, onChange) {
+  const group = uid("ret");
+  const numId = uid("retdays");
+  const days = retentionDays(current);
+  const box = h(`<div class="set-radios set-retention">
+    <label class="set-radio">
+      <input type="radio" name="${group}" value="keep" ${days ? "" : "checked"} />
+      <span class="set-radio-body">
+        <span class="set-radio-title">Keep until I delete it</span>
+        <span class="set-radio-desc">Audio stays here until you remove it yourself.</span>
+      </span>
+    </label>
+    <label class="set-radio">
+      <input type="radio" name="${group}" value="days" ${days ? "checked" : ""} />
+      <span class="set-radio-body">
+        <span class="set-radio-title">Delete audio automatically</span>
+        <span class="set-radio-desc">Audio older than the number of days below is deleted. Nothing else is touched.</span>
+      </span>
+    </label>
+    <div class="set-days"${days ? "" : " hidden"}>
+      <label class="set-days-label" for="${numId}">Delete audio after</label>
+      <input type="number" class="set-days-input" id="${numId}" min="1" max="${RETENTION_MAX_DAYS}" step="1" value="${days || RETENTION_DEFAULT_DAYS}" />
+      <span class="set-days-unit">days</span>
+    </div>
+  </div>`);
+
+  const [keepRadio, daysRadio] = box.querySelectorAll('input[type="radio"]');
+  const daysRow = box.querySelector(".set-days");
+  const num = box.querySelector(".set-days-input");
+  const value = () => Math.min(Math.max(parseInt(num.value, 10) || RETENTION_DEFAULT_DAYS, 1), RETENTION_MAX_DAYS);
+
+  // The day count only exists while it means something. Left on screen under
+  // "keep until I delete it" it reads as a deletion that is already scheduled.
+  keepRadio.onchange = () => { if (!keepRadio.checked) return; daysRow.hidden = true; onChange(0); };
+  daysRadio.onchange = () => { if (!daysRadio.checked) return; daysRow.hidden = false; onChange(value()); };
+  // The save waits for the field to be finished with, not for every keystroke
+  // on the way to "180".
+  num.onchange = () => {
+    const n = value();
+    num.value = String(n);
+    daysRadio.checked = true;
+    daysRow.hidden = false;
+    onChange(n);
+  };
+  return box;
+}
 
 // Turn an error body into one readable line for a toast or a modal, using the
 // same rules as the banners: a bare 500 never reaches the clinician verbatim.
@@ -3074,6 +4899,248 @@ function renderSettings() {
   });
   cardD.appendChild(togBox);
   el.appendChild(cardD);
+
+  // ---- Card E: recording retention ----
+  const cardE = h(`<div class="panel setup-card ${ent(6)}">
+    <div class="setup-step-head"><h2>${esc(RETENTION_TITLE)}</h2><span class="set-saved" id="savedE"></span></div>
+    <p class="setup-note">${esc(RETENTION_COPY)}</p>
+  </div>`);
+  cardE.appendChild(buildRetentionControl(s.recording_retention_days, async (days) => {
+    try {
+      await postSettings({ recording_retention_days: days });
+      settingsSaved(cardE.querySelector("#savedE"), "Recording retention");
+    } catch (e) { toastError(e); }
+  }));
+  el.appendChild(cardE);
+
+  // ---- Card F: where the records live ----
+  const vaultPath = (App.status && App.status.vault && App.status.vault.path) || "";
+  const cardF = h(`<div class="panel setup-card ${ent(7)}">
+    <div class="setup-step-head"><h2>Where your records live</h2></div>
+    <p class="setup-note">Every client record, note, and recording is an ordinary file in this folder on your Mac. They are yours, with or without Debrief.</p>
+  </div>`);
+  if (vaultPath) {
+    const box = h(`<div class="setup-code"><code>${esc(vaultPath)}</code><button class="copybtn" id="copyVaultSet">Copy</button></div>`);
+    box.querySelector("#copyVaultSet").onclick = (e) => copyText(vaultPath, e.currentTarget);
+    cardF.appendChild(box);
+  } else {
+    cardF.appendChild(h(`<p class="setup-sub">Debrief could not read the folder path just now. Open Setup to check.</p>`));
+    // Once. A screen that refetches on every repaint of its own failure is a
+    // screen that never stops fetching.
+    if (!App.settingsVaultAsked) {
+      App.settingsVaultAsked = true;
+      refreshStatus().then(() => { if (App.state === "settings") render(); });
+    }
+  }
+  const revealVault = h(`<button class="btn btn-ghost btn-compact set-import-btn">Reveal in Finder</button>`);
+  revealVault.onclick = () => revealPath(VAULT_ROOT_PATH);
+  cardF.appendChild(revealVault);
+  el.appendChild(cardF);
+
+  // ---- Card G: the developer panel ----
+  const cardG = h(`<div class="panel setup-card ${ent(8)}">
+    <div class="setup-step-head"><h2>Under the hood</h2></div>
+    <p class="setup-note">What the machine is doing right now, for troubleshooting.</p>
+  </div>`);
+  const devBtn = h(`<button class="btn btn-ghost btn-compact set-import-btn">Open the developer panel</button>`);
+  devBtn.onclick = openDevPanel;
+  cardG.appendChild(devBtn);
+  el.appendChild(cardG);
+}
+
+// ===========================================================================
+// The developer panel.
+//
+// Nothing new is measured here. Readiness, the model, the queue, and the setup
+// checks all already know what they know; this is the one place that says all
+// of it at once, in the words the machine used, for the ten minutes a year
+// somebody needs to work out why a note did not appear.
+// ===========================================================================
+
+const DEV_POLL_MS = 4000;
+const JOB_STATE_WORD = {
+  queued: "Waiting its turn",
+  running: "Running",
+  waiting: "Paused",
+  done: "Finished",
+  failed: "Failed",
+  cancelled: "Stopped",
+};
+
+function clearDevTimer() {
+  if (App.devTimer) { clearTimeout(App.devTimer); App.devTimer = null; }
+}
+
+// The last piece of a job id: enough to tell two jobs apart, short enough to
+// read. The whole id is on the row's title for anyone who needs it.
+function shortJobId(id) {
+  const text = String(id || "");
+  const tail = text.split("-").pop();
+  return tail || text;
+}
+
+function devFingerprint(status, jobsPayload) {
+  const model = (status && status.active_model) || {};
+  const servers = ((status && status.servers) || []).map(s => `${s.provider}:${s.reachable ? 1 : 0}`).join(",");
+  const checks = ((status && status.checks) || []).map(c => `${c.key}:${c.ok ? 1 : 0}`).join(",");
+  const jobs = ((jobsPayload && jobsPayload.jobs) || []).map(j =>
+    [j.id, j.state, j.stage || "", j.done || 0, j.total || 0, j.error || ""].join("~")).join("|");
+  return [
+    status && status.ready ? 1 : 0, model.model || "", model.base_url || "",
+    servers, checks, jobs, (jobsPayload && jobsPayload.worker_error) || "",
+  ].join("§");
+}
+
+// Whether the model the app would actually call is answering, taken from the
+// server list rather than guessed from readiness.
+function modelReachable(status) {
+  const model = (status && status.active_model) || {};
+  const servers = (status && status.servers) || [];
+  const hit = servers.find(s => s.base_url === model.base_url);
+  if (hit) return !!hit.reachable;
+  return servers.some(s => s.reachable);
+}
+
+function devSection(title, node) {
+  const sec = h(`<section class="dev-sec"><h5>${esc(title)}</h5></section>`);
+  sec.appendChild(node);
+  return sec;
+}
+
+function devRow(label, value) {
+  const row = h(`<div class="dev-row"><span class="dev-k">${esc(label)}</span></div>`);
+  const v = h(`<span class="dev-v"></span>`);
+  // textContent throughout: every value here came from a server or a model,
+  // and this panel exists to show them exactly as they are.
+  v.textContent = String(value == null || value === "" ? "not known" : value);
+  row.appendChild(v);
+  return row;
+}
+
+function buildDevBody(status, jobsPayload) {
+  const body = h(`<div class="dev-body"></div>`);
+  const model = (status && status.active_model) || {};
+  const reachable = modelReachable(status);
+
+  const modelBox = h(`<div></div>`);
+  modelBox.appendChild(h(`<div class="dev-chiprow"><span class="src-chip ${reachable ? "strong" : "warn"}">${reachable ? "Answering" : "Not answering"}</span></div>`));
+  modelBox.appendChild(devRow("Model", model.model));
+  modelBox.appendChild(devRow("Address", model.base_url));
+  const engine = (App.settings && App.settings.stt_engine) || SETTINGS_DEFAULTS.stt_engine;
+  const engineRow = STT_ENGINES.find(x => x.id === engine);
+  modelBox.appendChild(devRow("Transcription", (engineRow && engineRow.label) || engine));
+  body.appendChild(devSection("The local AI", modelBox));
+
+  const vault = (status && status.vault) || {};
+  const vaultBox = h(`<div></div>`);
+  vaultBox.appendChild(devRow("Folder", vault.path));
+  vaultBox.appendChild(devRow("Writable", vault.writable ? "yes" : "no"));
+  const reveal = h(`<button type="button" class="btn btn-ghost btn-compact dev-reveal">Reveal in Finder</button>`);
+  reveal.onclick = () => revealPath(VAULT_ROOT_PATH);
+  vaultBox.appendChild(reveal);
+  body.appendChild(devSection("Your records folder", vaultBox));
+
+  const checks = (status && status.checks) || [];
+  if (checks.length) {
+    const box = h(`<div class="setup-checks"></div>`);
+    // The wizard's own row renderer, reused rather than reimplemented: one
+    // definition of what a passing check looks like.
+    checks.forEach(c => box.appendChild(setupCheckRow(c)));
+    body.appendChild(devSection("Checks", box));
+  }
+
+  const jobs = (jobsPayload && jobsPayload.jobs) || [];
+  const jobBox = h(`<div class="dev-jobs"></div>`);
+  const workerError = (jobsPayload && jobsPayload.worker_error) || "";
+  if (workerError) {
+    const banner = h(`<div class="banner banner-error dev-worker"></div>`);
+    banner.appendChild(h(`<div>The background worker reported a failure it could not record anywhere else.</div>`));
+    banner.appendChild(technicalDetails(workerError));
+    jobBox.appendChild(banner);
+  }
+  if (!jobs.length) {
+    jobBox.appendChild(h(`<p class="digest-empty">No jobs have run yet.</p>`));
+  }
+  jobs.forEach(j => {
+    const total = Number(j.total) || 0;
+    const bits = [JOB_STATE_WORD[String(j.state || "")] || String(j.state || "")];
+    if (j.stage) bits.push(JOB_STAGE_LABEL[String(j.stage)] || String(j.stage));
+    if (total > 1) bits.push(`${Number(j.done) || 0} of ${total}`);
+    const row = h(`<div class="dev-job">
+      <span class="dev-job-id" title="${esc(j.id)}">${esc(shortJobId(j.id))}</span>
+      <span class="dev-job-kind">${esc(j.kind || "job")}</span>
+      <span class="dev-job-state">${esc(bits.join(" · "))}</span>
+    </div>`);
+    if (j.error) row.appendChild(technicalDetails(j.error));
+    jobBox.appendChild(row);
+  });
+  body.appendChild(devSection("Background jobs", jobBox));
+  return body;
+}
+
+// Same discipline as the sources poll: nothing is repainted when nothing has
+// changed, and nothing is repainted out from under somebody who is reading or
+// tabbing through it.
+function devInteractionLive(slot) {
+  if (!slot || !slot.isConnected) return true;
+  if (slot.querySelector("details[open]")) return true;
+  const active = document.activeElement;
+  return !!(active && slot.contains(active));
+}
+
+async function openDevPanel() {
+  const titleId = uid("dlg");
+  const backdrop = h(`<div class="modal-backdrop"><div class="modal dev-modal">
+    <h4 id="${titleId}">Under the hood</h4>
+    <p class="ac-lead">What the machine is doing right now. This refreshes itself every few seconds.</p>
+    <div class="dev-slot"><div class="panel processing"><div class="spinner"></div><div class="label">Reading the machine...</div></div></div>
+    <div class="confirm-actions"><button class="btn btn-primary" id="devClose">Close</button></div>
+  </div></div>`);
+  const slot = backdrop.querySelector(".dev-slot");
+  let close = () => backdrop.remove();
+  backdrop.querySelector("#devClose").onclick = () => close();
+  backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
+  close = openDialog({
+    backdrop,
+    sheet: backdrop.querySelector(".modal"),
+    labelId: titleId,
+    initialFocus: backdrop.querySelector("#devClose"),
+    onClose: () => { clearDevTimer(); App.devPainted = null; },
+  });
+
+  const read = async () => {
+    const [status, jobsPayload] = await Promise.all([
+      fetch("/api/status").then(r => (r.ok ? r.json() : null)).catch(() => null),
+      fetch("/api/jobs").then(r => (r.ok ? r.json() : null)).catch(() => null),
+    ]);
+    return { status, jobsPayload };
+  };
+
+  const paint = ({ status, jobsPayload }) => {
+    if (!backdrop.isConnected) return;
+    if (status) App.status = status;
+    slot.innerHTML = "";
+    if (!status && !jobsPayload) {
+      slot.appendChild(errorBanner("Debrief could not read its own state just now. It will try again in a moment."));
+    } else {
+      slot.appendChild(buildDevBody(status || App.status || {}, jobsPayload || {}));
+    }
+    App.devPainted = devFingerprint(status || App.status || {}, jobsPayload || {});
+  };
+
+  const tick = async () => {
+    App.devTimer = null;
+    if (!backdrop.isConnected) return;
+    const data = await read();
+    if (!backdrop.isConnected) return;
+    const next = devFingerprint(data.status || App.status || {}, data.jobsPayload || {});
+    if (next !== App.devPainted && !devInteractionLive(slot)) paint(data);
+    App.devTimer = setTimeout(tick, DEV_POLL_MS);
+  };
+
+  paint(await read());
+  clearDevTimer();
+  App.devTimer = setTimeout(tick, DEV_POLL_MS);
 }
 
 // ===========================================================================
@@ -3489,7 +5556,7 @@ function renderSetupWizard() {
   const s = App.status;
   el.appendChild(h(`<div class="setup-head ${ent(1)}">
     <h1>Welcome to Debrief</h1>
-    <p class="setup-lead">Six quick things and you are set up. Everything stays on this Mac.</p>
+    <p class="setup-lead">Seven quick things and you are set up. Everything stays on this Mac.</p>
     <p class="setup-privacy">${LOCK_SVG}<span>${PRIVACY_PROMISE}</span></p>
   </div>`));
   if (!s) {
@@ -3506,8 +5573,9 @@ function renderSetupWizard() {
   el.appendChild(renderWizardProfession());
   el.appendChild(renderWizardFormat());
   el.appendChild(renderWizardFeatures());
+  el.appendChild(renderWizardRetention());
   el.appendChild(renderSetupStep3());
-  const bar = h(`<div class="actions-bar ${ent(8)} setup-finish">
+  const bar = h(`<div class="actions-bar ${ent(9)} setup-finish">
     <div class="grow"></div>
     <button class="btn btn-primary" id="setupFinish">Finish setup</button>
   </div>`);
@@ -3574,6 +5642,9 @@ function ensureWizardState() {
     note_format: s.note_format || "DAP",
     features: Object.assign({ calendar: true, email: true, verify: true, assistant: true }, s.features || {}),
     stt_engine: s.stt_engine || "parakeet",
+    // 0 means keep. Seeded from the current setting, so a wizard finished
+    // without touching this card changes nothing.
+    recording_retention_days: retentionDays(s.recording_retention_days),
   };
 }
 
@@ -3699,6 +5770,18 @@ function renderWizardFeatures() {
   return card;
 }
 
+function renderWizardRetention() {
+  const w = App.wizard;
+  const card = h(`<div class="panel setup-card ${ent(7)}">
+    <div class="setup-step-head"><span class="setup-num">6</span><h2>${esc(RETENTION_TITLE)}</h2></div>
+    <p class="setup-note">${esc(RETENTION_COPY)}</p>
+  </div>`);
+  card.appendChild(buildRetentionControl(w.recording_retention_days, (days) => {
+    w.recording_retention_days = days;
+  }));
+  return card;
+}
+
 function renderSetupStep2(s) {
   const path = (s.vault && s.vault.path) || "";
   const card = h(`<div class="panel setup-card ${ent(3)}">
@@ -3725,9 +5808,9 @@ const PERM_ASKED = "We just asked macOS to show the permission prompt. Click All
 
 function renderSetupStep3() {
   App.setupPerms = App.setupPerms || { calendar: null, mail: null, screen: null };
-  const card = h(`<div class="panel setup-card ${ent(7)}">
+  const card = h(`<div class="panel setup-card ${ent(8)}">
     <div class="setup-step-head">
-      <span class="setup-num">6</span>
+      <span class="setup-num">7</span>
       <h2>Mac permissions</h2>
       <button class="setup-skip" id="permSkip">Skip for now</button>
     </div>
@@ -3787,6 +5870,7 @@ async function finishSetup() {
         note_format: w.note_format,
         features: w.features,
         stt_engine: w.stt_engine,
+        recording_retention_days: retentionDays(w.recording_retention_days),
       });
     } catch (e) { /* best effort; a bad value should not trap the user in setup */ }
   }

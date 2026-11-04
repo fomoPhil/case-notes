@@ -14,7 +14,7 @@ import json
 
 import pytest
 
-from debrief import compiler, formats
+from debrief import compiler, doctext, formats
 
 
 @pytest.fixture()
@@ -71,14 +71,14 @@ def test_extract_docx_via_textutil(monkeypatch):
         assert "-stdout" in cmd
         return FakeProc()
 
-    monkeypatch.setattr(compiler.subprocess, "run", fake_run)
+    monkeypatch.setattr(doctext.subprocess, "run", fake_run)
     out = compiler.extract_document_text(b"PK\x03\x04fake docx", "template.docx")
     assert "Subjective" in out["text"]
     assert out["pdf_unsupported"] is False
 
 
 def test_extract_pdf_unsupported_when_no_pdftotext(monkeypatch):
-    monkeypatch.setattr(compiler.shutil, "which", lambda name: None)
+    monkeypatch.setattr(doctext.shutil, "which", lambda name: None)
     out = compiler.extract_document_text(b"%PDF-1.4 fake", "template.pdf")
     assert out["pdf_unsupported"] is True
     assert out["text"] == ""
@@ -86,14 +86,14 @@ def test_extract_pdf_unsupported_when_no_pdftotext(monkeypatch):
 
 
 def test_extract_pdf_via_pdftotext_when_present(monkeypatch):
-    monkeypatch.setattr(compiler.shutil, "which", lambda name: "/usr/bin/pdftotext")
+    monkeypatch.setattr(doctext.shutil, "which", lambda name: "/usr/bin/pdftotext")
 
     class FakeProc:
         returncode = 0
         stdout = b"Goal\nReality\nOptions\nWay forward\n"
         stderr = b""
 
-    monkeypatch.setattr(compiler.subprocess, "run", lambda cmd, **kw: FakeProc())
+    monkeypatch.setattr(doctext.subprocess, "run", lambda cmd, **kw: FakeProc())
     out = compiler.extract_document_text(b"%PDF-1.4 fake", "template.pdf")
     assert out["pdf_unsupported"] is False
     assert "Reality" in out["text"]
@@ -131,7 +131,24 @@ def test_compile_local_slugifies_and_drops_reserved(store, monkeypatch):
     keys = [s["key"] for s in spec["sections"]]
     assert keys == ["presenting_concern", "history"]  # reserved + dup gone
     assert spec["id"] == "intake-summary"
-    assert spec["risk_section"] is False  # derived from clinical=False
+    # Under therapy the risk section stays on even when the model said not
+    # clinical: a template with no Risk heading must not switch it off.
+    assert spec["clinical"] is True
+    assert spec["risk_section"] is True
+
+
+def test_compile_local_non_clinical_profession_keeps_models_answer(store, monkeypatch):
+    from debrief import llm
+
+    raw = {
+        "name": "Coaching Recap",
+        "clinical": False,
+        "style_rules": "Plain prose.",
+        "sections": [{"key": "wins", "heading": "Wins", "description": "x"}],
+    }
+    monkeypatch.setattr(llm, "chat", _canned(raw))
+    spec = compiler.compile_local("some document text", "coaching")
+    assert spec["risk_section"] is False
 
 
 def test_compile_local_risk_section_follows_clinical(store, monkeypatch):

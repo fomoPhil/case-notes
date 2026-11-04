@@ -46,6 +46,11 @@ DEFAULTS: dict = {
         "assistant": True,
     },
     "stt_engine": "parakeet",
+    # How long session audio is kept, in days. 0 means keep it until the
+    # clinician deletes it, which is the product default and deliberately a
+    # conscious choice rather than something discovered later. The retention
+    # sweep reads this at launch; rungs 1 and 2 are never swept.
+    "recording_retention_days": 0,
     "version": 1,
 }
 
@@ -213,6 +218,18 @@ def validate_patch(patch: dict) -> None:
         for name, value in features.items():
             if not isinstance(value, bool):
                 raise ValueError(f"feature {name!r} must be true or false")
+
+    if "recording_retention_days" in patch:
+        # The retention sweep compares this against a captured_at and deletes
+        # audio, so a value it cannot read is a value that either deletes
+        # nothing forever or deletes something it should have kept. bool is
+        # rejected explicitly because it is an int subclass in Python, and
+        # True would otherwise be read as a one day window.
+        days = patch["recording_retention_days"]
+        if isinstance(days, bool) or not isinstance(days, int):
+            raise ValueError("recording_retention_days must be a whole number of days")
+        if days < 0:
+            raise ValueError("recording_retention_days cannot be negative (0 means keep)")
 
 
 # ---------------------------------------------------------------------------

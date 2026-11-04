@@ -940,7 +940,16 @@ def write_session_note(
           next_session_suggestions (list[str]),
           audio_filename (truthy -> the note references audio/<stem>.m4a and
           renders a ## Dictation Audio embed; the caller then places the
-          converted m4a at Sessions/audio/<returned stem>.m4a).
+          converted m4a at Sessions/audio/<returned stem>.m4a),
+          source_id / source_kind / source_verbatim (the session recording this
+          note drew evidence from; written to frontmatter so the record points
+          at its evidence. The recording's transcript itself never enters the
+          note).
+
+    transcript is the clinician's own debrief. An empty one is only meaningful
+    alongside source_id (a note drafted from the material with nobody
+    dictating), and that case says so in the body rather than leaving a reader
+    to wonder; any other note with no transcript renders exactly as before.
     """
     session_date = meta.get("session_date") or _dt.date.today()
     fmt = meta.get("format", "DAP")
@@ -991,6 +1000,13 @@ def write_session_note(
     if audio_name:
         frontmatter["audio"] = f"audio/{audio_name}"
 
+    # Session-recording linkage: the note points at the evidence it was written
+    # from. A link, never the material: the transcript stays in Recordings/ and
+    # the clinical record stays the clinical record (spec section 6 rule 4).
+    for key in ("source_id", "source_kind", "source_verbatim"):
+        if meta.get(key) is not None:
+            frontmatter[key] = meta[key]
+
     # Body sections, driven by the plan's section list (## Heading per section).
     parts: list[str] = [_dump_frontmatter(frontmatter)]
     for section in sections:
@@ -1035,6 +1051,32 @@ def write_session_note(
         parts.append("<details><summary>Show transcript</summary>\n\n")
         parts.append(f"{transcript.strip()}\n\n")
         parts.append("</details>\n")
+    elif meta.get("source_id"):
+        # A note drafted from stored material with no debrief behind it. The
+        # absence is stated rather than left as a missing section: a reader
+        # months later needs to know that nobody dictated this and where the
+        # material it was written from actually lives. Nothing renders here for
+        # any other note, so a note filed the ordinary way is unchanged.
+        #
+        # What the material WAS decides the sentence. Calling an article the
+        # clinician saved "session material" would put a claim in a permanent
+        # clinical record that its own frontmatter contradicts, and the record
+        # is the thing that outlives every screen in this app.
+        from . import sources as _sources  # lazy: sources imports this module
+
+        where = f"Recordings/{client_id}/{meta['source_id']}/"
+        parts.append("\n## Debrief\n\n")
+        if str(meta.get("source_kind") or "") in _sources.REFERENCE_KINDS:
+            parts.append(
+                "No debrief was recorded. This note was drafted from reference "
+                f"material filed at {where}. There was no session recording "
+                "behind it.\n"
+            )
+        else:
+            parts.append(
+                "No debrief was recorded. This note was drafted from the "
+                f"session material filed at {where}.\n"
+            )
 
     # Archived dictation audio: Obsidian embed renders an inline player.
     if audio_name:
@@ -1082,6 +1124,135 @@ def update_profile(client_id: str, new_summary: str, updates: dict) -> None:
 
     new_body = f"{new_summary.strip()}\n\n{tail.strip()}\n"
     _atomic_write(profile_path, _dump_frontmatter(fm) + "\n" + new_body)
+
+
+# ---------------------------------------------------------------------------
+# Recording consent
+# ---------------------------------------------------------------------------
+
+# A dated flag on the client profile, in the same frontmatter as every other
+# client fact:
+#
+#     recording_consent: true
+#     recording_consent_date: 2026-07-25
+#
+# Recording the session and importing session material are both gated on it. The
+# app describes what it does and stores what the clinician tells it; obtaining
+# and documenting consent is the clinician's own responsibility and this code
+# takes no position beyond "we have a dated flag, or we do not".
+
+_CONSENT_FLAG = "recording_consent"
+_CONSENT_DATE = "recording_consent_date"
+
+
+def _frontmatter_unreadable(text: str) -> bool:
+    """True when a file opens a properties block that will not read as properties.
+
+    _split_frontmatter returns {} both for a block holding nothing and for a
+    block whose YAML is broken, because a reader only needs to not crash. A
+    writer needs to tell those apart: adding a key to an empty block is safe,
+    and adding one to a block that failed to parse would save {} plus that key
+    over every property in the file.
+    """
+    if not text.startswith("---"):
+        return False
+    parts = text.split("---", 2)
+    if len(parts) != 3:
+        return False
+    try:
+        parsed = yaml.safe_load(parts[1])
+    except Exception:
+        return True
+    # None is an empty block. A scalar or a list is a block that read as
+    # something other than properties, which is no safer to overwrite.
+    return parsed is not None and not isinstance(parsed, dict)
+
+
+def _profile_path(client_id: str) -> Path:
+    """The profile file for a client id that is a single, safe path segment."""
+    cid = str(client_id or "").strip()
+    if not cid or "/" in cid or "\\" in cid or cid.startswith("."):
+        raise VaultPathError(f"invalid client id: {client_id!r}")
+    return _client_dir(cid) / "_Profile.md"
+
+
+def _consent_date(value) -> str:
+    """Return an ISO date string when value reads as a date, else ""."""
+    if isinstance(value, _dt.datetime):
+        return value.date().isoformat()
+    if isinstance(value, _dt.date):
+        return value.isoformat()
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return _dt.date.fromisoformat(text[:10]).isoformat()
+    except ValueError:
+        return ""
+
+
+def set_recording_consent(client_id: str, granted: bool) -> None:
+    """Record or withdraw recording consent for a client. Frontmatter only.
+
+    Granting stamps today's date. Withdrawing sets the flag false and KEEPS the
+    date it was granted on: that date is an audit trail of what was true when
+    material was recorded, and deleting it would erase the answer to "was there
+    consent at the time".
+
+    The profile body is preserved exactly and the write is atomic.
+
+    A profile whose properties block will not parse is left completely alone.
+    _split_frontmatter reads broken YAML as an empty dict so that a listing never
+    crashes, which is right for a reader and catastrophic here: merging one key
+    into {} and writing it back would delete the client's name, diagnosis, risk
+    flags, and every other fact in the block. Better to refuse and say so. An
+    empty block is a different thing entirely and is written to normally.
+    """
+    profile_path = _profile_path(client_id)
+    if not profile_path.exists():
+        raise FileNotFoundError(f"No profile for client {client_id!r}")
+
+    text = profile_path.read_text(encoding="utf-8")
+    if _frontmatter_unreadable(text):
+        raise ValueError(
+            f"The profile for {client_id} has a properties block that cannot be "
+            "read, so nothing was changed. Open _Profile.md and fix it first."
+        )
+
+    fm, body = _split_frontmatter(text)
+    fm[_CONSENT_FLAG] = bool(granted)
+    if granted:
+        # A regrant stamps today, so the date always describes the consent that
+        # is currently in force rather than an older one.
+        fm[_CONSENT_DATE] = _dt.date.today().isoformat()
+
+    _atomic_write(profile_path, _dump_frontmatter(fm) + "\n" + body)
+
+
+def recording_consent(client_id: str) -> tuple[bool, str]:
+    """Return (granted, date) for a client's recording consent.
+
+    granted is True only when the flag is on AND the stored date reads as a date.
+    A flag without a usable date is treated as no consent: an undated flag cannot
+    say what was true when the material was captured. A missing or unreadable
+    profile reads as no consent rather than raising, because every caller is a
+    gate and a gate must fail closed.
+    """
+    try:
+        text = _profile_path(client_id).read_text(encoding="utf-8")
+    except (OSError, VaultPathError):
+        return False, ""
+
+    fm, _ = _split_frontmatter(text)
+    flag = fm.get(_CONSENT_FLAG)
+    on = flag is True or (isinstance(flag, str) and flag.strip().lower() in ("true", "yes"))
+    date = _consent_date(fm.get(_CONSENT_DATE))
+    return (bool(on and date), date)
+
+
+def has_recording_consent(client_id: str) -> bool:
+    """True when this client has a dated, active recording consent flag."""
+    return recording_consent(client_id)[0]
 
 
 # Obsidian's own registry of vaults it knows how to open. Deep-linking an

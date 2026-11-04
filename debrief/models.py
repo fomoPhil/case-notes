@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import requests
 
+from . import config
+
 # Short probe timeout: a missing server should fail fast, not hang the UI.
 _PROBE_TIMEOUT = 1.5
 
-_LMSTUDIO_BASE = "http://localhost:1234/v1"
+# The same server llm.py talks to, so DEBRIEF_MODEL_URL moves both together.
+_LMSTUDIO_BASE = config.MODEL_BASE_URL
 _OLLAMA_BASE = "http://localhost:11434"
 
 

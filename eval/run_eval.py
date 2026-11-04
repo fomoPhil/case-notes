@@ -17,8 +17,10 @@ was too strict, that is documented in the RATIONALE notes below and in README.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -29,7 +31,15 @@ REPO_ROOT = EVAL_DIR.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# Evals run against a throwaway vault seeded with the fictional demo clients,
+# never against DebriefVault/, so results are the same on every Mac and no real
+# record is read. Set DEBRIEF_VAULT_DIR to point at a vault on purpose.
+if not os.environ.get("DEBRIEF_VAULT_DIR"):
+    os.environ["DEBRIEF_VAULT_DIR"] = tempfile.mkdtemp(prefix="debrief_eval_vault_")
+
 from debrief import dates, extract, vault  # noqa: E402
+
+vault.ensure_vault()
 
 TRANSCRIPTS_DIR = EVAL_DIR / "transcripts"
 EXPECTED_PATH = EVAL_DIR / "expected.json"
@@ -123,7 +133,10 @@ def _json_safe(obj):
 
 def _build_client_ctx(spec: dict) -> dict:
     if "use_client_context" in spec:
-        return _json_safe(vault.client_context(spec["use_client_context"]))
+        # The same flat context the pipeline hands the extractor (no nested
+        # "profile" copy).
+        ctx = vault.client_context(spec["use_client_context"])
+        return _json_safe({k: v for k, v in ctx.items() if k != "profile"})
     # Minimal context dict; extract._format_context renders key: value lines.
     return {k: v for k, v in spec.items() if k != "use_client_context"}
 

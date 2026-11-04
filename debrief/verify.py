@@ -8,10 +8,11 @@ sees. Everything stays on the Mac.
 
 from __future__ import annotations
 
+import os
 import subprocess
+import tempfile
 import time
 
-_SHOT_PATH = "/tmp/debrief_verify.png"
 _SETTLE_SECONDS = 1.5
 _DOWNSCALE_MAX = 1512
 
@@ -91,42 +92,53 @@ def verify_on_screen(checks: list[dict]) -> list[dict]:
         time.sleep(_SETTLE_SECONDS)
 
         result = dict(check)
-        if not _capture_and_downscale(_SHOT_PATH):
-            result["confirmed"] = False
-            result["what_i_see"] = (
-                f"Debrief could not see the screen this time, so it cannot confirm. "
-                f"Open {app_name} and check it yourself."
-            )
-            results.append(result)
-            continue
-
-        messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": question},
-        ]
+        # A full-screen capture shows client details. It lives in a private temp
+        # file only for as long as the model takes to read it.
+        fd, shot = tempfile.mkstemp(prefix="debrief_verify_", suffix=".png")
+        os.close(fd)
         try:
-            answer = llm.chat(
-                messages, schema=VERIFY_SCHEMA, images=[_SHOT_PATH]
-            )
-            if isinstance(answer, dict):
-                result["confirmed"] = bool(answer.get("confirmed", False))
-                result["what_i_see"] = str(answer.get("what_i_see", ""))
-            else:
-                result["confirmed"] = False
-                result["what_i_see"] = (
-                    f"Debrief could not read the screen clearly, so it cannot "
-                    f"confirm. Open {app_name} and check it yourself."
-                )
-                # Keep the raw reply for debugging without showing it to the user.
-                result["error_detail"] = repr(answer)
-        except Exception as exc:  # keep the run alive on any model failure
-            result["confirmed"] = False
-            result["what_i_see"] = (
-                f"Debrief could not check the screen this time. "
-                f"Open {app_name} and check it yourself."
-            )
-            result["error_detail"] = str(exc)
-
-        results.append(result)
+            results.append(_check_once(llm, result, question, app_name, shot))
+        finally:
+            try:
+                os.remove(shot)
+            except OSError:
+                pass
 
     return results
+
+
+def _check_once(llm, result: dict, question: str, app_name: str, shot: str) -> dict:
+    """Capture the screen into shot and ask the model one question about it."""
+    if not _capture_and_downscale(shot):
+        result["confirmed"] = False
+        result["what_i_see"] = (
+            f"Debrief could not see the screen this time, so it cannot confirm. "
+            f"Open {app_name} and check it yourself."
+        )
+        return result
+
+    messages = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content": question},
+    ]
+    try:
+        answer = llm.chat(messages, schema=VERIFY_SCHEMA, images=[shot])
+        if isinstance(answer, dict):
+            result["confirmed"] = bool(answer.get("confirmed", False))
+            result["what_i_see"] = str(answer.get("what_i_see", ""))
+        else:
+            result["confirmed"] = False
+            result["what_i_see"] = (
+                f"Debrief could not read the screen clearly, so it cannot "
+                f"confirm. Open {app_name} and check it yourself."
+            )
+            # Keep the raw reply for debugging without showing it to the user.
+            result["error_detail"] = repr(answer)
+    except Exception as exc:  # keep the run alive on any model failure
+        result["confirmed"] = False
+        result["what_i_see"] = (
+            f"Debrief could not check the screen this time. "
+            f"Open {app_name} and check it yourself."
+        )
+        result["error_detail"] = str(exc)
+    return result

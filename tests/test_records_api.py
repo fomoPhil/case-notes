@@ -144,6 +144,31 @@ def test_document_save_allows_library_markdown(client):
     assert "New body." in (vault_dir / "Interventions" / "cognitive-restructuring.md").read_text(encoding="utf-8")
 
 
+def test_save_refuses_the_activity_log_settings_and_profiles(client):
+    tc, vault_dir = client
+    (vault_dir / "_Activity").mkdir(exist_ok=True)
+    (vault_dir / "_Activity" / "2026-11-03.md").write_text("log\n", encoding="utf-8")
+    for rel in ("_Activity/2026-11-03.md", "Clients/C-0001/_Profile.md", "Private/README.md"):
+        before = (vault_dir / rel).read_text(encoding="utf-8")
+        resp = tc.post("/api/documents/save", json={"path": rel, "markdown": "# Rewritten"})
+        assert resp.status_code == 400, rel
+        assert (vault_dir / rel).read_text(encoding="utf-8") == before
+
+
+def test_save_allows_the_treatment_plan(client):
+    tc, vault_dir = client
+    resp = tc.post("/api/documents/save", json={"path": "Clients/C-0001/Treatment-Plan.md", "markdown": "# Plan\n"})
+    assert resp.status_code == 200
+
+
+def test_amend_refuses_anything_but_a_session_note(client):
+    tc, vault_dir = client
+    before = (vault_dir / "Clients" / "C-0001" / "_Profile.md").read_text(encoding="utf-8")
+    resp = tc.post("/api/notes/amend", json={"path": "Clients/C-0001/_Profile.md", "text": "x"})
+    assert resp.status_code == 400
+    assert (vault_dir / "Clients" / "C-0001" / "_Profile.md").read_text(encoding="utf-8") == before
+
+
 # ---------------------------------------------------------------------------
 # Upload + rename
 # ---------------------------------------------------------------------------
@@ -262,6 +287,38 @@ def test_reveal_and_open_mocked(client, monkeypatch):
     assert tc.post("/api/reveal", json={"path": path}).status_code == 200
     assert tc.post("/api/open", json={"path": path}).status_code == 200
     assert any("-R" in c for c in calls), "reveal should use open -R"
+
+
+def test_reveal_opens_a_folder_rather_than_selecting_it(client, monkeypatch):
+    """A source's folder is what the clinician asked for, so it is opened.
+
+    Revealing it would select the folder inside Recordings/<client>/ and show
+    them everything except the thing they wanted. The guard still runs first,
+    so this is a folder inside the vault or it is nothing.
+    """
+    tc, vault_dir = client
+    calls = []
+    monkeypatch.setattr(app_module.subprocess, "run", lambda *a, **k: calls.append(a[0]))
+
+    source_dir = vault_dir / "Recordings" / "C-0001" / "2026-07-27-1325"
+    source_dir.mkdir(parents=True)
+    (source_dir / "meta.json").write_text("{}", encoding="utf-8")
+
+    resp = tc.post("/api/reveal", json={"path": "Recordings/C-0001/2026-07-27-1325"})
+    assert resp.status_code == 200, resp.text
+    assert calls[-1] == ["open", str(source_dir)]
+    assert "-R" not in calls[-1], "a folder is opened, not revealed inside its parent"
+
+    # The vault root is a folder too, and "." is how a browser can name it.
+    assert tc.post("/api/reveal", json={"path": "."}).status_code == 200
+    assert calls[-1] == ["open", str(vault_dir.resolve())]
+
+    # None of which loosens the guard.
+    escape = tc.post("/api/reveal", json={"path": "../.."})
+    assert escape.status_code == 400
+    assert tc.post("/api/reveal", json={"path": "Recordings/../../etc"}).status_code == 400
+    assert tc.post("/api/reveal", json={"path": "/etc"}).status_code == 400
+    assert len(calls) == 2, "a refused path never reaches Finder"
 
 
 # ---------------------------------------------------------------------------

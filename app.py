@@ -15,14 +15,18 @@ Run:  .venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8377
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -39,12 +43,16 @@ from debrief import (
     config,
     doctor,
     formats,
+    jobs,
+    ladder,
     llm,
     models,
     pipeline,
     records,
+    recstore,
     render,
     settings_store,
+    sources,
     stt,
     vault,
     verify,
@@ -73,8 +81,24 @@ _AUDIO_STORE = Path(tempfile.gettempdir()) / "debrief_audio_store"
 _TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
+# A debrief nobody approved or discarded (a closed tab, a crash) is still a
+# recording of a clinician talking about a client. It does not outlive a day.
+_AUDIO_STORE_MAX_AGE = 24 * 60 * 60
+
+
+def _sweep_audio_store(now: float | None = None) -> None:
+    cutoff = (now or time.time()) - _AUDIO_STORE_MAX_AGE
+    for path in _AUDIO_STORE.glob("*.webm"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError:
+            pass
+
+
 def _store_original_audio(data: bytes) -> str:
     _AUDIO_STORE.mkdir(parents=True, exist_ok=True)
+    _sweep_audio_store()
     token = uuid.uuid4().hex
     (_AUDIO_STORE / f"{token}.webm").write_bytes(data)
     return token
@@ -86,6 +110,19 @@ def _pop_original_audio(token: str | None) -> Path | None:
         return None
     path = _AUDIO_STORE / f"{token}.webm"
     return path if path.exists() else None
+
+
+def _startup_warning(what: str, exc: Exception) -> None:
+    """Say out loud that a startup chore did not run. Never raises.
+
+    A chore that fails at boot must not stop the app, but it must not vanish
+    either: a retention sweep that silently did not run means audio the
+    clinician asked to be deleted is still there, and a resume that silently did
+    not run means interrupted jobs never come back. Both go to stderr, which is
+    the console the app is started from, the same place the job queue reports a
+    failure it could not write to a record.
+    """
+    print(f"debrief startup: {what} did not run: {exc}", file=sys.stderr)
 
 
 @asynccontextmanager
@@ -100,10 +137,59 @@ async def _lifespan(_app: FastAPI):
         records.sweep_trash(_dt.datetime.now())
     except Exception:
         pass
+    # Delete session audio past the retention window the clinician chose. Rungs
+    # 1 and 2 are never touched, so losing the audio never loses the note's
+    # evidence trail. Best effort, in its own guard: a sweep that cannot run is
+    # never a reason the app will not start.
+    try:
+        recstore.sweep_retention(_dt.datetime.now())
+    except Exception as exc:  # noqa: BLE001
+        _startup_warning("the recording retention sweep", exc)
+    # Put back on the queue whatever a quit or a crash interrupted. The ladder
+    # rebuilds from the first missing rung, so a resume costs only the rung the
+    # job was inside. Also best effort, and also on its own.
+    try:
+        jobs.resume_pending()
+    except Exception as exc:  # noqa: BLE001
+        _startup_warning("the interrupted job resume", exc)
     yield
 
 
 app = FastAPI(title="Debrief", docs_url=None, redoc_url=None, lifespan=_lifespan)
+
+# The only names this server answers to. A web page can point its own domain at
+# 127.0.0.1 (DNS rebinding) and read the API as if it were same-origin, but its
+# Host header still carries its own name, so it is refused here.
+ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def _host_name(host: str) -> str:
+    host = (host or "").strip().lower()
+    if host.startswith("["):
+        return host.split("]", 1)[0] + "]"
+    return host.rsplit(":", 1)[0]
+
+
+@app.middleware("http")
+async def _local_only(request: Request, call_next):
+    """Refuse requests that did not come from Debrief's own page.
+
+    Any web page can POST a text/plain body to 127.0.0.1 without a preflight,
+    which would let it trash notes, open Mail drafts, or book Calendar events.
+    Browsers mark those requests with Origin and Sec-Fetch-Site, so a state
+    changing request from another site is refused.
+    """
+    host = request.headers.get("host", "")
+    if _host_name(host) not in ALLOWED_HOSTS:
+        return JSONResponse({"detail": "Debrief only answers on this Mac."}, status_code=403)
+    if request.method not in _SAFE_METHODS:
+        origin = request.headers.get("origin")
+        if origin is not None and urlsplit(origin).netloc.lower() != host.strip().lower():
+            return JSONResponse({"detail": "Cross-site request refused."}, status_code=403)
+        if request.headers.get("sec-fetch-site") in ("cross-site", "same-site"):
+            return JSONResponse({"detail": "Cross-site request refused."}, status_code=403)
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +488,7 @@ def _convert_to_wav(src_bytes: bytes, workdir: Path) -> str:
     return str(wav)
 
 
-def _debrief_sync(data: bytes, client_id: str) -> dict:
+def _debrief_sync(data: bytes, client_id: str, source_id: str | None = None) -> dict:
     """Blocking half of /api/debrief; runs in a worker thread."""
     with tempfile.TemporaryDirectory(prefix="debrief_") as tmp:
         try:
@@ -410,7 +496,7 @@ def _debrief_sync(data: bytes, client_id: str) -> dict:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         try:
-            return pipeline.transcribe_and_extract(wav_path, client_id)
+            return pipeline.transcribe_and_extract(wav_path, client_id, source_id)
         except HTTPException:
             raise
         except Exception as exc:
@@ -429,13 +515,30 @@ def _debrief_sync(data: bytes, client_id: str) -> dict:
 async def api_debrief(
     audio: UploadFile,
     client_id: str = Form(...),
+    source_id: str = Form(None),
 ) -> JSONResponse:
-    """Transcribe + extract the uploaded debrief. Returns the plan, no execution."""
+    """Transcribe + extract the uploaded debrief. Returns the plan, no execution.
+
+    source_id, when given, names session material already brought in for this
+    client. Its digest is handed to the extractor as labelled evidence. A source
+    that is still processing never blocks the debrief: the pipeline says so in
+    the plan and writes the note without it.
+    """
     _require_model_ready()
+    client_id = _existing_client_id(client_id)
+    sid = (source_id or "").strip() or None
+    if sid is not None:
+        cid = client_id
+        # Validates both ids against the storage rules and creates nothing, so a
+        # crafted id is refused here rather than turned into a path downstream.
+        try:
+            recstore.source_dir(cid, sid)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     data = await audio.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty audio upload.")
-    plan = await run_in_threadpool(_debrief_sync, data, client_id)
+    plan = await run_in_threadpool(_debrief_sync, data, client_id, sid)
     # Keep the original upload so execute can archive it into the vault.
     try:
         plan["audio_token"] = _store_original_audio(data)
@@ -444,22 +547,59 @@ async def api_debrief(
     return JSONResponse(plan)
 
 
+@app.post("/api/debrief/discard")
+async def api_debrief_discard(request: Request) -> JSONResponse:
+    """Delete the stored recording of a debrief the clinician discarded."""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    stored = _pop_original_audio((body or {}).get("audio_token"))
+    if stored is not None:
+        stored.unlink(missing_ok=True)
+    return JSONResponse({"ok": True})
+
+
+# Plans already approved, by their audio token. Calendar and Mail run before the
+# note is written, so approving the same plan twice would book twice.
+_EXECUTED_TOKENS: set[str] = set()
+
+_ALREADY_APPROVED_FIX = (
+    "This plan was already approved once. Check Calendar, Mail, and the "
+    "client's Sessions folder to see what was done before doing any of it again."
+)
+
+
 @app.post("/api/execute")
 async def api_execute(request: Request) -> JSONResponse:
-    """Execute an approved plan: actions + note write + verification."""
-    _require_model_ready()
+    """Execute an approved plan: actions + note write + verification.
+
+    No model readiness gate: filing a note the clinician has already reviewed
+    needs no model. The summary update and the screen check fall back on their
+    own when the model is gone.
+    """
     try:
         plan = await request.json()
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid plan JSON: {exc}")
     if not isinstance(plan, dict) or not plan.get("client_id"):
         raise HTTPException(status_code=400, detail="Plan is missing client_id.")
-    # An explicit verify on the plan wins; otherwise the default flows from the
-    # verify feature toggle in settings.
-    if "verify" in plan:
-        verify = bool(plan["verify"])
-    else:
-        verify = bool(settings_store.load().get("features", {}).get("verify", True))
+    # The plan round-trips through the browser, so its client id is checked
+    # again here: it becomes a folder path when the note is written.
+    plan["client_id"] = _existing_client_id(plan["client_id"])
+    # The screen check is a screen capture, so the Settings toggle decides. A
+    # plan can opt out of it, never back in.
+    verify = bool(settings_store.load().get("features", {}).get("verify", True))
+    if plan.get("verify") is False:
+        verify = False
+    token = plan.get("audio_token")
+    if isinstance(token, str) and token:
+        if token in _EXECUTED_TOKENS:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "Plan already approved.", "fix": _ALREADY_APPROVED_FIX},
+            )
+        _EXECUTED_TOKENS.add(token)
     # Resolve the stored original upload (never trust a client-sent path).
     plan.pop("audio_path", None)
     stored = _pop_original_audio(plan.get("audio_token"))
@@ -478,10 +618,9 @@ async def api_execute(request: Request) -> JSONResponse:
             detail={
                 "error": f"Execution failed: {exc}",
                 "fix": (
-                    "Debrief could not finish filing that note. Check that LM "
-                    "Studio is running and your vault folder is writable, then "
-                    "approve the plan again. Check the client's Sessions folder "
-                    "first in case a partial note was already filed."
+                    "Debrief could not finish filing that note. Some of it may "
+                    "already be done: check Calendar, Mail, and the client's "
+                    "Sessions folder, then finish by hand what is missing."
                 ),
             },
         )
@@ -514,6 +653,16 @@ def _valid_client_id(client_id) -> str | None:
     cid = str(client_id).strip()
     if not cid or "/" in cid or "\\" in cid or cid.startswith("."):
         return None
+    return cid
+
+
+def _existing_client_id(client_id) -> str:
+    """A client id that is safe as a path and has a profile on disk, or 4xx."""
+    cid = _valid_client_id(client_id)
+    if not cid:
+        raise HTTPException(status_code=400, detail="Invalid client id.")
+    if not (config.VAULT_DIR / "Clients" / cid / "_Profile.md").is_file():
+        raise HTTPException(status_code=404, detail=f"No such client: {cid}")
     return cid
 
 
@@ -810,13 +959,34 @@ async def api_note(path: str) -> JSONResponse:
     return JSONResponse(view)
 
 
+def _vault_parts(target: Path) -> tuple[str, ...]:
+    return target.relative_to(config.VAULT_DIR.resolve()).parts
+
+
+def _is_session_note(target: Path) -> bool:
+    parts = _vault_parts(target)
+    return len(parts) == 4 and parts[0] == "Clients" and parts[2] == "Sessions"
+
+
+def _is_editable_document(target: Path) -> bool:
+    """Library files, a client's own documents, and the treatment plan. Never
+    the activity log, settings, profiles, Private/, or recordings."""
+    parts = _vault_parts(target)
+    if parts and parts[0] in ("Templates", "Interventions"):
+        return True
+    if len(parts) >= 3 and parts[0] == "Clients":
+        return parts[2] == "Documents" or (len(parts) == 3 and parts[2] == "Treatment-Plan.md")
+    return False
+
+
 @app.post("/api/notes/amend")
 async def api_note_amend(request: Request) -> JSONResponse:
     """Append a dated amendment to a filed note (never rewrites history)."""
     body = await request.json()
     path = body.get("path")
     text = body.get("text")
-    _guard_or_400(path)
+    if not _is_session_note(_guard_or_400(path)):
+        raise HTTPException(status_code=400, detail="Amendments go on session notes.")
     try:
         new_path = await run_in_threadpool(
             records.append_amendment, path, text, _dt.datetime.now()
@@ -842,6 +1012,8 @@ async def api_document_save(request: Request) -> JSONResponse:
             status_code=400,
             detail="Session notes keep their history. Add an amendment instead.",
         )
+    if not _is_editable_document(target):
+        raise HTTPException(status_code=400, detail="That file is not edited from here.")
     if not target.is_file():
         raise HTTPException(status_code=404, detail="Document not found.")
 
@@ -970,6 +1142,13 @@ async def api_document_email(request: Request) -> JSONResponse:
 
 def _reveal_sync(rel_path: str) -> None:
     target = records._guard(rel_path)
+    # A folder is opened, not revealed. "open -R" on a folder selects it inside
+    # its parent, which answers a question nobody asked: somebody who asks for
+    # a recording's folder wants to see what is in it. The guard has already
+    # run, so this can only ever be a folder inside the vault.
+    if target.is_dir():
+        subprocess.run(["open", str(target)], check=False)
+        return
     if not target.is_file():
         raise FileNotFoundError(rel_path)
     reveal_target = target
@@ -990,7 +1169,9 @@ def _open_sync(rel_path: str) -> None:
 
 @app.post("/api/reveal")
 async def api_reveal(request: Request) -> JSONResponse:
-    """Reveal a file in Finder (open -R). Markdown reveals its rendered PDF."""
+    """Show something in Finder. A file is revealed (open -R), and markdown
+    reveals its rendered PDF; a folder is opened, so its contents are what the
+    clinician actually gets. Paths are vault relative, and "." is the vault."""
     body = await request.json()
     path = body.get("path")
     _guard_or_400(path)
@@ -1276,7 +1457,7 @@ async def api_import_compile(request: Request) -> JSONResponse:
                 detail="Cloud compile requires explicit consent and an API key.",
             )
         try:
-            out = await run_in_threadpool(compiler.compile_gemini, doc_text, api_key)
+            out = await run_in_threadpool(compiler.compile_gemini, doc_text, api_key, profession)
         except compiler.CompilerError as exc:
             # The key is already scrubbed inside CompilerError; return a fallback
             # hint so the UI can offer to compile locally instead.
@@ -1385,6 +1566,12 @@ async def api_import_save(request: Request) -> JSONResponse:
         )
     set_active = bool(body.get("set_active"))
 
+    # Same rule as the compiler: under a clinical profession the risk section
+    # is not optional, whatever the browser sent.
+    profession = settings_store.load().get("profession", "therapy")
+    if vocab.get_pack(profession).get("clinical"):
+        spec = {**spec, "clinical": True, "risk_section": True}
+
     def _persist() -> dict:
         saved = formats.save_custom(spec)
         fid = saved["id"]
@@ -1414,6 +1601,825 @@ async def api_import_save(request: Request) -> JSONResponse:
     except formats.InvalidFormatSpec as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return JSONResponse(summary)
+
+
+# ---------------------------------------------------------------------------
+# Session sources: bring material in, confirm what it is, read it, delete it
+# ---------------------------------------------------------------------------
+#
+# Every route here is per client, because the storage tree is per client and
+# because consent is a fact about a person, not about a file. client_id is
+# therefore required rather than inferred, and both ids are validated against
+# recstore's own rules before they are ever turned into a path.
+#
+# The one decision that matters: when the classifier is unsure what a document
+# is, the source is stored with its guess and NO work is queued. The confirm
+# route queues it after a human has answered. Classifying a meeting tool's AI
+# write up as verbatim without that answer is how a sentence nobody said ends up
+# in a clinical record as the client's own words, and it stays there.
+
+# A 50-minute recording is roughly 25 MB and a video is far more, so the cap is
+# generous. It exists so a mis-drop cannot fill the disk, not to police size.
+_SOURCE_MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
+
+_SOURCE_TOO_LARGE = (
+    "That file is larger than 2 GB. Export just the audio track, or split the "
+    "recording, and bring it in again."
+)
+
+# What Debrief can actually read. Anything else is refused by name, with the
+# list of what works, so the answer is never just "no".
+_SOURCE_ALLOWED_EXTS = (
+    sources.AUDIO_EXTS | sources.VIDEO_EXTS | sources.TRANSCRIPT_EXTS | sources.DOC_EXTS
+)
+
+_SOURCE_ACCEPTS = (
+    "Debrief reads audio (.m4a, .mp3, .wav, .aac), video (.mp4, .mov, .webm), "
+    "transcripts (.vtt, .srt), and documents (.txt, .md, .pdf, .docx)."
+)
+
+# Bodies this section will read. The paste cap is the interesting one: a
+# transcript pasted into a text box is the one JSON body here that can be large.
+_PASTE_MAX_BYTES = 2 * 1024 * 1024
+_JSON_MAX_BYTES = 64 * 1024
+
+_PASTE_TOO_LARGE = (
+    "That text is too long to paste. Save it as a file and bring it in that way, "
+    "or paste up to 2 MB at a time."
+)
+_JSON_TOO_LARGE = "That request is larger than this endpoint accepts."
+
+_DIGEST_NOT_READY = (
+    "The session digest is not ready yet. It appears here once Debrief has "
+    "finished reading this material."
+)
+
+_NO_CLIENT_ID = "A client id is required: session material is filed under the client it belongs to."
+
+# Said at every point consent is set or refused. It states whose job consent is
+# and stops there. Recording law varies and this app takes no position on it.
+_CONSENT_NOTE = (
+    "Obtaining and documenting this client's consent to be recorded is your "
+    "responsibility. Debrief stores the dated flag you set here and uses it to "
+    "decide whether session material can be brought in for this client."
+)
+
+
+def _source_http_error(exc: Exception) -> HTTPException:
+    """Map an ingestion failure onto a status code, keeping the module's words.
+
+    ConsentError first: it is a SourceError, and the whole point of it is that a
+    missing consent flag is not the same answer as a file that could not be read.
+    """
+    if isinstance(exc, sources.ConsentError):
+        return HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, sources.SourceError):
+        return HTTPException(status_code=422, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+async def _json_body(request: Request, limit: int, too_large: str) -> dict:
+    """Read a bounded JSON object body, or raise 400 / 413.
+
+    The body is accumulated a chunk at a time and abandoned the moment it passes
+    the limit, so an oversized paste is refused partway through rather than
+    after it has all been held in memory. The declared content-length is checked
+    first, which usually means it is refused before any of it is read.
+    """
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > limit:
+                raise HTTPException(status_code=413, detail=too_large)
+        except ValueError:
+            pass
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw += chunk
+        if len(raw) > limit:
+            raise HTTPException(status_code=413, detail=too_large)
+    try:
+        body = json.loads(bytes(raw) or b"null")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Expected an object.")
+    return body
+
+
+def _source_client_id(client_id) -> str:
+    """A client id safe to build a Recordings path from, or 400."""
+    cid = _valid_client_id(client_id)
+    if not cid:
+        raise HTTPException(status_code=400, detail=_NO_CLIENT_ID)
+    return cid
+
+
+def _source_ids(client_id, source_id) -> tuple[str, str]:
+    """Validate both ids together. source_dir creates nothing and raises on either."""
+    cid = _source_client_id(client_id)
+    try:
+        recstore.source_dir(cid, source_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return cid, str(source_id)
+
+
+def _copy_capped(src, dest: Path) -> int:
+    """Copy a file object into dest in 64 KB chunks, capped. Bytes written.
+
+    The cap is enforced against what actually arrives, not against what the
+    request claimed: a body that under-declares its length is still stopped at
+    the same byte. Raises HTTPException(413) the moment the cap is passed, and
+    the caller's temp directory takes the partial file with it.
+    """
+    written = 0
+    with dest.open("wb") as handle:
+        while True:
+            chunk = src.read(64 * 1024)
+            if not chunk:
+                break
+            written += len(chunk)
+            if written > _SOURCE_MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail=_SOURCE_TOO_LARGE)
+            handle.write(chunk)
+    return written
+
+
+async def _stream_upload(file: UploadFile, dest: Path) -> int:
+    """Stage an upload on disk without blocking the event loop. Bytes written.
+
+    The whole copy runs in a worker thread rather than a chunk at a time on the
+    loop: at the 2 GB cap that is one hop instead of tens of thousands of
+    blocking writes between them.
+    """
+    await file.seek(0)
+    return await run_in_threadpool(_copy_capped, file.file, dest)
+
+
+def _job_view(record: dict | None) -> dict | None:
+    """The part of a job record a source panel needs: state, stage, and failure."""
+    if not record:
+        return None
+    return {
+        "id": record.get("id"),
+        "state": record.get("state"),
+        "stage": record.get("stage"),
+        "done": record.get("done", 0),
+        "total": record.get("total", 0),
+        "error": record.get("error"),
+        "interrupted": bool(record.get("interrupted")),
+    }
+
+
+def _newest_job_for(job_rows: list[dict], source_id: str) -> dict | None:
+    """The most recent job naming this source. list_jobs is already newest first.
+
+    Linear in the job list per source, so a listing is sources times jobs. That
+    is the right trade for a single-user local app: the alternative is an index
+    to keep in step with two directories, and the numbers here are dozens.
+    """
+    for record in job_rows:
+        payload = record.get("payload") or {}
+        if str(payload.get("source_id") or "") == source_id:
+            return record
+    return None
+
+
+def _source_has_work(client_id: str, source_id: str) -> bool:
+    """True when the ladder has something left to build for this source.
+
+    A digest already on disk means there is nothing to do. Otherwise there is
+    work, unless the source enters at rung 0 with neither a transcript nor any
+    audio to make one from, which is a source there is nothing to build from at
+    all: queueing that would be queueing a job to fail.
+    """
+    rungs = recstore.rungs_present(client_id, source_id)
+    if 2 in rungs:
+        return False
+    meta = recstore.read_meta(client_id, source_id) or {}
+    try:
+        entry_rung = int(meta.get("entry_rung", 0))
+    except (TypeError, ValueError):
+        entry_rung = 0
+    if entry_rung == 0 and not rungs:
+        return recstore.audio_path(client_id, source_id) is not None
+    return True
+
+
+def _queue_ladder(client_id: str, source_id: str) -> tuple[str | None, str | None]:
+    """Queue the ladder for a source. Returns (job_id, error message).
+
+    A queue that cannot accept the job is reported rather than swallowed: the
+    material is stored either way, and a source that silently never processes is
+    the failure mode this whole feature was written to avoid.
+    """
+    if not _source_has_work(client_id, source_id):
+        return None, None
+    try:
+        return jobs.submit("ladder", {"client_id": client_id, "source_id": source_id}), None
+    except Exception as exc:  # noqa: BLE001 - the material is in; say what did not happen
+        return None, (
+            f"The material was saved but Debrief could not start processing it: {exc}"
+        )
+
+
+def _ingest_payload(
+    source: sources.Source,
+    needs_confirmation: bool,
+    job_id: str | None,
+    job_error: str | None,
+) -> dict:
+    return {
+        "source_id": source.id,
+        "client_id": source.client_id,
+        "kind": source.kind,
+        "verbatim": bool(source.verbatim),
+        "produced_by": source.produced_by,
+        "entry_rung": source.entry_rung,
+        "needs_confirmation": bool(needs_confirmation),
+        "job_id": job_id,
+        "job_error": job_error,
+    }
+
+
+def _source_display(entry: dict) -> dict:
+    """The two stored fields no caller should have to interpret for itself.
+
+    session_date becomes the EFFECTIVE date: the one the clinician stated, else
+    the day the material arrived. A source stored before session dates existed
+    still comes back with a date, and it is the one that was true of it all
+    along, so no surface has to carry the fallback rule.
+
+    linked_notes is always a list. "No notes yet" and "stored before links
+    existed" mean the same thing to a caller, so they arrive looking the same.
+    """
+    session_date = sources.effective_session_date(entry)
+    entry["session_date"] = session_date.isoformat() if session_date else None
+    entry["linked_notes"] = [
+        str(item) for item in (entry.get("linked_notes") or []) if str(item).strip()
+    ]
+    return entry
+
+
+def _enriched_source(client_id: str, source_id: str, job_rows: list[dict]) -> dict | None:
+    """One source's provenance joined with its rungs, its audio, and its job."""
+    meta = recstore.read_meta(client_id, source_id)
+    if meta is None:
+        return None
+    entry = dict(meta)
+    entry.update(
+        {
+            "client_id": client_id,
+            "source_id": source_id,
+            "rungs": sorted(recstore.rungs_present(client_id, source_id)),
+            "has_audio": recstore.audio_path(client_id, source_id) is not None,
+            "needs_confirmation": bool(meta.get("needs_confirmation")),
+            "job": _job_view(_newest_job_for(job_rows, source_id)),
+        }
+    )
+    return _source_display(entry)
+
+
+@app.post("/api/sources/upload")
+async def api_source_upload(
+    request: Request,
+    client_id: str = Form(...),
+    declared_kind: str = Form(None),
+    file: UploadFile = None,
+) -> JSONResponse:
+    """Bring a recording, video, transcript, or document in as a session source.
+
+    The file is streamed to a temp directory in bounded chunks and never held
+    whole in memory. Consent is checked inside sources.ingest_file, before a
+    single byte is read as content, and a missing flag is a 403 carrying that
+    module's own words.
+
+    The declared content-length is checked as well as the streamed bytes, so an
+    oversize upload is usually refused without the copy; the streamed check is
+    what actually enforces the cap, because a declared length is a claim.
+
+    Returns the stored source and, when nothing needs confirming and there is
+    work to do, the id of the queued ladder job.
+    """
+    cid = _source_client_id(client_id)
+    if file is None:
+        raise HTTPException(status_code=400, detail="No file uploaded.")
+
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in _SOURCE_ALLOWED_EXTS:
+        named = f"a {ext} file" if ext else "that file"
+        raise HTTPException(
+            status_code=400,
+            detail=f"Debrief cannot read {named}. {_SOURCE_ACCEPTS}",
+        )
+
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > _SOURCE_MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail=_SOURCE_TOO_LARGE)
+        except ValueError:
+            pass
+
+    # Consent before staging, not only inside ingest_file. The gate in the
+    # module is the authoritative one and stays; this is the same question asked
+    # early enough that a client with no consent on file does not first have
+    # gigabytes of their session copied onto the disk to be told no.
+    granted, _consent_date = await run_in_threadpool(vault.recording_consent, cid)
+    if not granted:
+        raise HTTPException(status_code=403, detail=sources.CONSENT_MESSAGE)
+
+    # One temp directory for the whole request, removed on every path out of
+    # here, including the oversize one and every ingestion failure below.
+    tmp_dir = Path(tempfile.mkdtemp(prefix="debrief_source_upload_"))
+    try:
+        # The extension is the only part of the client's filename that is used,
+        # and it is already known to be on the allowlist, so nothing a browser
+        # sent becomes part of a path.
+        staged = tmp_dir / f"upload{ext}"
+        if await _stream_upload(file, staged) == 0:
+            raise HTTPException(status_code=400, detail="Empty file upload.")
+        try:
+            source, needs_confirmation = await run_in_threadpool(
+                sources.ingest_file, staged, cid, (declared_kind or "").strip() or None
+            )
+        except (sources.SourceError, ValueError) as exc:
+            raise _source_http_error(exc)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    job_id, job_error = (None, None)
+    if not needs_confirmation:
+        job_id, job_error = await run_in_threadpool(_queue_ladder, cid, source.id)
+    return JSONResponse(_ingest_payload(source, needs_confirmation, job_id, job_error))
+
+
+@app.post("/api/sources/paste")
+async def api_source_paste(request: Request) -> JSONResponse:
+    """Bring pasted text in as a source. Body: {client_id, text, kind}.
+
+    kind is pasted_transcript (word for word, rung 0) or clinician_notes (the
+    clinician's own observation, rung 2). Nothing is guessed, so nothing needs
+    confirming. Consent is gated exactly as it is on the upload path.
+    """
+    body = await _json_body(request, _PASTE_MAX_BYTES, _PASTE_TOO_LARGE)
+    cid = _source_client_id(body.get("client_id"))
+    text = body.get("text")
+    if not isinstance(text, str):
+        raise HTTPException(status_code=400, detail="text must be a string.")
+    kind = str(body.get("kind") or "").strip()
+
+    try:
+        source, needs_confirmation = await run_in_threadpool(sources.ingest_text, text, cid, kind)
+    except (sources.SourceError, ValueError) as exc:
+        raise _source_http_error(exc)
+
+    # Nothing is guessed on this path today, so ingest_text never asks for a
+    # confirmation. The gate is still here rather than in the callee: "unsure
+    # means queue nothing" is a rule about what the server does, and a route
+    # that only holds it because of what another module happens to return is a
+    # route that stops holding it the day that module changes.
+    job_id, job_error = (None, None)
+    if not needs_confirmation:
+        job_id, job_error = await run_in_threadpool(_queue_ladder, cid, source.id)
+    return JSONResponse(_ingest_payload(source, needs_confirmation, job_id, job_error))
+
+
+@app.post("/api/sources/{source_id}/confirm")
+async def api_source_confirm(source_id: str, request: Request) -> JSONResponse:
+    """Record the clinician's answer about what a document actually is.
+
+    Body: {client_id, verbatim: bool, produced_by: str}. Their answer overrides
+    the classifier outright, the source is rebuilt from its retained text, and
+    the ladder is queued afterwards. A recording is a 409: there is nothing to
+    confirm about a microphone.
+    """
+    body = await _json_body(request, _JSON_MAX_BYTES, _JSON_TOO_LARGE)
+    cid, sid = _source_ids(body.get("client_id"), source_id)
+    verbatim = body.get("verbatim")
+    if not isinstance(verbatim, bool):
+        raise HTTPException(
+            status_code=400,
+            detail="verbatim must be true (word for word) or false (a write up).",
+        )
+    produced_by = body.get("produced_by")
+    if not isinstance(produced_by, str):
+        raise HTTPException(status_code=400, detail="produced_by must be a string.")
+
+    meta = await run_in_threadpool(recstore.read_meta, cid, sid)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="No such source for this client.")
+    kind = str(meta.get("kind") or "")
+    if kind in sources.MEDIA_KINDS:
+        raise HTTPException(status_code=409, detail=sources.MEDIA_CONFIRM_MESSAGE)
+    if kind in sources.REFERENCE_KINDS:
+        # Refused here rather than one layer down, because the layer down is
+        # behind _cancel_source_jobs. reclassify would raise the same message,
+        # but by then a stale confirm click from a screen opened before the
+        # source was made reference material would have killed the ladder run
+        # that is building its reference digest, and nothing queues it again.
+        raise HTTPException(status_code=422, detail=sources.REFERENCE_CONFIRM_MESSAGE)
+
+    def _confirm() -> tuple[sources.Source, list[str]]:
+        # Any ladder already running for this source is building rungs under
+        # the provenance that is about to change. Stopping it first is not
+        # tidiness: reclassify deletes rung 2, and a job still running under
+        # the old answer would write its digest back afterwards, at which
+        # point the next ladder finds a rung 2 on disk and hands out the stale
+        # digest instead of rebuilding it. That is the exact failure the
+        # confirm flow exists to prevent, arriving by another door.
+        cancelled = _cancel_source_jobs(cid, sid)
+        return sources.reclassify(cid, sid, verbatim, produced_by), cancelled
+
+    try:
+        source, cancelled = await run_in_threadpool(_confirm)
+    except (sources.SourceError, ValueError) as exc:
+        raise _source_http_error(exc)
+
+    job_id, job_error = await run_in_threadpool(_queue_ladder, cid, source.id)
+    payload = _ingest_payload(source, False, job_id, job_error)
+    payload["cancelled_jobs"] = cancelled
+    return JSONResponse(payload)
+
+
+@app.post("/api/sources/{source_id}/reference")
+async def api_source_reference(source_id: str, request: Request) -> JSONResponse:
+    """Move a source between session material and reference material.
+
+    Body: {client_id, reference: bool}. true files it as reference material (a
+    talk, an article, something saved to read again), false files it back as
+    material from a session with this client.
+
+    Only what the material is FOR changes. Whether it is word for word is a fact
+    about the bytes and survives the flip, so the transcript and the audio are
+    untouched. The session summary does not survive: a session digest and a
+    reference digest are different shapes with different rules, so the stale one
+    is deleted and a fresh ladder is queued to rebuild it.
+
+    Flipping the way a source already points does nothing at all, and does it
+    without stopping a job or queueing one. A second click must not cost a
+    summary and the minutes of work to rebuild it.
+    """
+    body = await _json_body(request, _JSON_MAX_BYTES, _JSON_TOO_LARGE)
+    cid, sid = _source_ids(body.get("client_id"), source_id)
+    reference = body.get("reference")
+    if not isinstance(reference, bool):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "reference must be true (reference material) or false (material "
+                "from a session with this client)."
+            ),
+        )
+
+    meta = await run_in_threadpool(recstore.read_meta, cid, sid)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="No such source for this client.")
+
+    def _row() -> dict | None:
+        return _enriched_source(cid, sid, jobs.list_jobs(cid))
+
+    already = str(meta.get("kind") or "") in sources.REFERENCE_KINDS
+    if already == reference:
+        # Nothing to rebuild, so nothing is stopped and nothing is queued. The
+        # check lives here rather than only in reclassify (which is already a
+        # no-op) because the cancel and the queue happen out here, and a route
+        # that runs them anyway would charge a digest for a second click.
+        entry = await run_in_threadpool(_row)
+        return JSONResponse(
+            jsonable_encoder(
+                {**(entry or {}), "job_id": None, "job_error": None, "cancelled_jobs": []}
+            )
+        )
+
+    def _flip() -> tuple[sources.Source, list[str]]:
+        # Same reasoning as the confirm route: a ladder still running under the
+        # old kind would write its digest back after the flip deleted rung 2,
+        # and the next read would hand out a digest built to the wrong shape.
+        cancelled = _cancel_source_jobs(cid, sid)
+        return sources.reclassify(cid, sid, reference=reference), cancelled
+
+    try:
+        source, cancelled = await run_in_threadpool(_flip)
+    except (sources.SourceError, ValueError) as exc:
+        raise _source_http_error(exc)
+
+    job_id, job_error = await run_in_threadpool(_queue_ladder, cid, source.id)
+    entry = await run_in_threadpool(_row)
+    return JSONResponse(
+        jsonable_encoder(
+            {
+                **(entry or {}),
+                "job_id": job_id,
+                "job_error": job_error,
+                "cancelled_jobs": cancelled,
+            }
+        )
+    )
+
+
+async def _existing_source(client_id, source_id) -> tuple[str, str]:
+    """Both ids validated and the source known to exist, or 400 / 404.
+
+    "There is no such source" and "that source cannot do this yet" are different
+    answers, and every route below wants the first one settled before it starts.
+    """
+    cid, sid = _source_ids(client_id, source_id)
+    if await run_in_threadpool(recstore.read_meta, cid, sid) is None:
+        raise HTTPException(status_code=404, detail="No such source for this client.")
+    return cid, sid
+
+
+@app.post("/api/sources/{source_id}/draft")
+async def api_source_draft(source_id: str, request: Request) -> JSONResponse:
+    """Draft a note from stored material alone. Body: {client_id}.
+
+    Returns the same plan shape a debrief returns, so it flows into the review
+    screen the clinician already knows: a note they can edit, with no actions in
+    it and no transcript behind it. Nothing is filed here. /api/execute files it
+    after they approve it, exactly as it does for a debrief.
+
+    409 when there is nothing to draft from yet, carrying the plain reason: the
+    summary is still being built, was never built, or nobody has confirmed what
+    the material is.
+    """
+    body = await _json_body(request, _JSON_MAX_BYTES, _JSON_TOO_LARGE)
+    cid, sid = await _existing_source(body.get("client_id"), source_id)
+
+    try:
+        plan = await run_in_threadpool(pipeline.plan_from_source, cid, sid)
+    except sources.SourceError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse(jsonable_encoder(plan))
+
+
+@app.post("/api/sources/{source_id}/assign")
+async def api_source_assign(source_id: str, request: Request) -> JSONResponse:
+    """Connect stored material to a note that is already filed.
+
+    Body: {client_id, note_path}. The note gains a dated amendment naming the
+    material and where it lives; nothing above that amendment is touched,
+    because a filed note is never rewritten. Connecting the same material to the
+    same note twice appends nothing and says so.
+    """
+    body = await _json_body(request, _JSON_MAX_BYTES, _JSON_TOO_LARGE)
+    cid, sid = await _existing_source(body.get("client_id"), source_id)
+    note_path = body.get("note_path")
+    if not isinstance(note_path, str) or not note_path.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="note_path must name one of this client's filed session notes.",
+        )
+
+    try:
+        result = await run_in_threadpool(
+            sources.link_source_to_note, cid, sid, note_path
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except sources.SourceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except (VaultPathError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if not result["already_linked"]:
+        audit.log_records_change(
+            "Amended", result["note_path"], "Session material connected."
+        )
+    return JSONResponse(result)
+
+
+@app.patch("/api/sources/{source_id}/session-date")
+async def api_source_session_date(source_id: str, request: Request) -> JSONResponse:
+    """Correct when this source's session actually happened.
+
+    Body: {client_id, session_date}. captured_at is not touched: when the
+    material arrived is the app's own statement about its own history, and it is
+    nobody's to edit. Returns the updated source row.
+    """
+    body = await _json_body(request, _JSON_MAX_BYTES, _JSON_TOO_LARGE)
+    cid, sid = await _existing_source(body.get("client_id"), source_id)
+
+    def _set() -> dict | None:
+        sources.set_session_date(cid, sid, body.get("session_date"))
+        return _enriched_source(cid, sid, jobs.list_jobs(cid))
+
+    try:
+        entry = await run_in_threadpool(_set)
+    except sources.SourceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if entry is None:
+        raise HTTPException(status_code=404, detail="No such source for this client.")
+    return JSONResponse(jsonable_encoder(entry))
+
+
+@app.get("/api/sources")
+async def api_sources_list(client_id: str = "") -> JSONResponse:
+    """Every source for one client: provenance, rungs built, audio, latest job."""
+    cid = _source_client_id(client_id)
+
+    def _read() -> dict:
+        job_rows = jobs.list_jobs(cid)
+        rows = []
+        for row in recstore.list_sources(cid):
+            row = dict(row)
+            row["job"] = _job_view(_newest_job_for(job_rows, row["source_id"]))
+            rows.append(_source_display(row))
+        return {"sources": rows}
+
+    try:
+        payload = await run_in_threadpool(_read)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse(jsonable_encoder(payload))
+
+
+@app.get("/api/sources/{source_id}")
+async def api_source_detail(source_id: str, client_id: str = "") -> JSONResponse:
+    """One source, with the same enrichment as the list."""
+    cid, sid = _source_ids(client_id, source_id)
+
+    def _read() -> dict | None:
+        return _enriched_source(cid, sid, jobs.list_jobs(cid))
+
+    entry = await run_in_threadpool(_read)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="No such source for this client.")
+    return JSONResponse(jsonable_encoder(entry))
+
+
+@app.get("/api/sources/{source_id}/digest")
+async def api_source_digest(source_id: str, client_id: str = "") -> JSONResponse:
+    """The session digest for one source, once the ladder has built it.
+
+    load_digest re-applies the provenance rules on the way out, so a source
+    reclassified since it was digested hands over a digest with its quotes
+    already gone.
+    """
+    cid, sid = _source_ids(client_id, source_id)
+    if await run_in_threadpool(recstore.read_meta, cid, sid) is None:
+        # A source that is not there and a digest that is not built yet are two
+        # different answers, and only one of them is worth waiting for.
+        raise HTTPException(status_code=404, detail="No such source for this client.")
+    digest = await run_in_threadpool(ladder.load_digest, cid, sid)
+    if digest is None:
+        raise HTTPException(status_code=404, detail=_DIGEST_NOT_READY)
+    return JSONResponse(jsonable_encoder(digest))
+
+
+def _cancel_source_jobs(client_id: str, source_id: str) -> list[str]:
+    """Stop any unfinished job for this source. Returns the ids that were stopped.
+
+    Called before a whole-source delete and before a reclassification, so a
+    ladder is not still building rungs into a folder that is being trashed or
+    under provenance that has just changed.
+
+    What this actually buys is a job that stops at its next rung boundary, not
+    one that stops now: a call already in flight finishes, and write_rung
+    recreates the folder it writes into. The window is small and the alternative
+    is killing a call mid run, which the queue deliberately refuses to do.
+    """
+    cancelled: list[str] = []
+    for record in jobs.list_jobs(client_id):
+        payload = record.get("payload") or {}
+        if str(payload.get("source_id") or "") != source_id:
+            continue
+        job_id = str(record.get("id") or "")
+        if job_id and jobs.cancel(job_id):
+            cancelled.append(job_id)
+    return cancelled
+
+
+@app.delete("/api/sources/{source_id}")
+async def api_source_delete(
+    source_id: str, client_id: str = "", audio_only: bool = False
+) -> JSONResponse:
+    """Delete a source, or just its audio.
+
+    audio_only removes the recording permanently and keeps everything else, so
+    the note's evidence trail outlives the bytes. It deliberately does NOT stop
+    a pending ladder: cancelling it would leave a source with no audio and no
+    transcript either, which is not "the trail outlives the audio", it is the
+    trail being deleted quietly by a route that says it kept it. A ladder that
+    then finds the audio gone fails with a message saying so, which is the
+    honest outcome and a recoverable one.
+
+    A whole-source delete goes through the vault trash and its 30-day grace
+    period, and does stop the ladder first, because nothing should be writing
+    rungs into a folder on its way out.
+
+    Nothing is cancelled before it is known that there is something to delete.
+    A 404 must not have side effects.
+    """
+    cid, sid = _source_ids(client_id, source_id)
+
+    def _delete() -> dict:
+        # "That source has no audio" and "there is no such source" are different
+        # answers, and telling a clinician the first when the second is true
+        # says their material is filed somewhere when it is not.
+        if not recstore.source_dir(cid, sid).is_dir():
+            return {"deleted": False, "missing": True, "cancelled_jobs": []}
+        if audio_only:
+            if recstore.audio_path(cid, sid) is None:
+                return {"deleted": False, "missing": False, "cancelled_jobs": []}
+            return {
+                "deleted": recstore.delete_audio(cid, sid),
+                "missing": False,
+                "cancelled_jobs": [],
+            }
+        cancelled = _cancel_source_jobs(cid, sid)
+        return {
+            "deleted": recstore.delete_source(cid, sid),
+            "missing": False,
+            "cancelled_jobs": cancelled,
+        }
+
+    try:
+        result = await run_in_threadpool(_delete)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except VaultPathError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    missing = result.pop("missing", False)
+    if not result["deleted"]:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "There is no audio stored for that source."
+                if audio_only and not missing
+                else "No such source for this client."
+            ),
+        )
+    audit.log_records_change(
+        "Deleted audio" if audio_only else "Moved to trash",
+        f"Recordings/{cid}/{sid}",
+        "",
+    )
+    return JSONResponse(result)
+
+
+@app.post("/api/clients/{client_id}/recording-consent")
+async def api_recording_consent(client_id: str, request: Request) -> JSONResponse:
+    """Set or withdraw a client's dated recording consent. Body: {granted: bool}.
+
+    Withdrawing keeps the date it was granted on: that date is the answer to
+    "was there consent at the time", and erasing it would erase the answer.
+    """
+    body = await _json_body(request, _JSON_MAX_BYTES, _JSON_TOO_LARGE)
+    granted = body.get("granted")
+    if not isinstance(granted, bool):
+        raise HTTPException(
+            status_code=400,
+            detail=f"granted must be true or false. {_CONSENT_NOTE}",
+        )
+    cid = _source_client_id(client_id)
+
+    def _set() -> dict:
+        vault.set_recording_consent(cid, granted)
+        on, date = vault.recording_consent(cid)
+        return {"granted": on, "date": date, "note": _CONSENT_NOTE}
+
+    try:
+        payload = await run_in_threadpool(_set)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"No such client: {cid}")
+    except VaultPathError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except ValueError as exc:
+        # A properties block that will not parse. Refusing is the safe answer:
+        # writing one key into it would take the rest of the profile with it.
+        raise HTTPException(status_code=409, detail=f"{exc}")
+    audit.log_records_change(
+        "Recording consent granted" if granted else "Recording consent withdrawn",
+        f"Clients/{cid}/_Profile.md",
+        "",
+    )
+    return JSONResponse(payload)
+
+
+@app.get("/api/jobs")
+async def api_jobs(client_id: str = "") -> JSONResponse:
+    """Background jobs, newest first, plus any failure the records could not hold.
+
+    worker_error is the last failure the worker could not write to a job record
+    (a full disk, a vault that has gone away). It has nowhere else to surface,
+    and a failure nobody can see is the one this queue was built to end.
+    """
+    wanted = (client_id or "").strip()
+    cid = _valid_client_id(wanted) if wanted else None
+    if wanted and not cid:
+        raise HTTPException(status_code=400, detail=f"Invalid client id: {wanted!r}")
+
+    def _read() -> dict:
+        return {"jobs": jobs.list_jobs(cid), "worker_error": jobs.last_worker_error()}
+
+    payload = await run_in_threadpool(_read)
+    return JSONResponse(jsonable_encoder(payload))
 
 
 # ---------------------------------------------------------------------------
@@ -1575,4 +2581,5 @@ app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="static"
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host=APP_HOST, port=APP_PORT)
+    # No access log: query strings carry search terms and note paths.
+    uvicorn.run(app, host=APP_HOST, port=APP_PORT, access_log=False)

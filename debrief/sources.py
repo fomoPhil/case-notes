@@ -1,0 +1,1679 @@
+"""Get session material in, work out what it actually is, and record where it came from.
+
+Material arrives as an audio file, a video file, a transcript export, a meeting
+tool's write up, or the clinician's own notes. Each one enters the ladder at a
+different rung and each one carries a different claim about truth, so every
+source is stored with its provenance beside it in meta.json.
+
+The claim that matters is `verbatim`. An Otter export may be a word for word
+transcript, Otter's AI summary of the session, or both stapled together. A
+Granola note is almost entirely generated interpretation. If a generated summary
+is ingested as verbatim, a paraphrased or invented sentence eventually lands in a
+clinical record as the client's own quote, and it stays there. So:
+
+    verbatim=True  always pairs with entry_rung 0, the archive of what was said
+    verbatim=False always pairs with entry_rung 2, an observation about it
+
+The Source constructor enforces that pairing. It is not a convention.
+
+Classification is layered, deterministic, and never a model call: file headers
+first, then export structure, then speaker turn shape, then prose. Every layer
+returns a confidence, and anything under CONFIRM_BELOW is stored with its best
+guess and flagged for the clinician to confirm with one tap. When a file looks
+like both a summary and a transcript, the guess is the non-verbatim one, because
+an unattributed observation is recoverable and a misattributed quote is not.
+
+Some material is not a session at all: an article, a training video, a talk the
+clinician saved to come back to. That is stored as reference material, which is
+two kinds for the same reason everything else is. reference_recording is word
+for word and enters at rung 0, reference_document is somebody's write up and
+enters at rung 2. Reference material is never evidence about a client, and
+nothing ever classifies itself as reference: only the clinician saying so, on
+the way in or afterwards, makes something reference material.
+
+A source carries two dates, and both are true. captured_at is when the bytes
+reached Debrief, and it is never editable, because it is the app's own record of
+what it received and when. session_date is when the session actually happened.
+It defaults to captured_at's date and can be corrected in either direction,
+because material is often brought in days later and a note dated by upload time
+is a note with the wrong date on it.
+
+Consent comes first on every path. Import is gated on a dated recording consent
+flag on the client profile, exactly as the record button is. The message when it
+is missing says what is missing and nothing else: the app takes no position on
+recording law and offers no legal advice.
+
+Writes go through recstore, so everything lands under Recordings/<client>/<source>
+and nowhere else in the vault. Video is the one input that is never retained: the
+audio track is extracted to a temp file, stored, and the temp file is removed.
+
+No em dashes anywhere.
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import math
+import re
+import shutil
+import subprocess
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+
+from . import doctext, records, recstore, vault
+
+
+class SourceError(RuntimeError):
+    """Session material could not be brought in. The message is safe to show."""
+
+
+class ConsentError(SourceError):
+    """No dated recording consent is on file for this client."""
+
+
+# What the clinician sees when consent is missing. It names the missing thing and
+# stops. No jurisdictions, no law, no advice.
+CONSENT_MESSAGE = (
+    "Recording consent has not been recorded for this client. Add it on their "
+    "profile, then bring the session material in."
+)
+
+# Below this, the classification is a guess and the clinician is asked to confirm.
+CONFIRM_BELOW = 0.8
+
+# Every kind, with the two facts that follow from it: is it word for word, and
+# which rung of the ladder does it enter at. One table, so a kind can never be
+# stored with a pairing that contradicts it.
+KIND_RULES: dict[str, tuple[bool, int]] = {
+    "live_recording": (True, 0),
+    "uploaded_audio": (True, 0),
+    "uploaded_video": (True, 0),
+    "transcript_file": (True, 0),
+    "pasted_transcript": (True, 0),
+    "third_party_summary": (False, 2),
+    "clinician_notes": (False, 2),
+    # Reference material, which is not a session with anybody. Two kinds rather
+    # than one, so the pairing above holds for it too: a talk that gets
+    # transcribed is word for word and enters at rung 0, an article is somebody
+    # else's prose and enters at rung 2. The UI shows both as one label.
+    "reference_recording": (True, 0),
+    "reference_document": (False, 2),
+}
+
+PRODUCERS = {"debrief", "zoom", "otter", "granola", "clinician", "unknown"}
+
+# The kinds that are not a session. Their digest is reference shaped, they are
+# never offered as evidence about a client, and nothing but a clinician's own
+# say so ever puts a source in here.
+REFERENCE_KINDS = {"reference_recording", "reference_document"}
+
+# What a file's extension alone is enough to decide.
+AUDIO_EXTS = {".m4a", ".mp3", ".wav", ".aac"}
+VIDEO_EXTS = {".mp4", ".mov", ".webm"}
+TRANSCRIPT_EXTS = {".vtt", ".srt"}
+DOC_EXTS = {".txt", ".md", ".pdf", ".docx"}
+
+# The two kinds a clinician can paste in directly.
+PASTE_KINDS = {"pasted_transcript", "clinician_notes"}
+
+# The kinds a file of text can honestly be. The rest describe media, and a
+# document declared as one of those would enter a rung expecting audio.
+TEXT_KINDS = {
+    "transcript_file",
+    "pasted_transcript",
+    "third_party_summary",
+    "clinician_notes",
+}
+
+# The kinds that are a recording rather than a document. There is nothing for a
+# clinician to confirm about these: a microphone is word for word by definition.
+MEDIA_KINDS = {"live_recording", "uploaded_audio", "uploaded_video"}
+
+# Said in one place, because the confirm route refuses this before calling in
+# and reclassify refuses it again on arrival. Two copies of a sentence drift.
+MEDIA_CONFIRM_MESSAGE = (
+    "That source is a recording, so there is nothing to confirm: what the "
+    "microphone captured is word for word."
+)
+
+# Said in one place for the same reason. The word for word question is about
+# session material, and this source is not session material at all.
+REFERENCE_CONFIRM_MESSAGE = (
+    "That source is filed as reference material rather than a session, so there "
+    "is nothing to confirm about it. Treat it as a session recording first if "
+    "that is what it turned out to be."
+)
+
+# Said wherever unconfirmed material is asked to become part of the clinical
+# record, whether as a drafted note or as a line amended onto a filed one. The
+# classifier's guess is still only a guess until somebody answers, and a record
+# that names a provenance nobody vouched for is the failure this app is built
+# around. One sentence, one place, because two copies drift.
+UNCONFIRMED_MESSAGE = (
+    "Debrief is not sure what that material is yet. Answer the question on the "
+    "source first, so the note says where it came from and means it."
+)
+
+# The one shape a session date is written in, everywhere. Fixed rather than
+# locale-aware on purpose: 07-08 is two different days on two sides of an
+# ocean, and a clinical record cannot hold a date that reads differently
+# depending on who opens it. date.fromisoformat would also take 20260725 and
+# 2026-W27-1, and neither is a thing a person types on purpose. The digits are
+# spelled out as 0 to 9 rather than as \d, which also matches every other
+# script's digits and would hand fromisoformat a string it cannot read.
+_SESSION_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_SESSION_DATE_SHAPE = "Write it as YYYY-MM-DD, for example 2026-07-25."
+
+
+# ---------------------------------------------------------------------------
+# The Source record
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Source:
+    """One piece of session material, with the provenance that governs its use.
+
+    Frozen, because provenance that can be edited in place is provenance that can
+    drift away from the bytes it describes. A correction after the clinician
+    confirms a classification rewrites meta.json with a new Source.
+    """
+
+    id: str
+    client_id: str
+    kind: str
+    verbatim: bool
+    produced_by: str
+    entry_rung: int
+    captured_at: _dt.datetime
+    duration_min: int | None
+    diarized: bool
+    partial: bool
+    audio_path: Path | None
+    consent_ref: str | None
+    # True while the classifier's guess is still only a guess. It lives in
+    # meta.json rather than in one HTTP response because the question outlives
+    # the request: a clinician who closes the tab before answering must find the
+    # question waiting when they come back, not a source that is silently doing
+    # nothing and looks identical to one whose processing failed. Defaults to
+    # False so meta written before this existed reads as answered, which is the
+    # right reading: nothing was ever pending on it.
+    needs_confirmation: bool = False
+    # When the session actually happened, which is not the same question as
+    # when Debrief received the file. A clinician who uploads Tuesday's session
+    # on Friday needs the record to say Tuesday, and captured_at can never say
+    # it, because captured_at is the app's own statement about its own history
+    # and is never editable. None means the source has never said, and every
+    # caller reads it through effective_session_date, which falls back to
+    # captured_at's date. That is exactly what meta written before this field
+    # existed always meant.
+    session_date: _dt.date | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind not in KIND_RULES:
+            raise ValueError(
+                f"unknown source kind: {self.kind!r}. "
+                f"Known kinds are {', '.join(sorted(KIND_RULES))}."
+            )
+        expected_verbatim, expected_rung = KIND_RULES[self.kind]
+        if bool(self.verbatim) is not expected_verbatim:
+            raise ValueError(
+                f"{self.kind} is always verbatim={expected_verbatim}. "
+                "A source's kind decides whether it is word for word."
+            )
+        if self.entry_rung != expected_rung:
+            raise ValueError(
+                f"{self.kind} always enters at rung {expected_rung}, not "
+                f"{self.entry_rung!r}. Verbatim material is rung 0, an "
+                "observation about it is rung 2."
+            )
+
+    def to_meta(self) -> dict:
+        """A JSON safe dict for meta.json: ISO datetime, path as a string."""
+        return {
+            "id": self.id,
+            "client_id": self.client_id,
+            "kind": self.kind,
+            "verbatim": bool(self.verbatim),
+            "produced_by": self.produced_by,
+            "entry_rung": int(self.entry_rung),
+            "captured_at": self.captured_at.replace(microsecond=0).isoformat(),
+            "duration_min": self.duration_min,
+            "diarized": bool(self.diarized),
+            "partial": bool(self.partial),
+            "audio_path": str(self.audio_path) if self.audio_path else None,
+            "consent_ref": self.consent_ref,
+            "needs_confirmation": bool(self.needs_confirmation),
+            "session_date": self.session_date.isoformat() if self.session_date else None,
+        }
+
+    @classmethod
+    def from_meta(cls, meta: dict) -> Source:
+        """Rebuild a Source from meta.json. Raises ValueError on a broken record.
+
+        recstore.list_sources adds source_id to each row, so either spelling of
+        the id is accepted.
+        """
+        meta = meta or {}
+        captured = meta.get("captured_at")
+        if isinstance(captured, _dt.datetime):
+            captured_at = captured
+        else:
+            try:
+                captured_at = _dt.datetime.fromisoformat(str(captured))
+            except ValueError:
+                raise ValueError(f"unreadable captured_at: {captured!r}")
+        duration = meta.get("duration_min")
+        audio = meta.get("audio_path")
+        return cls(
+            id=str(meta.get("id") or meta.get("source_id") or ""),
+            client_id=str(meta.get("client_id") or ""),
+            kind=str(meta.get("kind") or ""),
+            verbatim=bool(meta.get("verbatim")),
+            produced_by=str(meta.get("produced_by") or "unknown"),
+            entry_rung=int(meta.get("entry_rung", -1)),
+            captured_at=captured_at,
+            duration_min=int(duration) if duration is not None else None,
+            diarized=bool(meta.get("diarized")),
+            partial=bool(meta.get("partial")),
+            audio_path=Path(audio) if audio else None,
+            consent_ref=meta.get("consent_ref") or None,
+            needs_confirmation=bool(meta.get("needs_confirmation")),
+            # Lenient on the way in: a session date that cannot be read reads as
+            # absent, and absent falls back to the capture date. Refusing to
+            # build the Source at all would take a whole source out of the
+            # listing over a field that is only ever a display convenience.
+            session_date=_read_session_date(meta.get("session_date")),
+        )
+
+
+# ---------------------------------------------------------------------------
+# The session date
+# ---------------------------------------------------------------------------
+
+
+def parse_session_date(value) -> _dt.date:
+    """A session date, or ValueError carrying a message that is safe to show.
+
+    One written form, YYYY-MM-DD, and nothing else. A date object is taken as
+    it is; a datetime is refused rather than truncated, because a session date
+    is a day and accepting a time would quietly throw part of the value away.
+
+    Every date is allowed, past and future both. Clinicians correct in both
+    directions: material comes in late far more often than early, but a session
+    booked for tomorrow and prepared for today is an ordinary thing too. There
+    is no clinical reading of a date that this module is entitled to make.
+    """
+    if isinstance(value, _dt.datetime):
+        raise ValueError(f"A session date is a day, not a time. {_SESSION_DATE_SHAPE}")
+    if isinstance(value, _dt.date):
+        return value
+    text = str(value if value is not None else "").strip()
+    if not text:
+        raise ValueError(f"There is no session date here. {_SESSION_DATE_SHAPE}")
+    if not _SESSION_DATE_RE.fullmatch(text):
+        raise ValueError(f"{text} is not a date Debrief can read. {_SESSION_DATE_SHAPE}")
+    try:
+        return _dt.date.fromisoformat(text)
+    except ValueError:
+        raise ValueError(f"{text} is not a real date. {_SESSION_DATE_SHAPE}") from None
+
+
+def _read_session_date(value) -> _dt.date | None:
+    """A stored session date, or None when there is not a readable one."""
+    if isinstance(value, _dt.datetime):
+        return value.date()
+    if isinstance(value, _dt.date):
+        return value
+    try:
+        return parse_session_date(value)
+    except ValueError:
+        return None
+
+
+def effective_session_date(meta_or_source) -> _dt.date | None:
+    """When this source's session happened, falling back to its capture date.
+
+    Takes a Source, a meta dict, or a recstore.list_sources row. The fallback is
+    the point: a source stored before session_date existed, or one whose stored
+    date cannot be read, still has a date to show, and it is the one that was
+    true of it all along. None only when there is no readable date of either
+    kind, which means the record itself is broken.
+    """
+    if isinstance(meta_or_source, Source):
+        if meta_or_source.session_date:
+            return meta_or_source.session_date
+        captured = meta_or_source.captured_at
+        return captured.date() if isinstance(captured, _dt.datetime) else None
+
+    meta = meta_or_source or {}
+    stated = _read_session_date(meta.get("session_date"))
+    if stated:
+        return stated
+    captured = meta.get("captured_at")
+    if isinstance(captured, _dt.datetime):
+        return captured.date()
+    try:
+        return _dt.datetime.fromisoformat(str(captured)).date()
+    except (TypeError, ValueError):
+        return None
+
+
+def set_session_date(client_id: str, source_id: str, value) -> dict:
+    """Record when this source's session actually happened. Returns the meta.
+
+    The date is validated before anything is read from disk, and the rest of
+    meta.json is carried across untouched, so this can never be the call that
+    loses a source's provenance. captured_at in particular is copied, never
+    recomputed: the two dates answer different questions and only one of them is
+    the clinician's to change.
+
+    Raises ValueError for a date that cannot be read, and SourceError when there
+    is no such source.
+    """
+    session_date = parse_session_date(value)
+    try:
+        meta = recstore.read_meta(client_id, source_id)
+    except ValueError as exc:
+        raise SourceError(str(exc)) from exc
+    if not meta:
+        raise SourceError(f"there is no stored source {source_id} for this client.")
+
+    meta = dict(meta)
+    meta["session_date"] = session_date.isoformat()
+    recstore.write_meta(client_id, source_id, meta)
+    return meta
+
+
+# ---------------------------------------------------------------------------
+# Connecting material to a note that is already filed
+# ---------------------------------------------------------------------------
+#
+# A filed note is never rewritten. That is the whole records posture of this
+# app, and it does not bend for a convenience: connecting material a clinician
+# found later to a note they filed last week is an AMENDMENT, dated, appended,
+# and going through the same machinery as any other amendment. The source's meta
+# records the link as well, so the source card can show where its material ended
+# up, but the note is the record and the meta is only an index of it.
+
+# Each kind in the words a clinician would use, written to sit inside the
+# amendment sentence below. The reference kinds name their shape only: the
+# sentence they land in has already said they are reference material.
+KIND_LABELS: dict[str, str] = {
+    "live_recording": "an audio recording made in Debrief",
+    "uploaded_audio": "an audio recording",
+    "uploaded_video": "a video recording",
+    "transcript_file": "a transcript",
+    "pasted_transcript": "a pasted transcript",
+    "third_party_summary": "a meeting tool's AI summary",
+    "clinician_notes": "the clinician's own notes",
+    "reference_recording": "a recording",
+    "reference_document": "a document",
+}
+
+# What lives beside the material in the vault, which is different for material
+# that is word for word and material that is somebody's write up. An amendment
+# promising a word for word transcript that does not exist would send a reader
+# looking for a file that was never there.
+_VERBATIM_TRAIL = "Word for word transcript and summary live beside it."
+_SUMMARY_TRAIL = "The text and summary live beside it."
+
+
+def _kind_label(kind: str) -> str:
+    """The kind in plain words. The fallback is neutral on purpose: it has to
+    read correctly under either lead, and claiming a shape nobody recorded is
+    the one thing this sentence must not do."""
+    return KIND_LABELS.get(kind, "material")
+
+
+def amendment_line(client_id: str, source_id: str, meta: dict) -> str:
+    """The one sentence pair an assignment appends to a filed note.
+
+    Names what the material is, when its session was, and exactly where the
+    bytes live, so a reader coming to this note in a year can find the material
+    without this app. Reference material says so in its first two words rather
+    than being called session evidence, because it is not.
+    """
+    meta = meta or {}
+    kind = str(meta.get("kind") or "")
+    lead = (
+        "Reference material connected"
+        if kind in REFERENCE_KINDS
+        else "Session evidence connected"
+    )
+    session_date = effective_session_date(meta)
+    when = session_date.isoformat() if session_date else "an unrecorded date"
+    trail = _VERBATIM_TRAIL if meta.get("verbatim") else _SUMMARY_TRAIL
+    return (
+        f"{lead}: {_kind_label(kind)} from {when}, stored in the vault at "
+        f"Recordings/{client_id}/{source_id}/. {trail}"
+    )
+
+
+def _session_note_rel(client_id: str, note_rel_path) -> str:
+    """The vault relative path of this client's own session note, or a refusal.
+
+    Two different failures, deliberately kept apart. A path that tries to leave
+    the vault, or arrives absolute, is a ValueError: that is a malformed request
+    and the answer is 400. A path that is well formed but names a note this
+    client does not have, including another client's note, is a FileNotFoundError
+    and the answer is 404. Telling the two apart is what keeps one client's
+    record from being probed through the other's.
+    """
+    target = records._guard(note_rel_path)
+    sessions = records._client_dir(client_id) / "Sessions"
+    try:
+        inside = target.parent.resolve() == sessions.resolve()
+    except OSError:
+        inside = False
+    if not inside or target.suffix.lower() != ".md":
+        raise FileNotFoundError(
+            "That is not one of this client's session notes, so nothing was connected."
+        )
+    if not target.is_file():
+        raise FileNotFoundError("There is no such session note for this client.")
+    return records._rel(target)
+
+
+def link_source_to_note(client_id: str, source_id: str, note_rel_path) -> dict:
+    """Connect stored material to a note that is already filed. Returns the result.
+
+    The note gains a dated amendment naming the material and where it lives, and
+    the source's meta gains the note in linked_notes. Connecting the same source
+    to the same note twice appends nothing and says so: a record that grows a
+    duplicate paragraph every time somebody clicks is a worse record.
+
+    Withdrawn consent does not block this. The material is already in the
+    record's custody, and this documents that fact rather than adding to it. The
+    remedy for withdrawn consent is deleting the material, which is its own
+    route and says so.
+
+    Unconfirmed provenance DOES block it, and the two are not in tension. The
+    amendment names what the material is, in a clinical record, permanently. A
+    classifier's guess that nobody has answered yet is not something a record
+    should assert, and the answer is one tap away on the source card.
+
+    Raises SourceError when there is no such source or its provenance is still
+    unconfirmed, ValueError when the path is not one the vault will accept, and
+    FileNotFoundError when the note is not this client's.
+    """
+    try:
+        meta = recstore.read_meta(client_id, source_id)
+    except ValueError as exc:
+        raise SourceError(str(exc)) from exc
+    if not meta:
+        raise SourceError(f"there is no stored source {source_id} for this client.")
+    if meta.get("needs_confirmation"):
+        raise SourceError(UNCONFIRMED_MESSAGE)
+
+    rel = _session_note_rel(client_id, note_rel_path)
+
+    linked = [str(item) for item in (meta.get("linked_notes") or []) if str(item).strip()]
+    if rel in linked:
+        return {
+            "linked": True,
+            "note_path": rel,
+            "already_linked": True,
+            "linked_notes": linked,
+        }
+
+    line = amendment_line(client_id, source_id, meta)
+    records.append_amendment(rel, line, _dt.datetime.now())
+
+    # The note is amended, so the connection is now a fact of the record whether
+    # or not the index below can be written. A failure here is reported as
+    # exactly that rather than left to read as "nothing happened".
+    meta = dict(meta)
+    meta["linked_notes"] = linked + [rel]
+    try:
+        recstore.write_meta(client_id, source_id, meta)
+    except Exception as exc:  # noqa: BLE001 - the amendment already landed
+        raise SourceError(
+            "The note was amended, but Debrief could not record the link on the "
+            f"source: {exc}"
+        ) from exc
+
+    return {
+        "linked": True,
+        "note_path": rel,
+        "already_linked": False,
+        "linked_notes": meta["linked_notes"],
+        "amendment": line,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Timestamps and turns
+# ---------------------------------------------------------------------------
+
+# "00:01:30.400", "01:30,400", and "1:30" all parse. Cue lines use the arrow.
+_ARROW_RE = re.compile(r"^\s*(?P<start>[\d:.,]+)\s*-->\s*(?P<end>[\d:.,]+)")
+
+# A WebVTT voice span: <v Dana Ruiz>text</v>.
+_VOICE_RE = re.compile(r"<v(?:\.[^\s>]+)*\s+([^>]+)>", re.IGNORECASE)
+_TAG_RE = re.compile(r"</?[a-z][^>]*>", re.IGNORECASE)
+
+# A speaker label at the head of a line: "Dana Ruiz: text", "Speaker 1: text".
+_SPEAKER_RE = re.compile(r"^(?P<name>[A-Za-z][A-Za-z0-9 .'\-]{0,38}):[ \t]+(?P<text>\S.*)$")
+
+# An Otter style utterance header, on its own line:
+#   "Dana Ruiz  0:03"        name, whitespace, then the timestamp
+#   "Speaker 1 (00:03):"     the parenthesised variant
+_OTTER_HEADER_RE = re.compile(
+    r"^(?P<name>[A-Za-z][A-Za-z0-9 .'\-]{0,38}?)"
+    r"(?:[ \t]{1,}(?P<ts>\d{1,2}:\d{2}(?::\d{2})?)"
+    r"|[ \t]*\((?P<ts2>\d{1,2}:\d{2}(?::\d{2})?)\):)"
+    r"[ \t]*$"
+)
+
+_INT_LINE_RE = re.compile(r"^\s*\d+\s*$")
+
+_URL_OPENERS = ("http://", "https://", "www.")
+
+# How a transcription tool signs its work at the foot of an export.
+_CREDIT_OPENERS = (
+    "transcribed by",
+    "transcript by",
+    "generated by",
+    "notes generated",
+    "exported from",
+    "created with",
+    "recorded with",
+    "powered by",
+)
+
+# A SubRip cue line, in full: 00:00:03,480 --> 00:00:08,120. Nothing looser, so
+# an arrow inside prose can never pass for one.
+_SRT_CUE_RE = re.compile(
+    r"^\s*\d{1,3}:\d{2}:\d{2},\d{1,3}\s*-->\s*\d{1,3}:\d{2}:\d{2},\d{1,3}"
+)
+
+# Headings an AI meeting tool puts on a generated write up. Otter, Granola,
+# Fathom, and Fireflies all reach for the same handful of words, and none of them
+# appear above an utterance in a verbatim export. Kept broad on purpose: a false
+# positive here costs one confirmation tap, and a false negative files generated
+# prose as somebody's words.
+_SUMMARY_HEADINGS = {
+    "action items",
+    "chapters",
+    "highlights",
+    "key takeaways",
+    "keywords",
+    "meeting purpose",
+    "next steps",
+    "notes",
+    "outline",
+    "overview",
+    "summary",
+    "topics",
+}
+
+
+def _seconds(token: str) -> float | None:
+    """Parse "00:01:30.400", "01:30,400", or "1:30" into seconds."""
+    text = (token or "").strip().replace(",", ".")
+    parts = text.split(":")
+    if not text or len(parts) > 3:
+        return None
+    total = 0.0
+    for part in parts:
+        try:
+            total = total * 60 + float(part)
+        except ValueError:
+            return None
+    return round(total, 3)
+
+
+def _clock(seconds: float) -> str:
+    """Format seconds as MM:SS. Minutes keep counting past 59 rather than wrap."""
+    whole = int(seconds)
+    return f"{whole // 60:02d}:{whole % 60:02d}"
+
+
+def _turn(start, end, speaker, text) -> dict:
+    """One speaker turn, with whitespace collapsed to a single line of prose."""
+    return {
+        "start": start,
+        "end": end,
+        "speaker": speaker or None,
+        "text": " ".join((text or "").split()),
+    }
+
+
+def _split_speaker(text: str) -> tuple[str | None, str]:
+    """Pull a leading "Name: " label off a line of cue or transcript text."""
+    match = _SPEAKER_RE.match(text.strip())
+    if not match:
+        return None, text.strip()
+    name = match.group("name").strip()
+    if len(name.split()) > 4:
+        return None, text.strip()
+    return name, match.group("text").strip()
+
+
+def _text_of(path_or_text) -> str:
+    """Read a Path, or take a str as the text itself."""
+    if isinstance(path_or_text, Path):
+        return path_or_text.read_text(encoding="utf-8", errors="replace")
+    return str(path_or_text or "")
+
+
+# ---------------------------------------------------------------------------
+# Shape detection
+# ---------------------------------------------------------------------------
+
+
+def _looks_like_vtt(text: str) -> bool:
+    return text.lstrip("﻿ \t\r\n").upper().startswith("WEBVTT")
+
+
+def _cue_times(line: str) -> tuple[float, float] | None:
+    """The (start, end) of a subtitle cue line, or None when it is not one.
+
+    The arrow alone proves nothing. A clinician's formulation note is full of
+    "trigger --> thought --> spiral", and treating that as a cue would file the
+    note as somebody's words. So the line must open with the range, and both
+    tokens must carry a colon and read as times.
+    """
+    match = _ARROW_RE.match(line)
+    if not match:
+        return None
+    start, end = match.group("start"), match.group("end")
+    if ":" not in start or ":" not in end:
+        return None
+    seconds_start, seconds_end = _seconds(start), _seconds(end)
+    if seconds_start is None or seconds_end is None:
+        return None
+    return seconds_start, seconds_end
+
+
+def _timed_cues(text: str) -> int:
+    """How many lines of this text are real, timed subtitle cues."""
+    return sum(1 for line in text.splitlines() if _cue_times(line) is not None)
+
+
+def _looks_like_srt(text: str) -> bool:
+    """A digit-only cue index immediately above a real SubRip timestamp line."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines[:-1]):
+        if _INT_LINE_RE.match(line) and _SRT_CUE_RE.match(lines[i + 1]):
+            return True
+    return False
+
+
+def _utterance_header(line: str) -> tuple[str, float] | None:
+    """(speaker, seconds) when a line is an utterance header, else None.
+
+    The name filter is what separates a header from a sentence. "Dana Ruiz 0:03"
+    is a header; "I finally gave up around 2:30" is a client still talking, and
+    the only difference in shape is that a name is short. Every caller goes
+    through here so that judgement is made in exactly one place.
+    """
+    match = _OTTER_HEADER_RE.match(line.rstrip())
+    if not match:
+        return None
+    name = match.group("name").strip()
+    if not name or len(name.split()) > 4:
+        return None
+    seconds = _seconds(match.group("ts") or match.group("ts2") or "")
+    if seconds is None:
+        return None
+    return name, seconds
+
+
+def _otter_headers(text: str) -> list[tuple[int, str, float]]:
+    """Every Otter style utterance header: (line index, speaker, seconds)."""
+    found: list[tuple[int, str, float]] = []
+    for i, line in enumerate(text.splitlines()):
+        header = _utterance_header(line)
+        if header is not None:
+            found.append((i, header[0], header[1]))
+    return found
+
+
+def _dense_utterance_headers(text: str) -> bool:
+    """True when timestamped speaker headers structure the whole document.
+
+    Three of them, and at least a fifth of the non-blank lines, so a stray line
+    that happens to end in a time is never mistaken for a transcript export.
+    """
+    headers = _otter_headers(text)
+    non_blank = sum(1 for line in text.splitlines() if line.strip())
+    if len(headers) < 3 or not non_blank:
+        return False
+    return len(headers) / non_blank >= 0.2
+
+
+def _heading_label(line: str) -> str:
+    """A line reduced to its bare heading text: no hashes, bullets, or colon."""
+    return line.strip().strip("#*_").strip().rstrip(":").strip().lower()
+
+
+def _summary_headings(text: str) -> int:
+    """How many generated-write-up headings the document carries."""
+    return len({
+        label
+        for label in (_heading_label(line) for line in text.splitlines())
+        if label in _SUMMARY_HEADINGS
+    })
+
+
+def _is_credit_line(line: str) -> bool:
+    """True for the credits a transcription tool staples to the end of a file.
+
+    "Transcribed by https://otter.ai" and its cousins. Nobody said these words,
+    so they must never fold into a speaker's turn.
+
+    A web address alone is not enough to convict: clients name websites out loud
+    ("I kept opening www.headspace.com at three in the morning"), and treating
+    that as credits would drop the rest of what they said. So the line has to
+    open with the credit, or be short and standalone enough that it is plainly
+    not a sentence somebody spoke.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return False
+    low = stripped.lower()
+    if low.startswith(_CREDIT_OPENERS) or low.startswith(_URL_OPENERS):
+        return True
+    if not any(marker in low for marker in _URL_OPENERS):
+        return False
+    return len(stripped) < 60 and len(stripped.split()) <= 5
+
+
+def _ends_accumulation(line: str) -> bool:
+    """True when a line after a paragraph break is not more of the same turn.
+
+    A speaker's answer often runs to several paragraphs, so a blank line alone
+    proves nothing. These three do: another utterance header, a heading off the
+    generated-write-up vocabulary, or a tool's credits. Everything else is still
+    the person talking, and the benefit of the doubt goes to the person.
+    """
+    return bool(
+        _utterance_header(line) is not None
+        or _heading_label(line) in _SUMMARY_HEADINGS
+        or _is_credit_line(line)
+    )
+
+
+def _looks_like_granola(text: str) -> bool:
+    """A Granola note: named as one, and shaped like a bulleted write up."""
+    low = text.lower()
+    if "granola" not in low and "notes generated" not in low:
+        return False
+    headings = sum(1 for line in text.splitlines() if line.lstrip().startswith("#"))
+    bullets = sum(1 for line in text.splitlines() if line.lstrip()[:2] in ("- ", "* "))
+    return headings >= 1 or bullets >= 3
+
+
+def _looks_like_dialogue(text: str) -> bool:
+    """Speaker labelled turns over most of the document, from two or more people.
+
+    Deliberately hard to trip. A clinician's own notes routinely start lines with
+    "Risk:" or "Plan:", and those must fall through to prose rather than be filed
+    as somebody's words.
+    """
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+    labelled = [name for name, _ in (_split_speaker(line) for line in lines) if name]
+    return len(labelled) >= 4 and len(set(labelled)) >= 2 and len(labelled) / len(lines) >= 0.4
+
+
+def _is_zoom_vtt(text: str, turns: list[dict]) -> bool:
+    """Zoom's cloud transcript: numbered cues carrying "Name: text" payloads."""
+    lines = text.splitlines()
+    numbered = any(
+        _INT_LINE_RE.match(line) and "-->" in lines[i + 1]
+        for i, line in enumerate(lines[:-1])
+    )
+    labelled = sum(1 for turn in turns if turn["speaker"]) >= 2
+    if numbered and labelled:
+        return True
+    return "zoom" in "\n".join(lines[:12]).lower()
+
+
+# ---------------------------------------------------------------------------
+# Parsing
+# ---------------------------------------------------------------------------
+
+
+def _parse_cues(text: str) -> list[dict]:
+    """Parse WebVTT or SubRip cues into turns, keeping timestamps and speakers.
+
+    A cue payload may run over several lines and may carry either a "Name:"
+    prefix or a WebVTT voice span; both become the turn's speaker.
+    """
+    turns: list[dict] = []
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        times = _cue_times(lines[i])
+        if times is None:
+            i += 1
+            continue
+        start, end = times
+        i += 1
+        payload: list[str] = []
+        while i < len(lines) and lines[i].strip():
+            payload.append(lines[i])
+            i += 1
+        body = " ".join(payload).strip()
+
+        speaker = None
+        voice = _VOICE_RE.search(body)
+        if voice:
+            speaker = voice.group(1).strip()
+            body = _TAG_RE.sub("", body).strip()
+        else:
+            speaker, body = _split_speaker(body)
+        turns.append(_turn(start, end, speaker, body))
+    return turns
+
+
+def _parse_timestamped_speakers(text: str) -> list[dict]:
+    """Parse an export whose utterances open with "Speaker Name  0:03".
+
+    An utterance runs from its header to the next one, paragraph breaks included:
+    a Rev or Descript export splits a long answer over several paragraphs, and
+    dropping every paragraph after the first would lose the client's own words.
+
+    Accumulation ends early only on the three things that are demonstrably not
+    the speaker still talking: another header, a heading off the generated
+    write-up vocabulary, or a tool's credits. These exports staple exactly that
+    material to the end, and folding a machine's sentences into a speaker's turn
+    is the records failure this module exists to prevent.
+    """
+    lines = text.splitlines()
+    headers = _otter_headers(text)
+    turns: list[dict] = []
+    for position, (index, speaker, seconds) in enumerate(headers):
+        stop = headers[position + 1][0] if position + 1 < len(headers) else len(lines)
+        body: list[str] = []
+        for line in lines[index + 1 : stop]:
+            if not line.strip():
+                continue
+            if _ends_accumulation(line):
+                break
+            body.append(line)
+        turns.append(_turn(seconds, None, speaker, " ".join(body)))
+    return [turn for turn in turns if turn["text"]]
+
+
+def _parse_speaker_turns(text: str) -> list[dict]:
+    """Parse "Therapist: ..." style turns, with continuation lines folded in.
+
+    Stops at the same three markers as the timestamped reader, and stops the same
+    way: per turn, not per document. A marker closes the turn it appears in and
+    the next labelled line opens a new one, so a stray heading in the middle of a
+    session can cost at most the lines between it and the next speaker, never the
+    rest of the transcript.
+    """
+    turns: list[dict] = []
+    folding = True
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        speaker, body = _split_speaker(line)
+        if speaker:
+            turns.append(_turn(None, None, speaker, body))
+            folding = True
+        elif not turns:
+            turns.append(_turn(None, None, None, line))
+        elif _ends_accumulation(line):
+            folding = False
+        elif folding:
+            turns[-1]["text"] = (turns[-1]["text"] + " " + line.strip()).strip()
+    return turns
+
+
+def parse_transcript(path_or_text) -> tuple[str, list[dict]]:
+    """Read a transcript into (plain text, timed speaker turns).
+
+    Accepts a Path or the text itself. Each turn is
+    {"start", "end", "speaker", "text"} with start and end in seconds and any of
+    the three set to None when the format does not carry them. Prose with no
+    structure at all comes back as a single unlabelled turn, which is what a
+    pasted debrief of the session looks like.
+
+    The returned text is the turns without their timestamps, one per line, which
+    is what later rungs read.
+    """
+    text = _text_of(path_or_text)
+    if not text.strip():
+        return "", []
+
+    turns: list[dict] = []
+    if _timed_cues(text):
+        turns = _parse_cues(text)
+    # An empty result means the cue shape was a false alarm, so the other readers
+    # still get their turn rather than archiving nothing.
+    if not turns:
+        if len(_otter_headers(text)) >= 2:
+            turns = _parse_timestamped_speakers(text)
+        elif _looks_like_dialogue(text):
+            turns = _parse_speaker_turns(text)
+        else:
+            # The unstructured fallback still filters tool credits and generated
+            # headings line by line: a one-utterance export lands here (below
+            # the header-density bar) and its credits must stay out of the
+            # archive just as they do on the structured paths.
+            kept = [
+                line
+                for line in text.splitlines()
+                if line.strip() and not _ends_accumulation(line)
+            ]
+            turns = [_turn(None, None, None, " ".join(kept))]
+
+    turns = [turn for turn in turns if turn["text"]]
+    plain = "\n".join(
+        f"{turn['speaker']}: {turn['text']}" if turn["speaker"] else turn["text"]
+        for turn in turns
+    )
+    return plain, turns
+
+
+def render_turns(turns: list[dict]) -> str:
+    """Render turns as the rung 0 archive: "[MM:SS] Speaker: text" per line.
+
+    Timestamps and speakers are dropped from the line when the source did not
+    carry them, so pasted prose renders as plain readable text.
+    """
+    lines: list[str] = []
+    for turn in turns:
+        parts: list[str] = []
+        if turn.get("start") is not None:
+            parts.append(f"[{_clock(turn['start'])}]")
+        if turn.get("speaker"):
+            parts.append(f"{turn['speaker']}:")
+        body = (turn.get("text") or "").strip()
+        if not body:
+            continue
+        parts.append(body)
+        lines.append(" ".join(parts))
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def _duration_min(turns: list[dict]) -> int | None:
+    """Session length in whole minutes, from the last timestamp. None if untimed."""
+    latest = None
+    for turn in turns:
+        for value in (turn.get("start"), turn.get("end")):
+            if value is not None and (latest is None or value > latest):
+                latest = value
+    if latest is None:
+        return None
+    return int(math.ceil(latest / 60))
+
+
+# ---------------------------------------------------------------------------
+# Classification
+# ---------------------------------------------------------------------------
+
+
+def classify(path: Path | None, text: str) -> tuple[str, bool, str, float]:
+    """Guess (kind, verbatim, produced_by, confidence) for some session material.
+
+    Layered and deterministic, never a model call. Timed subtitle cues are
+    certain, export structures are strong, speaker turns are a decent guess, and
+    prose is a coin toss that the clinician settles. Confidence below
+    CONFIRM_BELOW means ask.
+
+    Every layer fails in the same direction: when the evidence is mixed or thin,
+    the answer is not verbatim and the clinician is asked. A confirmation tap
+    costs a second. A generated sentence filed as a client quote is in the record
+    for good.
+
+    No layer ever returns a reference kind, and no layer ever will. An article
+    about panic and a set of notes about a client's panic are the same shape on
+    the page, so nothing in the bytes can tell them apart, and guessing wrong
+    would either hide a session's evidence or offer an article as evidence about
+    a person. Only the clinician's own statement makes something reference
+    material: declared on the way in, or set afterwards through reclassify.
+    """
+    text = text or ""
+
+    # path is accepted for the module contract and deliberately not used to
+    # decide anything. An extension is a claim made by whoever named the file,
+    # and a clinician's formulation note saved as .srt is still a note. Only the
+    # bytes settle it: a WebVTT file always opens with the WEBVTT header and a
+    # SubRip file always pairs a cue index with a full timestamp line, so a file
+    # carrying neither falls through to the heuristics below and gets asked
+    # about, whatever it is called.
+    if _timed_cues(text):
+        if _looks_like_vtt(text):
+            _, turns = parse_transcript(text)
+            producer = "zoom" if _is_zoom_vtt(text, turns) else "unknown"
+            return "transcript_file", True, producer, 1.0
+        if _looks_like_srt(text):
+            return "transcript_file", True, "unknown", 1.0
+
+    dense = _dense_utterance_headers(text)
+    headings = _summary_headings(text)
+
+    if dense and headings:
+        # A transcript block with any generated section anywhere in the same
+        # file: an Otter export with the summary switched on, a Fathom export
+        # with Key Takeaways above the transcript. One heading is enough. There
+        # is no way to know from structure alone which sentences came from a
+        # person, so the whole file is treated as a write up and the clinician
+        # is asked.
+        return "third_party_summary", False, "otter", 0.5
+    if dense:
+        return "transcript_file", True, "otter", 0.9
+    if _looks_like_granola(text):
+        return "third_party_summary", False, "granola", 0.85
+    if headings >= 2:
+        return "third_party_summary", False, "otter", 0.85
+    if _looks_like_dialogue(text):
+        # Speaker labels with no timestamps anywhere. A pasted transcript looks
+        # exactly like a clinician typing up remembered dialogue afterwards, and
+        # only one of those is word for word, so this one always asks.
+        return "transcript_file", True, "unknown", 0.75
+    return "clinician_notes", False, "clinician", 0.5
+
+
+# ---------------------------------------------------------------------------
+# ffmpeg
+# ---------------------------------------------------------------------------
+
+
+def _run_ffmpeg(args: list[str]) -> subprocess.CompletedProcess:
+    """Run one ffmpeg command. The single seam every media path goes through.
+
+    Kept as its own function so a test can stand in for the encoder: the fast
+    suite must never need real ffmpeg or real media. Callers put the output path
+    last.
+    """
+    return subprocess.run(args, capture_output=True, text=True, timeout=1800)
+
+
+def _ffmpeg_tail(proc: subprocess.CompletedProcess) -> str:
+    """The last of ffmpeg's stderr, which is where it says what went wrong."""
+    return (proc.stderr or "").strip()[-300:]
+
+
+def _ffmpeg_to(src: Path, args: list[str], out_name: str, what: str) -> Path:
+    """Run ffmpeg into a fresh temp directory and return the file it wrote."""
+    src = Path(src)
+    if not src.is_file():
+        raise SourceError(f"there is no file at {src}")
+    out = Path(tempfile.mkdtemp(prefix="debrief_source_")) / out_name
+    try:
+        proc = _run_ffmpeg(["ffmpeg", "-y", "-i", str(src), *args, str(out)])
+    except (OSError, subprocess.SubprocessError) as exc:
+        shutil.rmtree(out.parent, ignore_errors=True)
+        raise SourceError(f"could not {what}: {exc}")
+    if proc.returncode != 0 or not out.exists():
+        tail = _ffmpeg_tail(proc)
+        shutil.rmtree(out.parent, ignore_errors=True)
+        raise SourceError(f"could not {what}: {tail}")
+    return out
+
+
+def extract_audio(media_path: Path) -> Path:
+    """Extract 16k mono wav from any audio or video file, for speech to text.
+
+    Returns a path in a temp directory that the caller owns and deletes. Raises
+    SourceError carrying the tail of ffmpeg's own message when it fails.
+    """
+    return _ffmpeg_to(
+        media_path,
+        ["-vn", "-ar", "16000", "-ac", "1"],
+        "audio.wav",
+        "read the audio in that file",
+    )
+
+
+def _extract_audio_track(media_path: Path) -> Path:
+    """Extract a video's audio track to m4a, for the archive.
+
+    m4a rather than wav because this one is kept: a 50 minute wav is roughly
+    twenty times the size for no clinical gain. The video itself is never copied
+    anywhere.
+    """
+    return _ffmpeg_to(
+        media_path,
+        ["-vn", "-c:a", "aac", "-b:a", "96k"],
+        "source.m4a",
+        "extract the audio from that video",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Ingestion
+# ---------------------------------------------------------------------------
+
+
+def _now() -> _dt.datetime:
+    """Wall clock, in one place so a test can pin it."""
+    return _dt.datetime.now().replace(microsecond=0)
+
+
+def _consent_ref(client_id: str) -> str:
+    """The client's dated consent, or ConsentError. Every ingest starts here."""
+    granted, date = vault.recording_consent(client_id)
+    if not granted:
+        raise ConsentError(CONSENT_MESSAGE)
+    return f"recording_consent {date}"
+
+
+def _validated_kind(kind) -> str:
+    text = str(kind or "").strip()
+    if text not in KIND_RULES:
+        raise SourceError(
+            f"{text or '(none)'} is not a kind of session material. "
+            f"Expected one of: {', '.join(sorted(KIND_RULES))}."
+        )
+    return text
+
+
+def _reserve_source_id(client_id: str, captured_at: _dt.datetime) -> str:
+    """Take the capture minute as an id, with -2, -3 on collision. Reserves it.
+
+    The folder is CREATED here, and that is the point. Asking whether a path
+    exists and then writing to it is two operations with a gap in between, and
+    two uploads finishing in the same minute both fit inside that gap: both see
+    a free id, both take it, and the second one writes its audio and its
+    meta.json over the first. write_audio even removes the previous container on
+    its way past, so the first session's recording is gone and the only thing
+    left saying it ever existed is a job record pointing at somebody else's
+    material. A clinician would have no way to notice.
+
+    mkdir with exist_ok=False is one atomic operation: exactly one caller can
+    create a given directory, and the loser hears FileExistsError and moves to
+    the next suffix. Reserving is therefore always safe to do; what callers must
+    take care of is not reserving until they know they have something to store,
+    because an abandoned reservation leaves an empty folder that takes an id.
+    """
+    base = captured_at.strftime("%Y-%m-%d-%H%M")
+    candidate = base
+    n = 1
+    while True:
+        try:
+            recstore.source_dir(client_id, candidate).mkdir(parents=True, exist_ok=False)
+            return candidate
+        except FileExistsError:
+            n += 1
+            candidate = f"{base}-{n}"
+
+
+def _store(
+    client_id: str,
+    source_id: str,
+    kind: str,
+    produced_by: str,
+    captured_at: _dt.datetime,
+    consent_ref: str,
+    audio_path: Path | None = None,
+    turns: list[dict] | None = None,
+    duration_min: int | None = None,
+    needs_confirmation: bool = False,
+    diarized: bool | None = None,
+    session_date: _dt.date | None = None,
+    carry: dict | None = None,
+) -> Source:
+    """Build the Source, write meta.json, and hand it back.
+
+    Every ingest path ends here, so provenance is written exactly once and in
+    exactly one shape.
+
+    diarized is normally read off the turns, and is passed in only by a rewrite
+    that has no turns to read but does know the answer. session_date defaults to
+    the day the material arrived, which is right far more often than it is
+    wrong and is correctable either way.
+
+    carry is the meta this write is replacing. Keys this module does not own,
+    the retention stamp among them, survive the rewrite instead of being dropped
+    by it: a source that changes kind has not stopped having a history.
+    """
+    verbatim, entry_rung = KIND_RULES[kind]
+    turns = turns or []
+    source = Source(
+        id=source_id,
+        client_id=client_id,
+        kind=kind,
+        verbatim=verbatim,
+        produced_by=produced_by,
+        entry_rung=entry_rung,
+        captured_at=captured_at,
+        duration_min=duration_min,
+        diarized=(
+            any(turn.get("speaker") for turn in turns) if diarized is None else bool(diarized)
+        ),
+        partial=False,
+        audio_path=audio_path,
+        consent_ref=consent_ref,
+        needs_confirmation=bool(needs_confirmation),
+        session_date=session_date or captured_at.date(),
+    )
+    recstore.write_meta(client_id, source_id, {**(carry or {}), **source.to_meta()})
+    return source
+
+
+def _read_document(path: Path) -> str:
+    """The text of a document, or SourceError explaining why there is none."""
+    try:
+        result = doctext.extract_document_text(path, path.name)
+    except doctext.DocumentReadError as exc:
+        raise SourceError(str(exc))
+    except ValueError as exc:
+        raise SourceError(str(exc))
+    if result.get("pdf_unsupported"):
+        raise SourceError(
+            "PDF reading is not available on this machine. Save the file as .docx "
+            "or .md, or paste the text in."
+        )
+    text = result.get("text") or ""
+    if not text.strip():
+        raise SourceError(f"there was no readable text in {path.name}.")
+    return text
+
+
+def ingest_file(path: Path, client_id: str, declared_kind: str | None = None) -> tuple[Source, bool]:
+    """Bring a file in as a source. Returns (source, needs_confirmation).
+
+    Consent is checked before anything is read. The extension decides how the
+    bytes are handled; for documents and transcripts, classify() decides what the
+    material claims to be, unless declared_kind settles it. The source is always
+    stored with its best guess, and needs_confirmation says whether the clinician
+    should be asked to confirm that guess with one tap.
+
+    Video is the exception to "store what arrived": its audio track is extracted
+    and kept, and the video is not retained.
+
+    The id is reserved as late as each path allows, immediately before the first
+    write. Reserving creates the folder, and a folder created for material that
+    then turned out to be unreadable is an empty source holding an id.
+    """
+    src = Path(path)
+    if not src.is_file():
+        raise SourceError(f"there is no file at {src}")
+
+    consent_ref = _consent_ref(client_id)
+    declared = _validated_kind(declared_kind) if declared_kind else None
+
+    ext = src.suffix.lower()
+    captured_at = _now()
+
+    if ext in AUDIO_EXTS or ext in VIDEO_EXTS:
+        natural = "uploaded_audio" if ext in AUDIO_EXTS else "uploaded_video"
+        kind = natural
+        if declared in REFERENCE_KINDS:
+            # "This is reference material" is a claim about what the material
+            # is for, and the clinician is the only one who can know it, so it
+            # always wins. Which of the two reference kinds it becomes is not
+            # theirs to pick: this file holds media, so it enters at rung 0 to
+            # be transcribed, whichever of the pair the UI happened to send.
+            kind = "reference_recording"
+        elif declared is not None and declared != natural:
+            raise SourceError(
+                f"{src.name} is {natural.replace('_', ' ')}, so it cannot be filed "
+                f"as {declared.replace('_', ' ')}."
+            )
+        if ext in AUDIO_EXTS:
+            # The original container is kept so the archive stays byte faithful.
+            # Transcription is the job queue's work, not this function's.
+            source_id = _reserve_source_id(client_id, captured_at)
+            stored = recstore.write_audio(client_id, source_id, src)
+        else:
+            # After the extraction, which is the step most likely to fail here.
+            track = _extract_audio_track(src)
+            source_id = _reserve_source_id(client_id, captured_at)
+            try:
+                stored = recstore.write_audio(client_id, source_id, track)
+            finally:
+                shutil.rmtree(track.parent, ignore_errors=True)
+        return (
+            _store(
+                client_id,
+                source_id,
+                kind,
+                "unknown",
+                captured_at,
+                consent_ref,
+                audio_path=stored,
+            ),
+            False,
+        )
+
+    if ext in TRANSCRIPT_EXTS:
+        text = src.read_text(encoding="utf-8", errors="replace")
+        if not text.strip():
+            raise SourceError(f"there was no readable text in {src.name}.")
+    elif ext in DOC_EXTS:
+        text = _read_document(src)
+    else:
+        raise SourceError(
+            f"Debrief cannot read {ext or 'that file'}. Audio, video, .vtt, .srt, "
+            ".txt, .md, .docx, and .pdf all work."
+        )
+
+    kind, _, produced_by, confidence = classify(src, text)
+    if declared is not None:
+        if declared in REFERENCE_KINDS:
+            # The media path's rule, arriving from the other side. Reference
+            # wins and the container decides the rung: there is no audio here
+            # to transcribe, so it is a document. produced_by goes back to
+            # unknown, because the classifier's guess was a guess about who
+            # wrote a session note, and this is not one. Calling an article the
+            # clinician's own notes would be a false statement about authorship.
+            kind = "reference_document"
+            produced_by = "unknown"
+            confidence = 1.0
+        elif declared not in TEXT_KINDS:
+            # Declaring a document to be a recording would file text at a rung
+            # that expects media, so the claim is refused rather than absorbed.
+            raise SourceError(
+                f"{src.name} holds text, so it cannot be filed as "
+                f"{declared.replace('_', ' ')}. Expected one of: "
+                f"{', '.join(sorted(TEXT_KINDS))}."
+            )
+        else:
+            kind = declared
+            confidence = 1.0
+            if kind == "clinician_notes":
+                produced_by = "clinician"
+
+    needs_confirmation = confidence < CONFIRM_BELOW
+    source_id = _reserve_source_id(client_id, captured_at)
+    source = _store_text(
+        client_id,
+        source_id,
+        kind,
+        produced_by,
+        captured_at,
+        consent_ref,
+        text,
+        needs_confirmation=needs_confirmation,
+    )
+    return source, needs_confirmation
+
+
+def ingest_text(text: str, client_id: str, kind: str) -> tuple[Source, bool]:
+    """Bring pasted text in as a source. Returns (source, needs_confirmation).
+
+    kind is pasted_transcript, which is word for word and enters at rung 0, or
+    clinician_notes, which is the clinician's own observation and enters at rung
+    2. Nothing is guessed here, so confirmation is never needed.
+    """
+    kind = _validated_kind(kind)
+    if kind not in PASTE_KINDS:
+        raise SourceError(
+            f"pasted text is either {' or '.join(sorted(PASTE_KINDS))}, not {kind}."
+        )
+    if not (text or "").strip():
+        raise SourceError("there was nothing in that text.")
+
+    consent_ref = _consent_ref(client_id)
+    captured_at = _now()
+    produced_by = "clinician" if kind == "clinician_notes" else "unknown"
+    source_id = _reserve_source_id(client_id, captured_at)
+
+    source = _store_text(client_id, source_id, kind, produced_by, captured_at, consent_ref, text)
+    return source, False
+
+
+def reclassify(
+    client_id: str,
+    source_id: str,
+    verbatim: bool | None = None,
+    produced_by: str | None = None,
+    reference: bool | None = None,
+) -> Source:
+    """Rewrite a stored source under the clinician's answer. Returns it.
+
+    Two different answers arrive here, and which one this is depends on which
+    argument was given.
+
+        verbatim + produced_by   what the material IS: word for word, or
+                                 somebody's write up, and whose
+        reference                what the material is FOR: a session with this
+                                 client, or reference material that is not
+
+    The second is the flip described below and never touches the first. A
+    source's kind carries both facts, so both live in one function.
+
+    This is the other half of needs_confirmation. The classifier guessed, the
+    source was stored with that guess and no work was queued, and now a human
+    has said what the material actually is. Their answer wins outright: it is
+    the only source of truth this module has that is not a heuristic.
+
+    Everything is rebuilt from source-text.md, which is retained for every text
+    source precisely so this is possible without the file being re-uploaded.
+
+        verbatim True   the material is word for word, so it is a transcript
+                        file and its rung 0 archive is parsed out of the text
+        verbatim False  the material is somebody's write up, so it carries no
+                        transcript, and any rung 0 or rung 1 a previous guess
+                        wrote is removed with it
+
+    produced_by decides which write up it is. "clinician" means the clinician's
+    own notes; anything else means a meeting tool wrote it. That distinction is
+    not cosmetic: the kind is written into the filed note's frontmatter, and
+    labelling a clinician's own observations as a third party's summary is a
+    false statement about authorship in a clinical record. It also matters that
+    prose with no structure classifies as clinician_notes at 0.5 confidence,
+    which is under CONFIRM_BELOW, so every set of typed notes arrives here.
+
+    Rung 2 goes in both directions. A digest carries provenance in its bones:
+    built as verbatim it may quote the client, built as a summary it may not, so
+    a digest built under the old answer is stale evidence and stale evidence in
+    a clinical record is worse than none. Deleting it is safe because rung 2 is
+    regenerable; the caller queues the ladder, which rebuilds it under the rules
+    that now apply. What is never deleted is the material itself: source-text.md
+    and any audio are the only copies of what arrived.
+
+    Raises SourceError when there is no such source, when the source is a
+    recording (nothing to confirm), or when the stored text has gone.
+    """
+    try:
+        meta = recstore.read_meta(client_id, source_id)
+    except ValueError as exc:
+        raise SourceError(str(exc)) from exc
+    if not meta:
+        raise SourceError(f"there is no stored source {source_id} for this client.")
+
+    meta = dict(meta)
+    meta["id"] = source_id
+    meta["client_id"] = client_id
+    try:
+        stored = Source.from_meta(meta)
+    except (ValueError, TypeError) as exc:
+        raise SourceError(f"the provenance for this source could not be read: {exc}") from exc
+
+    if reference is not None:
+        return _flip_reference(client_id, source_id, stored, bool(reference), meta)
+
+    if stored.kind in REFERENCE_KINDS:
+        raise SourceError(REFERENCE_CONFIRM_MESSAGE)
+    if stored.kind in MEDIA_KINDS:
+        raise SourceError(MEDIA_CONFIRM_MESSAGE)
+    if not isinstance(verbatim, bool):
+        raise SourceError(
+            "Say whether the material is word for word (true) or somebody's "
+            "write up (false)."
+        )
+
+    producer = str(produced_by or "").strip()
+    if producer not in PRODUCERS:
+        raise SourceError(
+            f"{producer or '(none)'} is not somewhere session material comes from. "
+            f"Expected one of: {', '.join(sorted(PRODUCERS))}."
+        )
+
+    text = recstore.read_source_text(client_id, source_id)
+    if not (text or "").strip():
+        raise SourceError(
+            "The stored text for that source has gone, so it cannot be reclassified. "
+            "Bring the file in again."
+        )
+
+    if verbatim:
+        kind = "transcript_file"
+    elif producer == "clinician":
+        kind = "clinician_notes"
+    else:
+        kind = "third_party_summary"
+
+    recstore.delete_rung(client_id, source_id, 2)
+    if verbatim:
+        _, turns = parse_transcript(text)
+        recstore.write_rung(client_id, source_id, 0, render_turns(turns))
+        duration = _duration_min(turns)
+    else:
+        # A summary has no transcript rungs. Whatever a verbatim guess wrote at
+        # rung 0 or rung 1 is a transcript of material nobody said.
+        recstore.delete_rung(client_id, source_id, 1)
+        recstore.delete_rung(client_id, source_id, 0)
+        turns, duration = [], None
+
+    return _store(
+        client_id,
+        source_id,
+        kind,
+        producer,
+        stored.captured_at,
+        stored.consent_ref,
+        turns=turns,
+        duration_min=duration,
+        # Answered. The question stops being asked, on this screen and on every
+        # later reload, because the flag it was asked from is on disk.
+        needs_confirmation=False,
+        session_date=effective_session_date(stored),
+        carry=meta,
+    )
+
+
+def _natural_session_kind(client_id: str, source_id: str, stored: Source) -> str:
+    """What a reference source goes back to being when it is a session again.
+
+    The honest part first: the kind it arrived as is gone. meta.json holds one
+    kind, the flip to reference overwrote it, and no copy of the old one is
+    kept anywhere. Keeping a shadow copy would mean a second field that can
+    disagree with the first, and provenance that disagrees with itself is worse
+    than provenance that is merely coarse.
+
+    So the answer is read off the disk instead, which cannot be wrong about what
+    is actually there:
+
+        audio on disk           uploaded_audio
+        no audio                transcript_file
+        not word for word       clinician_notes when the producer is the
+                                clinician, third_party_summary otherwise
+
+    Two labels drift under this rule. A video comes back as uploaded_audio,
+    which is true of every byte Debrief retained, because the video itself is
+    never kept. A live_recording comes back as uploaded_audio too, and that one
+    really does lose something: the record stops saying it was recorded in this
+    app. Both are recoverable by re-importing, and neither can misattribute a
+    word to anybody, which is the line that matters.
+    """
+    if stored.verbatim:
+        if recstore.audio_path(client_id, source_id) is not None:
+            return "uploaded_audio"
+        return "transcript_file"
+    return "clinician_notes" if stored.produced_by == "clinician" else "third_party_summary"
+
+
+def _flip_reference(
+    client_id: str, source_id: str, stored: Source, to_reference: bool, meta: dict
+) -> Source:
+    """Move a source between session material and reference material.
+
+    Only the kind changes. Whether the material is word for word is a fact about
+    the bytes and survives the flip untouched, which is what makes the flip
+    cheap in both directions: rung 0 and rung 1 stay exactly as valid as they
+    were, the audio and the source text are never touched, and a word for word
+    source becomes reference_recording while a write up becomes
+    reference_document.
+
+    Rung 2 does not survive. A session digest and a reference digest are
+    different shapes with different rules: one may carry the client's own words,
+    the other may not mention a client at all. Handing out a digest built under
+    the other shape is the same failure as handing out a stale one, so it is
+    deleted and the caller queues the ladder to rebuild it. Rung 2 is
+    regenerable. That is the whole reason it is safe to delete.
+
+    Flipping in the direction a source is already pointing does nothing at all,
+    deliberately: a second click must not cost a digest and a rebuild.
+    """
+    already_reference = stored.kind in REFERENCE_KINDS
+    if already_reference == to_reference:
+        return stored
+
+    if to_reference:
+        kind = "reference_recording" if stored.verbatim else "reference_document"
+    else:
+        kind = _natural_session_kind(client_id, source_id, stored)
+
+    recstore.delete_rung(client_id, source_id, 2)
+    return _store(
+        client_id,
+        source_id,
+        kind,
+        stored.produced_by,
+        stored.captured_at,
+        stored.consent_ref,
+        audio_path=stored.audio_path,
+        duration_min=stored.duration_min,
+        # There is nothing left to ask. The clinician has just said what this
+        # material is, which is a stronger answer than the question wanted.
+        needs_confirmation=False,
+        diarized=stored.diarized,
+        session_date=effective_session_date(stored),
+        carry=meta,
+    )
+
+
+def _store_text(
+    client_id: str,
+    source_id: str,
+    kind: str,
+    produced_by: str,
+    captured_at: _dt.datetime,
+    consent_ref: str,
+    text: str,
+    needs_confirmation: bool = False,
+) -> Source:
+    """Write text material at the rung its kind enters on, then its provenance.
+
+    The text exactly as it arrived is stored every time, whatever the kind. Rung
+    0 is meant to be an archive, and a rendering of parsed turns is not one: any
+    line the parser did not recognise would exist nowhere else, and a client's
+    words that the app quietly dropped cannot be recovered by anybody. The
+    original goes down first, before the file that marks the rung complete, so a
+    half finished write can never leave a transcript without the source it came
+    from.
+
+    Rung 0 material is then parsed into turns and archived as the raw transcript.
+    Rung 2 material is an observation about the session, so it gets no transcript.
+    """
+    _, entry_rung = KIND_RULES[kind]
+    recstore.write_source_text(client_id, source_id, text)
+
+    if entry_rung != 0:
+        return _store(
+            client_id,
+            source_id,
+            kind,
+            produced_by,
+            captured_at,
+            consent_ref,
+            needs_confirmation=needs_confirmation,
+        )
+
+    _, turns = parse_transcript(text)
+    recstore.write_rung(client_id, source_id, 0, render_turns(turns))
+    return _store(
+        client_id,
+        source_id,
+        kind,
+        produced_by,
+        captured_at,
+        consent_ref,
+        turns=turns,
+        duration_min=_duration_min(turns),
+        needs_confirmation=needs_confirmation,
+    )

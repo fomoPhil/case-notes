@@ -1,18 +1,18 @@
 {
-  "generated_at": "2026-07-18T04:10:30",
+  "generated_at": "2026-11-04T00:17:46",
   "now": "2026-07-18T10:00:00",
   "overall_pass": true,
   "latency_stats_s": {
     "count": 5,
-    "min": 73.65,
-    "max": 190.36,
-    "mean": 115.94
+    "min": 24.87,
+    "max": 51.83,
+    "mean": 38.03
   },
   "note_quality": [
     {
       "id": "01_bob_cbt_si",
       "framework": "CBT",
-      "latency_s": 190.36,
+      "latency_s": 51.83,
       "checks": {
         "dap_fields_nonempty": {
           "pass": true,
@@ -44,22 +44,22 @@
         },
         "framework_terms": {
           "pass": true,
-          "detail": "matched ['cognitive restructuring', 'automatic thought', 'thought record', 'all or nothing']"
+          "detail": "matched ['cognitive restructuring', 'automatic thought', 'thought record', 'cognitive distortion']"
         }
       },
       "overall": true,
       "result": {
         "note": {
-          "data": "Bob reported ongoing concerns regarding his workplace performance, stating, \"I just feel like I'm dragging everyone down at work.\" He expressed a belief that his manager is documenting his actions to build a case against him. The therapist and Bob examined the evidence for and against these beliefs. During the session, Bob also disclosed recurring passive suicidal ideation, noting, \"sometimes I wonder if everyone would be better off without me.\" He identified his partner and his dog as significant protective factors.",
-          "assessment": "Bob is currently facing barriers to his goal of reducing self-critical thinking due to persistent all or nothing thinking and feelings of worthlessness. However, he demonstrated progress by engaging in cognitive restructuring to challenge his automatic thoughts. His ability to reach a more balanced thought independently indicates that the treatment framework is effectively weakening his core beliefs of inadequacy.",
-          "plan": "The therapist utilized cognitive restructuring to address automatic thoughts regarding workplace performance. Bob responded well, successfully generating a more balanced perspective on his own. The next clinical step is to continue monitoring risk and practicing thought records between sessions.",
+          "data": "Bob reported continued concerns regarding his manager, stating he is convinced his manager is documenting his performance to build a case against him. This belief contributes to his recurring theme of worthlessness. Bob stated, \"I just feel like I'm dragging everyone down at work.\" The clinician and Bob explored this statement, identifying it as a cognitive distortion. Bob engaged in evaluating the evidence for and against this belief and eventually arrived at a more balanced perspective.",
+          "assessment": "Bob is making progress toward his treatment goal of reducing self-critical thinking. He demonstrated the ability to identify automatic thoughts and engage in cognitive restructuring, moving from an all-or-nothing perspective to a more balanced view. However, his persistent feelings of worthlessness and workplace stress remain significant barriers to his overall stability.",
+          "plan": "The clinician utilized cognitive restructuring to address Bob's automatic thoughts regarding his workplace performance. Bob responded positively, successfully generating a balanced thought independently by the end of the session. The next clinical step is to continue monitoring these thoughts and practicing the use of thought records.",
           "risk_present": true,
           "risk": {
             "assessed": true,
             "ideation": "passive suicidal ideation",
             "plan_intent_means": "denied any plan or intent",
             "protective_factors": "partner and dog",
-            "interventions_taken": "reinforced existing safety plan"
+            "interventions_taken": "reinforced safety plan"
           },
           "interventions": [
             "cognitive restructuring"
@@ -92,15 +92,16 @@
         ],
         "unsupported_requests": [],
         "next_session_suggestions": [
-          "Consider reviewing the evidence for his belief that his manager is building a case against him.",
-          "Possible focus on identifying other areas of life where Bob feels competent to counter the worthlessness theme."
+          "Consider continuing to explore the evidence for and against specific workplace-related automatic thoughts.",
+          "Possible focus on identifying additional cognitive distortions related to his manager's feedback.",
+          "Consider reviewing the completed thought record worksheet to identify patterns in his self-critical thinking."
         ]
       }
     },
     {
       "id": "02_marcus_meds",
       "framework": "CBT",
-      "latency_s": 102.66,
+      "latency_s": 24.87,
       "checks": {
         "dap_fields_nonempty": {
           "pass": true,
@@ -138,9 +139,9 @@
       "overall": true,
       "result": {
         "note": {
-          "data": "Marcus reported on his current medication transition from sertraline to escitalopram (10mg), noting that the previous medication made him feel \"flat\" and numb. He described experiencing a return of anticipatory worry in the mornings during this transition period. The therapist and client discussed his symptoms of generalized anxiety and low mood, which remain active. Marcus stated that \"having a concrete plan for the morning actually helps\" regarding his current routine.",
-          "assessment": "Marcus is currently maintaining rather than gaining ground toward his treatment goals due to the medication switch acting as a clinical barrier. The return of anticipatory worry aligns with the pharmacological transition. Progress on mood goals is currently hindered by these systemic changes, but he remains engaged in planning.",
-          "plan": "The therapist utilized behavioral activation to develop a morning routine for Marcus. Marcus responded well to this intervention, expressing that having a concrete plan provides some relief from his dread. The next clinical step is to monitor the stabilization of symptoms as the escitalopram beds in.",
+          "data": "Marcus reported on his current medication transition, noting that his previous dose of sertraline ",
+          "assessment": "Marcus is currently maintaining his progress rather than gaining significant ground, which is expected during a medication cross-taper. The primary barrier to his mood goals is the active presence of MDD and GAD symptoms during this transition period. His anticipatory worry in the mornings serves as a clinical indicator of the medication shift's impact.",
+          "plan": "The clinician utilized behavioral activation to address morning dread. Marcus responded well, stating that ",
           "risk_present": false,
           "risk": null,
           "interventions": [
@@ -152,7 +153,7 @@
             "mood regulation"
           ],
           "client_quotes": [
-            "made me feel flat",
+            "the sertraline just made me feel flat",
             "having a concrete plan for the morning actually helps"
           ]
         },
@@ -161,7 +162,7 @@
             "type": "schedule_followup",
             "datetime_utterance": "next Thursday at 4",
             "duration_min": 50,
-            "purpose": "Follow up to monitor medication transition",
+            "purpose": "follow up to monitor medication transition",
             "attachment": null,
             "resolved_datetime": "2026-07-23T16:00:00"
           }
@@ -169,15 +170,15 @@
         "unsupported_requests": [],
         "next_session_suggestions": [
           "Consider reviewing the effectiveness of the morning behavioral activation plan.",
-          "Possible focus on monitoring specific side effects or improvements with the escitalopram transition.",
-          "Consider exploring the content of the anticipatory worry to identify specific automatic thoughts."
+          "Possible focus on monitoring specific side effects or improvements with the escitalopram.",
+          "Consider utilizing a thought record to track specific instances of anticipatory worry."
         ]
       }
     },
     {
       "id": "03_jane_act",
       "framework": "ACT",
-      "latency_s": 124.87,
+      "latency_s": 34.89,
       "checks": {
         "dap_fields_nonempty": {
           "pass": true,
@@ -193,7 +194,7 @@
         },
         "grounding_quotes": {
           "pass": true,
-          "detail": "2 quotes, all grounded"
+          "detail": "1 quotes, all grounded"
         },
         "no_em_dash": {
           "pass": true,
@@ -215,9 +216,9 @@
       "overall": true,
       "result": {
         "note": {
-          "data": "Jane presented for her individual session and reported feeling hooked on the thought that she would fail an upcoming work presentation. The therapist facilitated cognitive defusion exercises where Jane practiced noticing and naming the thought as \"I'm having the thought that I'll fail\" to create space from it. During this process, Jane stated, \"my thoughts are just noise, they're not instructions.\" The session then transitioned into values clarification, identifying her desire to be seen as competent and to contribute at work. She discussed her willingness to experience anxiety in order to live out these values rather than avoiding the discomfort of the presentation.",
-          "assessment": "Jane is demonstrating significant progress toward her treatment goals of acceptance and cognitive defusion. Her ability to recognize thoughts as mental events rather than directives indicates a successful shift in her relationship with anxious content. By connecting her willingness to endure anxiety directly to her core values, she is moving from avoidance-based behavior toward committed action. Her consistent adherence to the sleep wind-down routine suggests maintenance of previous gains.",
-          "plan": "The therapist utilized cognitive defusion and values clarification to address presentation-related anxiety. Jane responded well by successfully unhooking from catastrophic thoughts and identifying her underlying drivers for work performance. The next clinical step is to continue mapping her values and monitoring the application of these skills during the upcoming work deadline.",
+          "data": "Jane reported feeling hooked on the thought that she will fail her work presentation next week. The clinician and Jane worked on noticing and naming this thought to create space between her and the content. Jane reported, \"my thoughts are just noise, they're not instructions,\" during the exercise. The session then shifted to values work, where Jane identified that her desire to give the presentation stems from her values of contributing and being seen as competent. She discussed her willingness to experience anxiety in order to act on these values. Regarding her sleep, Jane reported that her wind down routine is mostly sticking.",
+          "assessment": "Jane is progressing well toward her acceptance goal. She demonstrated a significant shift in her relationship with anxious thoughts by moving toward cognitive defusion. By connecting her willingness to endure discomfort with her core values, she is showing increased capacity for committed action. Her consistency with her sleep routine suggests maintenance of previous progress in behavioral habits.",
+          "plan": "The clinician utilized cognitive defusion and values clarification. Jane responded positively to the defusion exercise, successfully identifying her thoughts as non-directive. The clinician then facilitated values clarification to link her anxiety to her personal values, and Jane expressed willingness to hold the discomfort of the presentation. The next clinical step is to continue mapping her values and practicing committed action.",
           "risk_present": false,
           "risk": null,
           "interventions": [
@@ -228,11 +229,10 @@
           "themes": [
             "Anxiety",
             "Values",
-            "Work Performance"
+            "Sleep"
           ],
           "client_quotes": [
-            "my thoughts are just noise, they're not instructions",
-            "I'm having the thought that I'll fail"
+            "my thoughts are just noise, they're not instructions"
           ]
         },
         "actions": [
@@ -240,21 +240,22 @@
             "type": "draft_client_email",
             "datetime_utterance": null,
             "duration_min": 50,
-            "purpose": "warm check in and values mapping homework",
+            "purpose": "warm check in and values mapping",
             "attachment": "values worksheet"
           }
         ],
         "unsupported_requests": [],
         "next_session_suggestions": [
-          "Consider reviewing the outcomes of the work presentation using a defusion lens.",
-          "Possible focus on further expanding the values map to other areas of life."
+          "Consider further exploring the specific actions Jane can take next week that align with her values of competence and contribution.",
+          "Possible focus on deepening the values mapping using the worksheet she received via email.",
+          "Consider reviewing the consistency of her sleep wind down routine as she approaches the presentation date."
         ]
       }
     },
     {
       "id": "04_rosa_family",
       "framework": "FAMILY SYSTEMS",
-      "latency_s": 88.16,
+      "latency_s": 37.96,
       "checks": {
         "dap_fields_nonempty": {
           "pass": true,
@@ -292,20 +293,20 @@
       "overall": true,
       "result": {
         "note": {
-          "data": "Rosa attended the session alone to discuss family dynamics involving her husband and her teenage son, Leo. The therapist and client identified a pattern of triangulation where Rosa acts as a messenger during conflicts between her husband and son. Rosa reported, \"I always end up in the middle between them.\" The session focused on mapping this triangle and identifying how Rosa stabilizes it by carrying messages back and forth. Discussion also centered on blurred boundaries between the parental subsystem and their child, noting significant enmeshment between Rosa and Leo. Rosa stated, \"when he's upset I feel like it's my job to fix it immediately.\"",
-          "assessment": "Rosa is making early progress toward her goal of improving family dynamics by increasing her awareness of her role in the triangulation pattern. However, she faces barriers to change as she continues to instinctively stabilize the triangle and struggles with enmeshment. The client demonstrated improved insight into how her actions maintain the current system.",
-          "plan": "The therapist used mapping of the triangulation pattern to illustrate family dynamics. Rosa responded by identifying her specific role as a messenger. The next clinical step is to move toward differentiation by practicing stepping out of the middle and allowing the husband and son to interact directly.",
+          "data": "Rosa attended the session alone to discuss the family dynamics involving her husband and her teenage son, Leo. The clinician and Rosa explored the pattern of triangulation occurring within the family. Rosa reported, \"I always end up in the middle between them,\" describing how she frequently acts as a messenger during conflicts between her husband and son. The session focused on mapping this triangle and identifying how Rosa stabilizes the dynamic by carrying messages. They also discussed the blurred boundaries between the parental subsystem and the child, noting significant enmeshment between Rosa and Leo. Rosa shared, \"when he's upset I feel like it's my job to fix it immediately,\" highlighting her current role in the family system.",
+          "assessment": "Rosa is showing early progress toward her goal of improving family boundaries and differentiation. She demonstrated increased insight into her role in the family's triangulation and the enmeshment with her son. However, she faces barriers to change as she continues to feel a sense of responsibility to stabilize the husband and son's conflict, indicating that while awareness is increasing, behavioral shifts in the family system are still pending.",
+          "plan": "The clinician utilized genogram mapping and family systems education to illustrate triangulation and enmeshment. Rosa responded by identifying her specific role as a messenger and acknowledging the blurred boundaries between her and Leo. The next clinical step is to facilitate a joint session with the husband and Leo to address the parental subsystem dynamics directly.",
           "risk_present": false,
           "risk": null,
           "interventions": [
-            "mapping",
-            "differentiation"
+            "genogram mapping",
+            "family systems education"
           ],
           "themes": [
             "triangulation",
             "enmeshment",
             "boundaries",
-            "parental subsystem"
+            "differentiation"
           ],
           "client_quotes": [
             "I always end up in the middle between them",
@@ -317,7 +318,7 @@
             "type": "schedule_followup",
             "datetime_utterance": "same time next week",
             "duration_min": 50,
-            "purpose": "Family session with husband and son present",
+            "purpose": "Family session with husband and Leo",
             "attachment": null,
             "resolved_datetime": "2026-07-25T10:00:00"
           }
@@ -326,15 +327,16 @@
           "have the husband and Leo in the room next time"
         ],
         "next_session_suggestions": [
-          "Consider exploring specific ways Rosa can resist the urge to carry messages between her husband and son.",
-          "Possible focus on identifying specific moments of enmeshment with Leo to practice setting boundaries."
+          "Consider facilitating a joint session with the husband and Leo to observe enactment.",
+          "Possible focus on establishing firmer boundaries between the parental subsystem and Leo.",
+          "Consider exploring the history of the family triangle using a genogram."
         ]
       }
     },
     {
       "id": "05_tom_rambling",
       "framework": "CBT",
-      "latency_s": 73.65,
+      "latency_s": 40.58,
       "checks": {
         "dap_fields_nonempty": {
           "pass": true,
@@ -372,23 +374,22 @@
       "overall": true,
       "result": {
         "note": {
-          "data": "Tom arrived late due to parking difficulties and spent the initial portion of the session venting about his commute. He reported that the commute serves as a primary trigger for catastrophizing, stating, \"by the time I get to my desk I've already imagined getting fired three times.\" The therapist and client mapped this automatic thought pattern from the drive into a thought record. Tom noted that \"writing it down makes it look kind of ridiculous.\" Additionally, Tom reported improved sleep and indicated that previous behavioral activation strategies, such as walking during lunch, are proving helpful.",
-          "assessment": "Tom is making decent progress toward his goal of managing catastrophizing and identifying automatic thoughts earlier. He demonstrated increased awareness of the link between his commute and his anxiety. His engagement with the thought record suggests a positive shift in perspective regarding the validity of his fears.",
-          "plan": "The therapist utilized cognitive restructuring through a thought record to address catastrophizing. Tom responded well, showing movement by recognizing the irrationality of his thoughts when documented. The next clinical step is to continue monitoring these triggers and refining the thought record process.",
+          "data": "Tom arrived late due to parking difficulties and spent the initial portion of the session venting about his commute. He reported that his commute serves as a primary trigger for catastrophizing, stating, \"by the time I get to my desk I've already imagined getting fired three times.\" The clinician and Tom explored this automatic thought pattern. Tom engaged in completing a thought record regarding his drive to work, mapping the trigger to the thought and the resulting feeling. Tom noted that \"writing it down makes it look kind of ridiculous.\" Additionally, Tom reported improved sleep and indicated that the behavioral activation of walking during lunch has been helpful.",
+          "assessment": "Tom is making decent progress toward his goal of managing catastrophizing and catching automatic thoughts earlier. He demonstrated increased awareness of his cognitive distortions during the commute. His engagement with the thought record suggests a growing ability to objectively evaluate his internal narrative, though he remains susceptible to high-frequency ruminative patterns during transitions.",
+          "plan": "The clinician utilized thought records to help Tom map the connection between his commute, his automatic thoughts of being fired, and his emotional response. Tom responded well to this intervention, noting the absurdity of his thoughts when documented. The next clinical step is to continue monitoring these triggers and refining his ability to identify them in real-time.",
           "risk_present": false,
           "risk": null,
           "interventions": [
-            "cognitive restructuring",
             "thought records"
           ],
           "themes": [
             "catastrophizing",
             "automatic thoughts",
-            "behavioral activation"
+            "work stress"
           ],
           "client_quotes": [
-            "by the time I get to my desk I've already imagined getting fired three times.",
-            "writing it down makes it look kind of ridiculous."
+            "by the time I get to my desk I've already imagined getting fired three times",
+            "writing it down makes it look kind of ridiculous"
           ]
         },
         "actions": [
@@ -403,8 +404,9 @@
         ],
         "unsupported_requests": [],
         "next_session_suggestions": [
-          "Consider continuing to map specific triggers during the commute using thought records.",
-          "Possible focus on identifying other areas of work stress where catastrophizing occurs."
+          "Consider continuing to map specific triggers during the commute to identify other recurring automatic thoughts.",
+          "Possible focus on expanding the behavioral activation plan to include other activities outside of work.",
+          "Consider reviewing the thought records from the past week to identify patterns in catastrophizing."
         ]
       }
     }

@@ -145,3 +145,25 @@ def test_verify_note_check_uses_active_format_headings(vault, monkeypatch):
     question = obsidian[0]["question"]
     assert "Subjective" in question and "Objective" in question
     assert "Data, Assessment, and Plan" not in question
+
+
+def test_unresolved_followup_starts_unticked(vault, monkeypatch):
+    """A booking whose spoken date did not resolve can never run, so the review
+    screen must not show it ticked as if it would."""
+    from debrief import extract as extract_mod
+
+    pipeline, _ = _stub_pipeline(monkeypatch)
+    canned = {
+        "note": {},
+        "actions": [
+            {"type": "schedule_followup", "datetime_utterance": "whenever suits", "resolved_datetime": None},
+            {"type": "schedule_followup", "datetime_utterance": "Friday at 3", "resolved_datetime": "2026-11-06T15:00:00"},
+        ],
+        "unsupported_requests": [],
+        "next_session_suggestions": [],
+    }
+    monkeypatch.setattr(extract_mod, "extract", lambda *a, **k: canned)
+    plan = pipeline.transcribe_and_extract("ignored.wav", "C-0001")
+    unresolved, resolved = plan["actions"]
+    assert unresolved["enabled"] is False
+    assert resolved["enabled"] is True

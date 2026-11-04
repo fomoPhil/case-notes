@@ -21,7 +21,7 @@ After every session, a solo therapist loses 15 to 30 minutes to admin. Debrief t
 1. **Files an audit-ready progress note** into a plain-markdown client vault, grounded in the transcript with verbatim client quotes, framework-authentic vocabulary (CBT, ACT, DBT, family systems, EMDR, psychodynamic), and a mandatory structured risk section whenever suicidal ideation is mentioned. The note format is yours to pick (see "Make it yours" below).
 2. **Books the follow-up** in Apple Calendar (the resolved date and time are shown for approval first).
 3. **Drafts the client email** in Apple Mail with the worksheet attached. Always a draft, never auto-sent.
-4. **Verifies it on screen**: it screenshots Calendar, the note, and Mail, and Gemma 4 vision reads the live screen to confirm each action actually happened.
+4. **Verifies it on screen**: it screenshots Calendar, Mail, and the note (when Obsidian has the vault open), and Gemma 4 vision reads the live screen to confirm each action actually happened. You can turn this check off in Settings.
 
 There is also an **assistant** for everything that is not a session debrief. Ask it out loud for a box breathing worksheet, an email draft, or something from a client's history, and it prepares the work for you to approve. It stages proposals; it never files or sends on its own.
 
@@ -43,7 +43,7 @@ A Settings screen (and a first-run wizard that walks you through the same choice
 The architecture principle is **deterministic hands, model brain, model eyes.**
 
 - **Brain**: Gemma 4 12B (QAT, via LM Studio) makes one JSON-schema-constrained call that extracts the clinical note and the requested actions from the transcript. It is also the editor (a glossary pass fixes clinical-term transcription errors) and the eyes (its vision reads the verification screenshots).
-- **Hands**: actions execute through deterministic code only (atomic file writes, AppleScript). The model never does date math: it copies the spoken time phrase ("next Tuesday at 3") and Python resolves it, with the absolute datetime shown in an approval checklist before anything runs. A dedup guard makes double-booking impossible.
+- **Hands**: actions execute through deterministic code only (atomic file writes, AppleScript). The model never does date math: it copies the spoken time phrase ("next Tuesday at 3") and Python resolves it, with the absolute datetime shown in an approval checklist before anything runs. One debrief never books the same slot twice, and an approved plan cannot be run a second time.
 - **Stack**: FastAPI server + a vanilla JS web UI with no build step + a plain markdown vault + LM Studio for the model + parakeet-mlx or mlx-whisper for fully offline speech-to-text on Apple Silicon.
 
 This split is why a 12B local model is enough to run a reliable agent.
@@ -79,7 +79,7 @@ Open http://127.0.0.1:8377. The client vault scaffolds itself on first run with 
 
 The app opens with a setup screen. It checks your model server and Gemma model, shows where your vault lives, and walks you through the three macOS permissions (Calendar, Mail, Screen Recording) with a Grant button that shows each system prompt so you can click Allow. Screen Recording needs the app quit and reopened after you allow it. You can skip permissions and grant them later, and reopen the wizard any time from Setup in the sidebar. Running `debrief-doctor` in the terminal shows the same model and vault checks.
 
-For development you can also run the server directly with `HF_HUB_OFFLINE=1 .venv/bin/python app.py`. To check your setup at any time, run `uv run debrief-doctor`.
+For development you can also run the server directly with `HF_HUB_OFFLINE=1 .venv/bin/python app.py`. `uv run pytest` runs the offline test suite. `uv run pytest -m live` runs the live tests, which need LM Studio and drive the real Calendar and Mail. To check your setup at any time, run `uv run debrief-doctor`.
 
 ## Roadmap
 

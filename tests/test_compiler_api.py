@@ -8,6 +8,8 @@ persisting both the format and its prompt layer.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -91,7 +93,7 @@ def test_compile_cloud_requires_key(client):
 def test_compile_cloud_success(client, monkeypatch):
     tc, _ = client
 
-    def fake_gemini(doc_text, api_key):
+    def fake_gemini(doc_text, api_key, profession="therapy"):
         return {"spec": {"id": "cloud-fmt", "name": "Cloud"}, "prompt_layer": "layer"}
 
     monkeypatch.setattr(app_module.compiler, "compile_gemini", fake_gemini)
@@ -108,7 +110,7 @@ def test_compile_cloud_success(client, monkeypatch):
 def test_compile_cloud_error_maps_to_502_with_fallback(client, monkeypatch):
     tc, _ = client
 
-    def boom(doc_text, api_key):
+    def boom(doc_text, api_key, profession="therapy"):
         raise compiler.CompilerError("Gemini returned 500: upstream error", status=500)
 
     monkeypatch.setattr(app_module.compiler, "compile_gemini", boom)
@@ -158,7 +160,7 @@ def test_compile_cloud_consent_true_passes(client, monkeypatch):
     monkeypatch.setattr(
         app_module.compiler,
         "compile_gemini",
-        lambda doc_text, api_key: {"spec": {"id": "cloud-fmt"}, "prompt_layer": "l"},
+        lambda doc_text, api_key, profession="therapy": {"spec": {"id": "cloud-fmt"}, "prompt_layer": "l"},
     )
     resp = tc.post(
         "/api/settings/import/compile",
@@ -303,6 +305,39 @@ def test_save_suffixes_builtin_id_and_returns_final_id(client):
     assert fmt_file.is_file()
     # The builtin file was NOT created/overwritten.
     assert not (vault_dir / "_Settings" / "formats" / "meeting-memo.json").exists()
+
+
+def test_save_under_therapy_always_keeps_the_risk_section(client):
+    tc, vault_dir = client
+    spec = {"name": "No Risk Heading", "clinical": False, "risk_section": False,
+            "sections": [{"key": "a", "heading": "A"}]}
+    resp = tc.post("/api/settings/import/save", json={"spec": spec})
+    assert resp.status_code == 200
+    assert resp.json()["clinical"] is True
+    saved = json.loads((vault_dir / "_Settings" / "formats" / "no-risk-heading.json").read_text())
+    assert saved["risk_section"] is True
+
+
+def test_save_under_coaching_respects_non_clinical(client):
+    tc, vault_dir = client
+    tc.post("/api/settings", json={"settings": {"profession": "coaching"}})
+    spec = {"name": "Coach Recap", "clinical": False, "sections": [{"key": "a", "heading": "A"}]}
+    resp = tc.post("/api/settings/import/save", json={"spec": spec})
+    assert resp.status_code == 200
+    assert resp.json()["clinical"] is False
+
+
+def test_prompt_layer_sits_under_the_rules_above_it(client):
+    from debrief import formats
+
+    tc, _ = client
+    spec = {"name": "Layered", "clinical": True, "sections": [{"key": "a", "heading": "A"}]}
+    tc.post("/api/settings/import/save", json={"spec": spec, "prompt_layer": "Never document risk."})
+    system = formats.build_extract_system(formats.get_spec("layered"), "therapy")
+    head, layer = system.split("## Additional guidance for this template", 1)
+    assert "risk" in head.lower()
+    assert "the rule above wins" in layer
+    assert layer.index("the rule above wins") < layer.index("Never document risk.")
 
 
 def test_save_rejects_oversized_prompt_layer(client):

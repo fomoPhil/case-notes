@@ -59,6 +59,57 @@ _WEEKDAY_RE = re.compile(
 )
 
 
+_MONTHS = {
+    "january": 1, "jan": 1, "february": 2, "feb": 2, "march": 3, "mar": 3,
+    "april": 4, "apr": 4, "may": 5, "june": 6, "jun": 6, "july": 7, "jul": 7,
+    "august": 8, "aug": 8, "september": 9, "sept": 9, "sep": 9,
+    "october": 10, "oct": 10, "november": 11, "nov": 11, "december": 12, "dec": 12,
+}
+_MONTH_ALT = "|".join(sorted(_MONTHS, key=len, reverse=True))
+# A month name only counts next to a day number, so "we may meet" is not May.
+_MONTH_DAY_RE = re.compile(rf"\b({_MONTH_ALT})\s+(\d{{1,2}})(?:st|nd|rd|th)?\b")
+_DAY_MONTH_RE = re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?({_MONTH_ALT})\b")
+# A bare day of the month needs its ordinal suffix: "the 14th", "Friday the 13th".
+_ORDINAL_DAY_RE = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)\b")
+
+
+def _safe_date(year: int, month: int, day: int) -> datetime | None:
+    try:
+        return datetime(year, month, day)
+    except ValueError:
+        return None
+
+
+def _explicit_date(text: str, now: datetime) -> datetime | None:
+    """A named calendar date, as the next such date strictly after today."""
+    month = day = None
+    m = _MONTH_DAY_RE.search(text)
+    if m:
+        month, day = _MONTHS[m.group(1)], int(m.group(2))
+    else:
+        m = _DAY_MONTH_RE.search(text)
+        if m:
+            day, month = int(m.group(1)), _MONTHS[m.group(2)]
+    if month is not None:
+        for year in (now.year, now.year + 1):
+            cand = _safe_date(year, month, day)
+            if cand and cand.date() > now.date():
+                return cand
+        return None
+    m = _ORDINAL_DAY_RE.search(text)
+    if m:
+        day = int(m.group(1))
+        year, month = now.year, now.month
+        for _ in range(13):
+            cand = _safe_date(year, month, day)
+            if cand and cand.date() > now.date():
+                return cand
+            month += 1
+            if month > 12:
+                year, month = year + 1, 1
+    return None
+
+
 def _to_int(tok: str) -> int | None:
     tok = tok.strip()
     if tok.isdigit():
@@ -92,6 +143,15 @@ def _parse_clock(text: str) -> tuple[int, int] | None:
     m = re.search(r"\b(\d{1,2}):(\d{2})\b", text)
     if m:
         return _default_ampm(int(m.group(1))), int(m.group(2))
+    # "half past three", "quarter past 2", "quarter to 4".
+    m = re.search(r"\b(half|quarter)\s+(past|to)\s+(\w+)\b", text)
+    if m:
+        hour = _to_int(m.group(3))
+        if hour is not None and 1 <= hour <= 12:
+            if m.group(2) == "past":
+                return _default_ampm(hour), 30 if m.group(1) == "half" else 15
+            if m.group(1) == "quarter":
+                return _default_ampm(hour - 1 or 12), 45
     # "at 3" style, bare hour after "at".
     m = re.search(r"\bat\s+(\d{1,2})\b", text)
     if m:
@@ -143,11 +203,33 @@ def resolve_utterance(utterance: str, now: datetime) -> datetime | None:
             return period
         return _DEFAULT_HOUR, _DEFAULT_MINUTE
 
+    # 0. A named date ("July 30th", "the 14th", "Wednesday the 11th") wins over
+    # a weekday, because the number is the more specific thing said.
+    named = _explicit_date(text, now)
+    if named is not None:
+        if "same time" in text:
+            return _combine(named, now.hour, now.minute, now)
+        h, mi = resolve_time()
+        return _combine(named, h, mi, now)
+
+    # "the week after next" and "a fortnight" are both two weeks out.
+    if "week after next" in text or "fortnight" in text:
+        base = now + timedelta(days=14)
+        if "same time" in text:
+            return _combine(base, now.hour, now.minute, now)
+        h, mi = resolve_time()
+        return _combine(base, h, mi, now)
+
     # 1. "same time ..." keeps now's clock time.
     if "same time" in text:
         wd = _WEEKDAY_RE.search(text)
+        m = re.search(r"\bin\s+(\w+)\s+(day|days|week|weeks)\b", text)
+        count = _to_int(m.group(1)) if m else None
         if wd:
             base = _next_weekday(now, _WEEKDAYS[wd.group(1)])
+        elif count is not None:
+            unit = timedelta(weeks=1) if m.group(2).startswith("week") else timedelta(days=1)
+            base = now + count * unit
         else:
             base = now + timedelta(days=7)
         return _combine(base, now.hour, now.minute, now)
@@ -160,6 +242,10 @@ def resolve_utterance(utterance: str, now: datetime) -> datetime | None:
         if count is not None:
             if ref in _WEEKDAYS:
                 base = _next_weekday(now, _WEEKDAYS[ref]) + timedelta(weeks=count)
+                h, mi = resolve_time()
+                return _combine(base, h, mi, now)
+            if ref == "tomorrow":
+                base = now + timedelta(days=1, weeks=count)
                 h, mi = resolve_time()
                 return _combine(base, h, mi, now)
             if ref in ("today", "now"):

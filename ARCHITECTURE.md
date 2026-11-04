@@ -16,7 +16,7 @@ All modules live in `debrief/` (Python package, run with `.venv/bin/python`). Th
 
 ```python
 # debrief/config.py
-VAULT_DIR: Path            # ./vault
+VAULT_DIR: Path            # ./DebriefVault (DEBRIEF_VAULT_DIR overrides)
 LMSTUDIO_URL: str; MODEL: str = "gemma-4-12b-it-qat"
 CALENDAR_NAME = "Debrief"  # dedicated macOS calendar; create if missing; never touch other calendars
 
@@ -104,5 +104,5 @@ def run_debrief(wav_path: str, client_id: str, execute: bool = True, verify: boo
 ## Style rules (hard)
 
 - No em dashes in ANY generated copy, UI strings, prompts, or vault templates.
-- Suggestions language: "Consider", "Possible focus", never "You should". Include the line "Clinical judgment and final session planning remain the therapist's responsibility." in the note's suggestions section.
+- Suggestions language: "Consider", "Possible focus", never "You should". The "suggestions only, your call" framing lives in the UI. Filed notes carry no app-written disclaimer (removed 2026-07-25).
 - Clinical system prompts include the exact framing that passed the SI test (see prompts/extract_system.md).

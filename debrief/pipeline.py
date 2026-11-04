@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -27,7 +28,19 @@ from pathlib import Path
 # (a not-yet-cached engine like whisper), then seals offline afterward. Setting
 # the flags unconditionally here would block that deliberate first download.
 
-from . import actions, audit, extract as extract_mod, llm, settings_store, stt, vault
+from . import (
+    actions,
+    audit,
+    extract as extract_mod,
+    jobs,
+    ladder,
+    llm,
+    recstore,
+    settings_store,
+    sources,
+    stt,
+    vault,
+)
 from .config import DEFAULT_SESSION_MINUTES
 
 # ---------------------------------------------------------------------------
@@ -244,16 +257,267 @@ def _condense_summary(existing_summary: str, note: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Session evidence: an optional recording of the session itself
+# ---------------------------------------------------------------------------
+#
+# Everything below this comment is reached only when the caller names a source.
+# That is the whole contract of this feature: the debrief is still the hero
+# moment and still the only required input, and a run with no source is the run
+# this module has always made, key for key.
+
+# A ladder job in one of these states will produce the digest, eventually. Any
+# other state means waiting would be waiting for nothing.
+_ACTIVE_JOB_STATES = frozenset({jobs.QUEUED, jobs.RUNNING, jobs.WAITING})
+
+# Said to the clinician, not logged. The point of both lines is that the note in
+# front of them is complete work from their debrief, not a degraded version of
+# something better that they should distrust.
+_SOURCE_PROCESSING_NOTE = (
+    "The session recording is still being processed, so this note was written "
+    "from your debrief alone. The session evidence will be ready shortly and "
+    "you can read it against the note then."
+)
+_SOURCE_MISSING_NOTE = (
+    "No session evidence was found for that recording, so this note was written "
+    "from your debrief alone."
+)
+# Said when the named source turns out not to be a session at all. This is a
+# backend guarantee before it is a message: reference material never reaches the
+# extractor as evidence about a client, whatever the UI offered.
+_SOURCE_REFERENCE_NOTE = (
+    "That material is filed as reference, so it is not used as session evidence. "
+    "This note was written from your debrief alone."
+)
+
+# The keys a plan gains when a source was named. Listed once so run_debrief
+# carries exactly the same set through to its merged result.
+_SOURCE_PLAN_KEYS = (
+    "digest_used",
+    "source",
+    "source_status",
+    "source_note",
+    "evidence_conflicts",
+    "no_debrief",
+)
+
+
+def _source_job_active(client_id: str, source_id: str) -> bool:
+    """True when a ladder job for this source is queued, running, or waiting.
+
+    The difference between "the digest is coming" and "there is no digest" is
+    the difference between two very different things to tell a clinician, and a
+    listing that cannot be read is never a reason to fail a debrief.
+    """
+    try:
+        rows = jobs.list_jobs(client_id)
+    except Exception:  # noqa: BLE001 - a job listing never blocks a debrief
+        return False
+    wanted = str(source_id)
+    for row in rows:
+        if str(row.get("kind") or "") != "ladder":
+            continue
+        if row.get("state") not in _ACTIVE_JOB_STATES:
+            continue
+        payload = row.get("payload") or {}
+        if str(payload.get("source_id") or "") == wanted:
+            return True
+    return False
+
+
+# A quote that is only a word or two matches far too much. "tired" appears
+# inside half the sentences a session produces, so a substring rule with no
+# floor would let one unattributed word delete a paragraph of the clinician's
+# own dictation. Below the floor the two strings have to be the same string.
+_MATCH_MIN_WORDS = 5
+_MATCH_MIN_CHARS = 25
+
+# How much of a quote a conflict line shows before it gets out of the way.
+_SNIPPET_CHARS = 60
+
+# A span the note itself presents as somebody's exact words, in straight or
+# curly double quotes. Newlines end a span, so an unclosed quotation mark cannot
+# swallow the rest of a section.
+_QUOTED_SPAN_RE = re.compile('"([^"\n]+)"|“([^”\n]+)”')
+
+
+def _substantial(text: str) -> bool:
+    """True when a normalised string is long enough to match on as a substring."""
+    return len(text) >= _MATCH_MIN_CHARS or len(text.split()) >= _MATCH_MIN_WORDS
+
+
+def _quote_matches(candidate: str, other: str) -> bool:
+    """True when two normalised quotes are the same words in the same mouth.
+
+    Substring in either direction, because the model may quote a fragment of a
+    statement or pad one out, but only once the shorter of the two is long
+    enough to mean something on its own. Below that floor, identical or nothing.
+    """
+    if not candidate or not other:
+        return False
+    if candidate == other:
+        return True
+    shorter = candidate if len(candidate) <= len(other) else other
+    if not _substantial(shorter):
+        return False
+    return candidate in other or other in candidate
+
+
+def _snippet(text) -> str:
+    """A quote shortened for a conflict line, marked only when truncated."""
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= _SNIPPET_CHARS else f"{text[:_SNIPPET_CHARS]}..."
+
+
+def _unconfirmed_texts(digest: dict) -> list[str]:
+    """Every phrase in the digest that nobody proved the client said.
+
+    Two sources, both unconfirmed for different reasons. A client statement
+    below "high" is one the ladder could not tie to a labelled turn of this
+    client's. A risk excerpt is grounded in the transcript but never attribution
+    checked at all, which means a sentence the CLINICIAN spoke can be sitting in
+    that list. Neither may end up inside quotation marks in a clinical record,
+    so both are compared against.
+    """
+    texts: list[str] = []
+    for item in digest.get("client_statements") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("attribution_confidence") or "").strip().casefold() == "high":
+            continue
+        texts.append(ladder.normalize_quote_text(item.get("quote")))
+    for item in digest.get("risk_excerpts") or []:
+        texts.append(ladder.normalize_quote_text(item))
+    return [text for text in texts if text]
+
+
+def _strip_unconfirmed_quotes(note: dict, unconfirmed: list[str]) -> list[str]:
+    """Spec rule 3, downstream half: an unconfirmed quote never gets filed.
+
+    The ladder refuses to mark a statement "high" unless it sits inside exactly
+    one labelled rung 0 turn belonging to this client, so everything else comes
+    back "low" and reaches the extractor as an unattributed observation with no
+    quotation marks anywhere near it. That is guidance. A model can still lift
+    those words into client_quotes, so the guarantee is finished here, in code,
+    after the model has answered.
+
+    Comparison runs through the ladder's own normaliser, which is the point: a
+    quote retyped with a curly apostrophe is the same sentence to a reader and a
+    different string to anything less careful, and that gap is exactly where a
+    misattributed quote would slip through.
+
+    Returns one conflict line per removal. This CAN remove a quote the clinician
+    genuinely dictated, when their words happen to match an unattributed
+    statement, and that is the intended direction: an unattributed observation
+    is recoverable and a misattributed quote in a clinical record is not. The
+    conflict line is what keeps the removal visible instead of silent, so the
+    clinician can put it back in review.
+    """
+    quotes = note.get("client_quotes")
+    if not isinstance(quotes, list) or not quotes or not unconfirmed:
+        return []
+
+    kept: list = []
+    conflicts: list[str] = []
+    for quote in quotes:
+        flat = ladder.normalize_quote_text(quote)
+        if any(_quote_matches(flat, other) for other in unconfirmed):
+            conflicts.append(
+                "A quote was removed because the recording could not confirm "
+                f"who said it: '{_snippet(quote)}'"
+            )
+            continue
+        kept.append(quote)
+    note["client_quotes"] = kept
+    return conflicts
+
+
+def _narrative_quote_conflicts(note: dict, unconfirmed: list[str]) -> list[str]:
+    """Flag unconfirmed words the model quoted inside the narrative prose.
+
+    The DAP guidance asks the model to weave a quote into the Data section, so
+    the riskiest place an unattributed sentence can land is not client_quotes at
+    all, it is the middle of a paragraph, inside quotation marks, reading as the
+    client's own words.
+
+    This detects and reports. It does NOT rewrite. Editing a clinician's
+    narrative in code would be worse than the problem: the note is a clinical
+    record, a silently altered sentence is unreviewable, and the clinician is
+    about to read this on the approval screen anyway. So the sentence stays and
+    the conflict line points straight at it.
+
+    Every string field is scanned, so a custom format's own sections are covered
+    without this needing to know their names.
+    """
+    if not unconfirmed:
+        return []
+
+    conflicts: list[str] = []
+    seen: set[str] = set()
+    for value in note.values():
+        if not isinstance(value, str) or '"' not in value and "“" not in value:
+            continue
+        for match in _QUOTED_SPAN_RE.finditer(value):
+            span = match.group(1) or match.group(2) or ""
+            flat = ladder.normalize_quote_text(span)
+            if not flat or flat in seen:
+                continue
+            if not any(_quote_matches(flat, other) for other in unconfirmed):
+                continue
+            seen.add(flat)
+            conflicts.append(
+                "The note's narrative quotes words the recording could not "
+                f"confirm who said: '{_snippet(span)}'. Please review that "
+                "sentence."
+            )
+    return conflicts
+
+
+def _collect_evidence_conflicts(extraction: dict, note: dict, digest: dict) -> list[str]:
+    """Every disagreement worth showing: the model's, then the ones code found.
+
+    One place, because both roads into a note that had session evidence run
+    through it. Rule 3's downstream half is not a property of the debrief path,
+    it is a property of any note written with a digest in the room, so a note
+    drafted from a recording alone is held to it exactly as a debriefed one is.
+
+    The comparison set is shared by both passes: the statements the recording
+    could not attribute, plus every risk excerpt (grounded in the transcript,
+    never attribution checked, so the speaker is unknown by construction).
+    Mutates note (a stripped quote is a removal) and extraction (the list is
+    recorded there too, where the review screen reads it).
+    """
+    conflicts: list[str] = []
+    claimed = extraction.get("evidence_conflicts")
+    if isinstance(claimed, (list, tuple)):
+        conflicts = [
+            text for text in (str(item or "").strip() for item in claimed) if text
+        ]
+    unconfirmed = _unconfirmed_texts(digest)
+    conflicts.extend(_strip_unconfirmed_quotes(note, unconfirmed))
+    conflicts.extend(_narrative_quote_conflicts(note, unconfirmed))
+    extraction["evidence_conflicts"] = conflicts
+    return conflicts
+
+
+# ---------------------------------------------------------------------------
 # Phase 1: transcribe + extract (produces the approval plan, no side effects)
 # ---------------------------------------------------------------------------
 
 
-def transcribe_and_extract(wav_path: str, client_id: str) -> dict:
+def transcribe_and_extract(
+    wav_path: str, client_id: str, source_id: str | None = None
+) -> dict:
     """Run the read-only half of the pipeline and return a JSON-serialisable plan.
 
     Stages: transcribe -> correct -> client_context -> extract (+date resolve).
     Never touches Calendar, Mail, or the vault. The web UI shows this plan for
     approval; execute_plan then runs the approved actions.
+
+    source_id, when given, names a recording of the session itself. Its digest
+    (ladder rung 2, never the raw or corrected transcript) is handed to the
+    extractor as labelled evidence, and the plan gains source keys the review
+    screen reads. A source that is still processing, or missing, never blocks
+    and never raises: the debrief runs without evidence and the plan says so.
     """
     timings: dict[str, float] = {}
     errors: list[dict] = []
@@ -294,42 +558,107 @@ def transcribe_and_extract(wav_path: str, client_id: str) -> dict:
     client_name = client_ctx.get("name") or client_id
     first_name = _first_name(client_name)
 
-    # --- glossary correction ----------------------------------------------
-    corrected = transcript
-    t0 = time.perf_counter()
-    try:
-        corrected = stt.correct_transcript(
-            transcript, client_ctx, framework, profession=profession, dictionary=dictionary
-        )
-    except Exception as exc:
-        errors.append({"stage": "correct", "error": str(exc)})
-        corrected = transcript
-    timings["correct"] = round(time.perf_counter() - t0, 2)
+    # --- session evidence (only when a source was named) -------------------
+    # Resolved after the client context, because the context is what the digest
+    # would have been built against. load_digest re-applies the provenance rules
+    # on the way out, so a source reclassified since it was digested hands over
+    # a digest with its quotes already gone.
+    digest: dict | None = None
+    source_info: dict | None = None
+    source_status: str | None = None
+    source_note: str | None = None
+    if source_id:
+        source_info = {"source_id": source_id}
+        reference = False
+        try:
+            meta = recstore.read_meta(client_id, source_id) or {}
+            if meta:
+                source_info["kind"] = meta.get("kind")
+                source_info["verbatim"] = bool(meta.get("verbatim"))
+                reference = str(meta.get("kind") or "") in sources.REFERENCE_KINDS
+            digest = ladder.load_digest(client_id, source_id)
+        except Exception as exc:
+            # Evidence is an input, never a reason to lose a debrief.
+            errors.append({"stage": "source", "error": str(exc)})
+            digest = None
+        # The reference gate. Asked of the source AND of the digest, because a
+        # source can be flipped to reference after its session digest was
+        # written (load_digest hands that one back stripped to its description,
+        # still session shaped) and a digest can be reference shaped under a
+        # source that has since been flipped back. Either answer is enough: this
+        # material is not a session with this client, so it is not evidence
+        # about them, and the extractor never sees it. The UI filters these out
+        # too; this is the guarantee that does not depend on the UI.
+        if reference or ladder._is_reference_digest(digest):
+            digest = None
+            reference = True
+        # The whole vocabulary, in one place: ready | processing | missing |
+        # reference. plan_from_source uses the same four words for the same
+        # four things, so a screen reading source_status never has to ask which
+        # door the plan came through.
+        if reference:
+            source_status = "reference"
+            source_note = _SOURCE_REFERENCE_NOTE
+        elif digest is not None:
+            source_status = "ready"
+        elif _source_job_active(client_id, source_id):
+            source_status = "processing"
+            source_note = _SOURCE_PROCESSING_NOTE
+        else:
+            source_status = "missing"
+            source_note = _SOURCE_MISSING_NOTE
 
-    # --- extraction (brain) ------------------------------------------------
-    # client_context() nests a full "profile" frontmatter dict that duplicates
-    # the spread keys and carries date objects; the extractor json.dumps dict
-    # values, so hand it a flat, JSON-safe context instead.
-    extract_ctx = {k: v for k, v in client_ctx.items() if k != "profile"}
-    extraction: dict = {}
-    t0 = time.perf_counter()
-    try:
-        extraction = extract_mod.extract(
-            corrected, extract_ctx, framework, now,
-            format_id=note_format, profession=profession, features=features,
-        )
-    except Exception as exc:
-        errors.append({"stage": "extract", "error": str(exc)})
-        extraction = {
-            "note": {},
-            "actions": [],
-            "unsupported_requests": [],
-            "next_session_suggestions": [],
-        }
-    timings["extract"] = round(time.perf_counter() - t0, 2)
+    # --- the model phase, with a human waiting on it -----------------------
+    # Correction and extraction are the two model calls a clinician sits in
+    # front of, so background ladder work parks at its next rung boundary for
+    # the length of this block. The hold releases on every exit path, exception
+    # included, because a stranded hold would stop the queue forever.
+    with jobs.interactive_hold():
+        # --- glossary correction -------------------------------------------
+        corrected = transcript
+        t0 = time.perf_counter()
+        try:
+            corrected = stt.correct_transcript(
+                transcript, client_ctx, framework, profession=profession, dictionary=dictionary
+            )
+        except Exception as exc:
+            errors.append({"stage": "correct", "error": str(exc)})
+            corrected = transcript
+        timings["correct"] = round(time.perf_counter() - t0, 2)
+
+        # --- extraction (brain) --------------------------------------------
+        # client_context() nests a full "profile" frontmatter dict that duplicates
+        # the spread keys and carries date objects; the extractor json.dumps dict
+        # values, so hand it a flat, JSON-safe context instead.
+        extract_ctx = {k: v for k, v in client_ctx.items() if k != "profile"}
+        # The digest keyword is passed ONLY when there is one, so a call with no
+        # session evidence is the call this line has always made.
+        evidence_kwargs = {"digest": digest} if digest is not None else {}
+        extraction: dict = {}
+        t0 = time.perf_counter()
+        try:
+            extraction = extract_mod.extract(
+                corrected, extract_ctx, framework, now,
+                format_id=note_format, profession=profession, features=features,
+                **evidence_kwargs,
+            )
+        except Exception as exc:
+            errors.append({"stage": "extract", "error": str(exc)})
+            extraction = {
+                "note": {},
+                "actions": [],
+                "unsupported_requests": [],
+                "next_session_suggestions": [],
+            }
+        timings["extract"] = round(time.perf_counter() - t0, 2)
 
     note = extraction.get("note", {}) or {}
     raw_actions = extraction.get("actions", []) or []
+
+    # --- conflicts between the two inputs, and rule 3 ----------------------
+    evidence_conflicts: list[str] = []
+    if digest is not None:
+        evidence_conflicts = _collect_evidence_conflicts(extraction, note, digest)
 
     # --- normalise actions for the UI / executor --------------------------
     plan_actions: list[dict] = []
@@ -361,7 +690,8 @@ def transcribe_and_extract(wav_path: str, client_id: str) -> dict:
                     "duration_min": duration,
                     "title": title,
                     "label": label,
-                    "enabled": True,
+                    # A booking with no date cannot run, so it is never ticked.
+                    "enabled": dt is not None,
                 }
             )
         elif atype == "draft_client_email":
@@ -385,6 +715,18 @@ def transcribe_and_extract(wav_path: str, client_id: str) -> dict:
     # duplicates deterministically so we never create two events for one slot.
     plan_actions, deduped_actions = _dedup_followups(plan_actions)
 
+    # Spec rule 7: a recording without a debrief can produce a draft note, but
+    # never an action. A recording says what happened. Only the clinician says
+    # what they want done about it, and every action here is an intent.
+    no_debrief = digest is not None and not (corrected or "").strip()
+    if no_debrief:
+        plan_actions = []
+        # The dropped-duplicate list and the raw extraction go with them: a
+        # review screen that says "no actions, and one duplicate booking was
+        # dropped" is telling the clinician about bookings that do not exist.
+        deduped_actions = []
+        extraction["actions"] = []
+
     # Session metadata for the note write (session_number = existing files + 1).
     # The active format spec also travels in the plan so the review UI can render
     # section-by-section, and the feature toggles ride along for the same UI.
@@ -402,8 +744,14 @@ def transcribe_and_extract(wav_path: str, client_id: str) -> dict:
         "sections": spec["sections"],
         "features": settings.get("features", {}),
     }
+    if digest is not None and source_info is not None:
+        # The filed note's frontmatter points at the evidence it was written
+        # from. The record links to its source; the raw transcript stays out.
+        session_meta["source_id"] = source_id
+        session_meta["source_kind"] = source_info.get("kind")
+        session_meta["source_verbatim"] = source_info.get("verbatim")
 
-    return {
+    plan = {
         "client_id": client_id,
         "client": {
             "name": client_name,
@@ -424,6 +772,20 @@ def transcribe_and_extract(wav_path: str, client_id: str) -> dict:
         "errors": errors,
     }
 
+    # Nothing above this line runs without a source_id, and nothing below it
+    # adds a key without one, so a plan with no source is byte for byte the
+    # plan this function returned before session evidence existed.
+    if source_id:
+        plan["digest_used"] = digest is not None
+        plan["source"] = source_info
+        plan["source_status"] = source_status
+        if source_note is not None:
+            plan["source_note"] = source_note
+        if digest is not None:
+            plan["evidence_conflicts"] = evidence_conflicts
+            plan["no_debrief"] = no_debrief
+    return plan
+
 
 def _next_session_number(client_id: str) -> int:
     """Count existing session note files for the client and add one."""
@@ -434,6 +796,197 @@ def _next_session_number(client_id: str) -> int:
     except Exception:
         pass
     return 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 1, the other door: a plan from the material alone
+# ---------------------------------------------------------------------------
+#
+# Rule 7 says a recording without a debrief can produce a draft note and never
+# an action. transcribe_and_extract reaches that state by accident (the
+# clinician named a source and said nothing); this reaches it on purpose, with
+# no microphone involved at all. Everything else about the plan is the same
+# shape, so the review screen that already knows how to show a no-debrief plan
+# needs to learn nothing new.
+
+_DRAFT_PROCESSING = (
+    "That material is still processing. A draft note is written from its "
+    "summary, and the summary is not built yet. Try again in a moment."
+)
+_DRAFT_MISSING = (
+    "There is no summary for that material, so there is nothing to draft a note "
+    "from yet."
+)
+_DRAFT_REFERENCE_NOTE = (
+    "That material is filed as reference, so this note records what was shared "
+    "rather than a session that happened."
+)
+
+
+def plan_from_source(client_id: str, source_id: str) -> dict:
+    """Draft a note from stored material alone: no audio, no transcription.
+
+    The plan comes back in exactly the shape transcribe_and_extract returns, so
+    the existing review screen files it the way it files any other: an empty
+    transcript, no_debrief true, and zero actions anywhere in it. A recording
+    says what happened; only the clinician says what they want done about it.
+
+    A session digest is handed to the extractor as session evidence with an
+    empty debrief, which is the rule 7 shape. A reference digest is handed over
+    through the reference block instead: the note it produces records that the
+    material was shared and what it covers, not a session that took place.
+
+    The note's session_date is the source's own session date, so a Tuesday
+    session brought in on Friday files under Tuesday.
+
+    Raises SourceError with a message that is safe to show: no such source,
+    provenance still unconfirmed, or no summary built yet (naming which of the
+    two reasons applies).
+    """
+    now = _dt.datetime.now()
+    timings: dict[str, float] = {}
+    errors: list[dict] = []
+
+    try:
+        meta = recstore.read_meta(client_id, source_id)
+    except ValueError as exc:
+        raise sources.SourceError(str(exc)) from exc
+    if not meta:
+        raise sources.SourceError(f"there is no stored source {source_id} for this client.")
+
+    # Unconfirmed provenance never becomes a note. The classifier's guess is
+    # still only a guess, and a note filed from it would claim a provenance
+    # nobody has vouched for. Same sentence the assign path uses, from the same
+    # place, because it is the same refusal.
+    if meta.get("needs_confirmation"):
+        raise sources.SourceError(sources.UNCONFIRMED_MESSAGE)
+
+    digest = ladder.load_digest(client_id, source_id)
+    if digest is None:
+        raise sources.SourceError(
+            _DRAFT_PROCESSING if _source_job_active(client_id, source_id) else _DRAFT_MISSING
+        )
+
+    # Reference by either road, exactly as the debrief path asks it. The
+    # difference here is the door it opens rather than the one it closes:
+    # reference material may be drafted from, through the reference block, and
+    # is still never session evidence about this client.
+    reference = (
+        str(meta.get("kind") or "") in sources.REFERENCE_KINDS
+        or ladder._is_reference_digest(digest)
+    )
+
+    settings = settings_store.load()
+    note_format = settings.get("note_format", "DAP")
+    profession = settings.get("profession", "therapy")
+    features = settings.get("features", {}) or {}
+
+    client_ctx: dict = {}
+    t0 = time.perf_counter()
+    try:
+        client_ctx = vault.client_context(client_id)
+    except Exception as exc:
+        errors.append({"stage": "context", "error": str(exc)})
+    timings["context"] = round(time.perf_counter() - t0, 2)
+
+    framework = client_ctx.get("framework") or "CBT"
+    client_name = client_ctx.get("name") or client_id
+    first_name = _first_name(client_name)
+    extract_ctx = {k: v for k, v in client_ctx.items() if k != "profile"}
+
+    # The same hold the debrief path takes: a clinician is waiting on this call,
+    # so background ladder work parks at its next rung boundary until it returns.
+    evidence_kwargs = {"reference": digest} if reference else {"digest": digest}
+    t0 = time.perf_counter()
+    with jobs.interactive_hold():
+        try:
+            extraction = extract_mod.extract(
+                "", extract_ctx, framework, now,
+                format_id=note_format, profession=profession, features=features,
+                **evidence_kwargs,
+            )
+        except Exception as exc:
+            # Nothing has been lost here (there was no debrief to lose), so this
+            # says so plainly rather than handing back an empty draft note that
+            # looks like the material had nothing in it.
+            raise sources.SourceError(
+                f"Debrief could not draft a note from that material: {exc}"
+            ) from exc
+    timings["extract"] = round(time.perf_counter() - t0, 2)
+
+    note = extraction.get("note", {}) or {}
+    if reference:
+        evidence_conflicts: list[str] = []
+        # Stated, not derived. The reference block carries no client statement
+        # and _reference_block refuses any digest that could, so a quote in this
+        # note came from nowhere: the model made it up. Everywhere else in this
+        # codebase a guarantee about quotes is finished in code after the model
+        # has answered, and this is that line for the reference path.
+        note["client_quotes"] = []
+    else:
+        evidence_conflicts = _collect_evidence_conflicts(extraction, note, digest)
+    # Rule 7, stated rather than derived: this path never has a debrief, so it
+    # never has an action. The extraction's own list goes with them.
+    extraction["actions"] = []
+
+    from . import formats
+
+    spec = formats.get_spec_or_default(note_format)
+    session_date = sources.effective_session_date(meta) or now.date()
+    session_meta = {
+        "session_date": session_date.isoformat(),
+        "session_number": _next_session_number(client_id),
+        "format": spec["id"],
+        "modality": "in-person",
+        "duration_min": DEFAULT_SESSION_MINUTES,
+        "framework": framework,
+        "sections": spec["sections"],
+        "features": settings.get("features", {}),
+        # The filed note points at the material it was drafted from, exactly as
+        # a debriefed note points at its evidence.
+        "source_id": source_id,
+        "source_kind": meta.get("kind"),
+        "source_verbatim": bool(meta.get("verbatim")),
+    }
+
+    plan = {
+        "client_id": client_id,
+        "client": {
+            "name": client_name,
+            "first_name": first_name,
+            "email": client_ctx.get("email"),
+            "framework": framework,
+        },
+        "transcript": "",
+        "corrected_transcript": "",
+        "note": note,
+        "extraction": extraction,
+        "actions": [],
+        "deduped_actions": [],
+        "unsupported_requests": extraction.get("unsupported_requests", []) or [],
+        "next_session_suggestions": extraction.get("next_session_suggestions", []) or [],
+        "session_meta": session_meta,
+        "timings": timings,
+        "errors": errors,
+        "digest_used": True,
+        "source": {
+            "source_id": source_id,
+            "kind": meta.get("kind"),
+            "verbatim": bool(meta.get("verbatim")),
+        },
+        # source_status describes what the material IS and whether it was
+        # usable, and it means the same thing on both roads into a plan:
+        # ready | processing | missing | reference. A reference draft is
+        # "reference" here exactly as it is on the debrief path, and
+        # digest_used stays true because the material was read; what differs is
+        # the door it came through, which source_note says in words.
+        "source_status": "reference" if reference else "ready",
+        "evidence_conflicts": evidence_conflicts,
+        "no_debrief": True,
+    }
+    if reference:
+        plan["source_note"] = _DRAFT_REFERENCE_NOTE
+    return plan
 
 
 # ---------------------------------------------------------------------------
@@ -452,7 +1005,12 @@ def execute_plan(plan: dict, verify: bool = True) -> dict:
     client_id = plan.get("client_id")
     client = plan.get("client", {}) or {}
     first_name = client.get("first_name") or _first_name(client.get("name", ""))
-    email = client.get("email")
+    # The recipient always comes from the client's profile on disk, never from
+    # the plan, which has been through the browser.
+    try:
+        email = vault.client_context(client_id).get("email")
+    except Exception:  # noqa: BLE001 - a missing profile means no recipient
+        email = None
     corrected = plan.get("corrected_transcript") or plan.get("transcript") or ""
     note = plan.get("note", {}) or {}
     session_meta = dict(plan.get("session_meta", {}) or {})
@@ -481,7 +1039,11 @@ def execute_plan(plan: dict, verify: bool = True) -> dict:
         entry = dict(a)
         if a.get("enabled") is False:
             entry["status"] = "skipped"
-            entry["detail"] = "Unchecked by the therapist."
+            undated = a.get("type") == "schedule_followup" and not a.get("resolved_datetime")
+            entry["detail"] = (
+                "No resolvable date in the spoken request." if undated
+                else "Unchecked by the therapist."
+            )
             result_actions.append(entry)
             continue
 
@@ -762,6 +1324,7 @@ def run_debrief(
     client_id: str,
     execute: bool = True,
     verify: bool = True,
+    source_id: str | None = None,
 ) -> dict:
     """Run the whole debrief: transcribe -> correct -> extract -> (execute) -> (verify).
 
@@ -769,8 +1332,12 @@ def run_debrief(
     extraction, per-action status, note path, verification results, per-stage
     timings, and an errors list. Every stage is wrapped so one failure does not
     kill the rest.
+
+    source_id names an optional recording of the session itself; see
+    transcribe_and_extract. With no source_id this returns exactly what it
+    always has.
     """
-    plan = transcribe_and_extract(wav_path, client_id)
+    plan = transcribe_and_extract(wav_path, client_id, source_id=source_id)
 
     merged: dict = {
         "client_id": client_id,
@@ -788,6 +1355,10 @@ def run_debrief(
         "timings": dict(plan["timings"]),
         "errors": list(plan["errors"]),
     }
+    # Present only when a source was named, so a run without one is unchanged.
+    for key in _SOURCE_PLAN_KEYS:
+        if key in plan:
+            merged[key] = plan[key]
 
     if not execute:
         return merged

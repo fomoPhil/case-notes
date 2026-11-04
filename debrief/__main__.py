@@ -36,7 +36,8 @@ def main() -> None:
     import uvicorn
 
     print(f"Debrief is running at http://{APP_HOST}:{APP_PORT}")
-    uvicorn.run("app:app", host=APP_HOST, port=APP_PORT)
+    # No access log: query strings carry search terms and note paths.
+    uvicorn.run("app:app", host=APP_HOST, port=APP_PORT, access_log=False)
 
 
 if __name__ == "__main__":
