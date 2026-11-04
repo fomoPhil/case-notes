@@ -81,8 +81,24 @@ _AUDIO_STORE = Path(tempfile.gettempdir()) / "debrief_audio_store"
 _TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
+# A debrief nobody approved or discarded (a closed tab, a crash) is still a
+# recording of a clinician talking about a client. It does not outlive a day.
+_AUDIO_STORE_MAX_AGE = 24 * 60 * 60
+
+
+def _sweep_audio_store(now: float | None = None) -> None:
+    cutoff = (now or time.time()) - _AUDIO_STORE_MAX_AGE
+    for path in _AUDIO_STORE.glob("*.webm"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError:
+            pass
+
+
 def _store_original_audio(data: bytes) -> str:
     _AUDIO_STORE.mkdir(parents=True, exist_ok=True)
+    _sweep_audio_store()
     token = uuid.uuid4().hex
     (_AUDIO_STORE / f"{token}.webm").write_bytes(data)
     return token
@@ -529,6 +545,19 @@ async def api_debrief(
     except Exception:
         plan["audio_token"] = None
     return JSONResponse(plan)
+
+
+@app.post("/api/debrief/discard")
+async def api_debrief_discard(request: Request) -> JSONResponse:
+    """Delete the stored recording of a debrief the clinician discarded."""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    stored = _pop_original_audio((body or {}).get("audio_token"))
+    if stored is not None:
+        stored.unlink(missing_ok=True)
+    return JSONResponse({"ok": True})
 
 
 # Plans already approved, by their audio token. Calendar and Mail run before the

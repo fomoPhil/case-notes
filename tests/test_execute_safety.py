@@ -124,3 +124,27 @@ def test_a_reviewed_note_files_with_the_model_gone(env, monkeypatch):
     assert r.status_code == 200, r.text
     assert r.json()["note_path"]
     assert list((vault_dir / "Clients" / "C-0001" / "Sessions").glob("2026-11-03-session*.md"))
+
+
+def test_discard_deletes_the_stored_recording(env, monkeypatch, tmp_path):
+    tc, _, _ = env
+    monkeypatch.setattr(app_module, "_AUDIO_STORE", tmp_path / "store")
+    token = app_module._store_original_audio(b"audio")
+    path = tmp_path / "store" / f"{token}.webm"
+    assert path.exists()
+    assert tc.post("/api/debrief/discard", json={"audio_token": token}).status_code == 200
+    assert not path.exists()
+
+
+def test_stale_recordings_are_swept(monkeypatch, tmp_path):
+    import os
+    import time
+
+    monkeypatch.setattr(app_module, "_AUDIO_STORE", tmp_path / "store")
+    old = app_module._store_original_audio(b"old")
+    old_path = tmp_path / "store" / f"{old}.webm"
+    two_days_ago = time.time() - 2 * 24 * 60 * 60
+    os.utime(old_path, (two_days_ago, two_days_ago))
+    fresh = app_module._store_original_audio(b"new")
+    assert not old_path.exists()
+    assert (tmp_path / "store" / f"{fresh}.webm").exists()

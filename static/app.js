@@ -1614,7 +1614,12 @@ function confirmDiscard() {
     cancelLabel: "Keep editing",
     confirmLabel: "Discard",
     danger: true,
-    onConfirm: () => { App.plan = null; go("record"); },
+    onConfirm: () => {
+      // The dialog promises the recording goes away, so the server copy does too.
+      const token = App.plan && App.plan.audio_token;
+      if (token) fetch("/api/debrief/discard", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ audio_token: token }) }).catch(() => {});
+      App.plan = null; go("record");
+    },
   });
 }
 
