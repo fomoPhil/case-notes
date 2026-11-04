@@ -2,6 +2,14 @@
 
 Session-to-session state of the project. Read this first. Update it whenever meaningful state changes.
 
+## Audit pass (2026-11-04)
+
+A fresh end to end audit on branch `audit-improve`. Findings, ranked, are in `docs/audit-2026-11.md`; each fix is its own commit with tests.
+
+- **Tests:** `uv run pytest` now runs only the offline suite (live tests are opt-in with `-m live`) and never reaches a model server. Offline count is in the PR.
+- **Eval:** `eval/run_eval.py` now uses a throwaway vault. Rerun 2026-11-04 on `google/gemma-4-12b-qat`: 40/40 note checks, 10/10 dates.
+- **Behaviour changes worth knowing:** the API refuses other websites and other host names; the on-screen check setting is honoured; execute no longer needs the model and runs a plan once; undated follow-ups are unticked and say so; imported formats under therapy or SLP always keep the risk section; discarded debrief audio and verification screenshots are deleted.
+
 ## Source trust loop (built 2026-07-27, same day as Phase A, after Phil's first hands-on pass)
 
 Phil's first contact with Phase A surfaced five gaps; all are closed. Plan: `docs/plans/2026-07-27-source-trust-loop.md`. Tests now **786 non-live** (Phase A ended at 695).
@@ -67,7 +75,7 @@ The hackathon is over (2nd place, Build with Gemma: JustBuild, Track 2). That bu
 | Records UI | Client records, session timeline, documents, library, trash with 30-day retention, global search, PDF export, Reveal in Finder |
 | Editable review | Every note section is click-to-edit before filing; edits are what gets written |
 | Note formats | DAP, SOAP, GROW, meeting memo, plus custom formats derived from an imported sample document |
-| Onboarding | Six-card first-run wizard: model check, vault, profession, note format, feature toggles, Mac permissions |
+| Onboarding | Seven-card first-run wizard (retention added in Phase A): model check, vault, profession, note format, feature toggles, Mac permissions |
 | Settings | `_Settings` store in the vault: profession, active format, STT engine, personal dictionary, feature toggles |
 | STT | Parakeet default; mlx-whisper (large-v3-turbo) selectable. Cache-aware offline handling. |
 | Template import | Local Gemma compiler by default; optional one-time consented Gemini boost with the user's own key, never stored or logged |
