@@ -65,6 +65,21 @@ def test_now_is_saturday():
         # Abbreviations.
         ("tue at 3", datetime(2026, 7, 21, 15, 0)),
         ("fri at 4pm", datetime(2026, 7, 24, 16, 0)),
+        # Audit 2026-11: phrasings that used to resolve wrong or not at all.
+        ("two weeks from tomorrow", datetime(2026, 8, 2, 15, 0)),
+        ("same time in two weeks", datetime(2026, 8, 1, 10, 0)),
+        ("Wednesday the 22nd at 2", datetime(2026, 7, 22, 14, 0)),
+        ("the 14th", datetime(2026, 8, 14, 15, 0)),
+        ("the 31st", datetime(2026, 7, 31, 15, 0)),
+        ("July 30th at 2pm", datetime(2026, 7, 30, 14, 0)),
+        ("30 July at 9", datetime(2026, 7, 30, 9, 0)),
+        ("2nd of December at 10", datetime(2026, 12, 2, 10, 0)),
+        ("July 10", datetime(2027, 7, 10, 15, 0)),
+        ("in a fortnight", datetime(2026, 8, 1, 15, 0)),
+        ("the week after next", datetime(2026, 8, 1, 15, 0)),
+        ("Friday at half past three", datetime(2026, 7, 24, 15, 30)),
+        ("quarter to four on Monday", datetime(2026, 7, 20, 15, 45)),
+        ("we may meet Tuesday", datetime(2026, 7, 21, 15, 0)),
     ],
 )
 def test_resolve(utterance, expected):
