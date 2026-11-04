@@ -690,7 +690,8 @@ def transcribe_and_extract(
                     "duration_min": duration,
                     "title": title,
                     "label": label,
-                    "enabled": True,
+                    # A booking with no date cannot run, so it is never ticked.
+                    "enabled": dt is not None,
                 }
             )
         elif atype == "draft_client_email":

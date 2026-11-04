@@ -216,11 +216,23 @@ function fmtDateTimeDisplay(d) {
 
 // Pure, deterministic gap detection over the plan JSON. No LLM involved.
 // Returns a list of nudge descriptors; rendering decides how each looks.
+function isBookable(a) {
+  return a.type === "schedule_followup" && !!a.resolved_datetime && a.enabled !== false;
+}
 function computeNudges(plan) {
   const acts = (plan && plan.actions) || [];
   const nudges = [];
-  if (!acts.some(a => a.type === "schedule_followup")) {
-    nudges.push({ id: "no-followup", text: "No next appointment in this debrief.", sub: "Add one here if you meant to." });
+  // The add-an-appointment row shows whenever nothing ticked will actually be
+  // booked: no follow-up at all, one whose date did not resolve, or one the
+  // clinician unticked because the date was wrong.
+  if (!acts.some(isBookable)) {
+    const followups = acts.filter(a => a.type === "schedule_followup");
+    const unheard = followups.find(a => !a.resolved_datetime);
+    nudges.push(unheard
+      ? { id: "no-followup", text: `Debrief could not work out a date from "${unheard.datetime_utterance || "what you said"}".`, sub: "Add the appointment here." }
+      : followups.length
+        ? { id: "no-followup", text: "No appointment will be booked.", sub: "Add one here if you meant to." }
+        : { id: "no-followup", text: "No next appointment in this debrief.", sub: "Add one here if you meant to." });
   }
   if (!acts.some(a => a.type === "draft_client_email")) {
     nudges.push({ id: "no-email", text: "No email to the client in this debrief." });
@@ -1338,7 +1350,7 @@ function approveConsequence(plan, enabled) {
   const name = (plan.client && plan.client.name) || "this client";
   const acts = (plan.actions || []).filter((a, i) => enabled[i]);
   const parts = [`Files the note under ${name}`];
-  const appt = acts.find(a => a.type === "schedule_followup");
+  const appt = acts.find(a => a.type === "schedule_followup" && a.resolved_datetime);
   if (appt) {
     const when = fmtWhenShort(appt.resolved_datetime) || appt.datetime_display || "";
     parts.push(when ? `books ${when}` : "books the appointment");
@@ -1518,14 +1530,21 @@ function renderReview() {
     const when = a.datetime_display ? `<div class="a-when">${esc(a.datetime_display)}</div>` : "";
     const title = a.type === "schedule_followup" ? "Book follow-up appointment"
                 : a.type === "draft_client_email" ? "Draft client email" : esc(a.type);
+    const undated = a.type === "schedule_followup" && !a.resolved_datetime;
     const sub = a.type === "draft_client_email" && a.attachment_name ? `<div class="a-sub">Attaches the ${esc(a.attachment_name)}</div>`
+              : undated ? `<div class="a-sub">No date. Debrief heard "${esc(a.datetime_utterance || "")}" and could not work it out, so this will not be booked.</div>`
               : a.type === "schedule_followup" && a.title ? `<div class="a-sub">Calendar title: ${esc(a.title)}</div>` : "";
-    const row = h(`<label class="action on">
-      <input type="checkbox" checked data-i="${i}" />
+    const on = a.enabled !== false && !undated;
+    const row = h(`<label class="action ${on ? "on" : "off"}">
+      <input type="checkbox" ${on ? "checked" : ""} ${undated ? "disabled" : ""} data-i="${i}" />
       <div class="body"><div class="a-title">${title}</div>${when}${sub}</div>
     </label>`);
     const cb = row.querySelector("input");
     cb.onchange = () => {
+      const before = p.actions.some(isBookable);
+      a.enabled = cb.checked;
+      // Unticking the only real booking brings back the row that adds one.
+      if (before !== p.actions.some(isBookable)) { render(); return; }
       row.classList.toggle("on", cb.checked);
       row.classList.toggle("off", !cb.checked);
       refreshApproveConsequence();
