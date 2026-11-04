@@ -959,13 +959,34 @@ async def api_note(path: str) -> JSONResponse:
     return JSONResponse(view)
 
 
+def _vault_parts(target: Path) -> tuple[str, ...]:
+    return target.relative_to(config.VAULT_DIR.resolve()).parts
+
+
+def _is_session_note(target: Path) -> bool:
+    parts = _vault_parts(target)
+    return len(parts) == 4 and parts[0] == "Clients" and parts[2] == "Sessions"
+
+
+def _is_editable_document(target: Path) -> bool:
+    """Library files, a client's own documents, and the treatment plan. Never
+    the activity log, settings, profiles, Private/, or recordings."""
+    parts = _vault_parts(target)
+    if parts and parts[0] in ("Templates", "Interventions"):
+        return True
+    if len(parts) >= 3 and parts[0] == "Clients":
+        return parts[2] == "Documents" or (len(parts) == 3 and parts[2] == "Treatment-Plan.md")
+    return False
+
+
 @app.post("/api/notes/amend")
 async def api_note_amend(request: Request) -> JSONResponse:
     """Append a dated amendment to a filed note (never rewrites history)."""
     body = await request.json()
     path = body.get("path")
     text = body.get("text")
-    _guard_or_400(path)
+    if not _is_session_note(_guard_or_400(path)):
+        raise HTTPException(status_code=400, detail="Amendments go on session notes.")
     try:
         new_path = await run_in_threadpool(
             records.append_amendment, path, text, _dt.datetime.now()
@@ -991,6 +1012,8 @@ async def api_document_save(request: Request) -> JSONResponse:
             status_code=400,
             detail="Session notes keep their history. Add an amendment instead.",
         )
+    if not _is_editable_document(target):
+        raise HTTPException(status_code=400, detail="That file is not edited from here.")
     if not target.is_file():
         raise HTTPException(status_code=404, detail="Document not found.")
 

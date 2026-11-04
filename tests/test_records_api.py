@@ -144,6 +144,31 @@ def test_document_save_allows_library_markdown(client):
     assert "New body." in (vault_dir / "Interventions" / "cognitive-restructuring.md").read_text(encoding="utf-8")
 
 
+def test_save_refuses_the_activity_log_settings_and_profiles(client):
+    tc, vault_dir = client
+    (vault_dir / "_Activity").mkdir(exist_ok=True)
+    (vault_dir / "_Activity" / "2026-11-03.md").write_text("log\n", encoding="utf-8")
+    for rel in ("_Activity/2026-11-03.md", "Clients/C-0001/_Profile.md", "Private/README.md"):
+        before = (vault_dir / rel).read_text(encoding="utf-8")
+        resp = tc.post("/api/documents/save", json={"path": rel, "markdown": "# Rewritten"})
+        assert resp.status_code == 400, rel
+        assert (vault_dir / rel).read_text(encoding="utf-8") == before
+
+
+def test_save_allows_the_treatment_plan(client):
+    tc, vault_dir = client
+    resp = tc.post("/api/documents/save", json={"path": "Clients/C-0001/Treatment-Plan.md", "markdown": "# Plan\n"})
+    assert resp.status_code == 200
+
+
+def test_amend_refuses_anything_but_a_session_note(client):
+    tc, vault_dir = client
+    before = (vault_dir / "Clients" / "C-0001" / "_Profile.md").read_text(encoding="utf-8")
+    resp = tc.post("/api/notes/amend", json={"path": "Clients/C-0001/_Profile.md", "text": "x"})
+    assert resp.status_code == 400
+    assert (vault_dir / "Clients" / "C-0001" / "_Profile.md").read_text(encoding="utf-8") == before
+
+
 # ---------------------------------------------------------------------------
 # Upload + rename
 # ---------------------------------------------------------------------------
