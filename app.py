@@ -2558,4 +2558,5 @@ app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="static"
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host=APP_HOST, port=APP_PORT)
+    # No access log: query strings carry search terms and note paths.
+    uvicorn.run(app, host=APP_HOST, port=APP_PORT, access_log=False)

@@ -43,3 +43,18 @@ def test_same_origin_post_passes_the_guard():
         headers={"Origin": "http://127.0.0.1:8377", "Sec-Fetch-Site": "same-origin"},
     )
     assert r.status_code != 403
+
+
+def test_server_runs_without_an_access_log(monkeypatch):
+    """Access logs record query strings, which carry search terms (often a
+    client's name) and note paths. The launcher appends them to a file."""
+    import uvicorn
+
+    from debrief import __main__ as entry
+
+    seen = {}
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: seen.update(k))
+    monkeypatch.setattr(entry.vault, "ensure_vault", lambda: None)
+    monkeypatch.setattr(entry.stt, "warm_engine_in_background", lambda: None)
+    entry.main()
+    assert seen["access_log"] is False

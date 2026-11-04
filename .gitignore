@@ -10,3 +10,6 @@ DebriefVault/
 
 # Private business planning (never publish)
 docs/business/
+
+# Server output from the launcher (can hold search terms and paths)
+launcher/server.log
