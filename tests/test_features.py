@@ -220,9 +220,16 @@ def test_execute_verify_default_from_settings(client, monkeypatch):
     assert resp.status_code == 200
     assert captured["verify"] is False
 
-    # An explicit verify on the plan still wins over the settings default.
+    # A plan cannot switch the screen check back on when Settings has it off.
     resp = tc.post("/api/execute", json={"client_id": "C-0001", "note": {}, "verify": True})
     assert resp.status_code == 200
+    assert captured["verify"] is False
+
+    # With the setting on, a plan can still opt out.
+    settings_store.save({"features": {"verify": True}})
+    resp = tc.post("/api/execute", json={"client_id": "C-0001", "note": {}, "verify": False})
+    assert captured["verify"] is False
+    resp = tc.post("/api/execute", json={"client_id": "C-0001", "note": {}})
     assert captured["verify"] is True
 
 

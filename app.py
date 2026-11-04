@@ -544,12 +544,11 @@ async def api_execute(request: Request) -> JSONResponse:
     # The plan round-trips through the browser, so its client id is checked
     # again here: it becomes a folder path when the note is written.
     plan["client_id"] = _existing_client_id(plan["client_id"])
-    # An explicit verify on the plan wins; otherwise the default flows from the
-    # verify feature toggle in settings.
-    if "verify" in plan:
-        verify = bool(plan["verify"])
-    else:
-        verify = bool(settings_store.load().get("features", {}).get("verify", True))
+    # The screen check is a screen capture, so the Settings toggle decides. A
+    # plan can opt out of it, never back in.
+    verify = bool(settings_store.load().get("features", {}).get("verify", True))
+    if plan.get("verify") is False:
+        verify = False
     # Resolve the stored original upload (never trust a client-sent path).
     plan.pop("audio_path", None)
     stored = _pop_original_audio(plan.get("audio_token"))

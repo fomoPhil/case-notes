@@ -2044,7 +2044,6 @@ async function executePlan() {
   const boxes = Array.from(document.querySelectorAll(".action input[type=checkbox]"));
   const plan = JSON.parse(JSON.stringify(App.plan));
   boxes.forEach(b => { const i = +b.dataset.i; if (plan.actions[i]) plan.actions[i].enabled = b.checked; });
-  plan.verify = true;
   go("executing");
   try {
     const r = await fetch("/api/execute", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(plan) });
