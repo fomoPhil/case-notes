@@ -1004,7 +1004,12 @@ def execute_plan(plan: dict, verify: bool = True) -> dict:
     client_id = plan.get("client_id")
     client = plan.get("client", {}) or {}
     first_name = client.get("first_name") or _first_name(client.get("name", ""))
-    email = client.get("email")
+    # The recipient always comes from the client's profile on disk, never from
+    # the plan, which has been through the browser.
+    try:
+        email = vault.client_context(client_id).get("email")
+    except Exception:  # noqa: BLE001 - a missing profile means no recipient
+        email = None
     corrected = plan.get("corrected_transcript") or plan.get("transcript") or ""
     note = plan.get("note", {}) or {}
     session_meta = dict(plan.get("session_meta", {}) or {})

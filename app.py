@@ -509,11 +509,10 @@ async def api_debrief(
     the plan and writes the note without it.
     """
     _require_model_ready()
+    client_id = _existing_client_id(client_id)
     sid = (source_id or "").strip() or None
     if sid is not None:
-        cid = _valid_client_id(client_id)
-        if not cid:
-            raise HTTPException(status_code=400, detail="Invalid client id.")
+        cid = client_id
         # Validates both ids against the storage rules and creates nothing, so a
         # crafted id is refused here rather than turned into a path downstream.
         try:
@@ -542,6 +541,9 @@ async def api_execute(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=f"Invalid plan JSON: {exc}")
     if not isinstance(plan, dict) or not plan.get("client_id"):
         raise HTTPException(status_code=400, detail="Plan is missing client_id.")
+    # The plan round-trips through the browser, so its client id is checked
+    # again here: it becomes a folder path when the note is written.
+    plan["client_id"] = _existing_client_id(plan["client_id"])
     # An explicit verify on the plan wins; otherwise the default flows from the
     # verify feature toggle in settings.
     if "verify" in plan:
@@ -602,6 +604,16 @@ def _valid_client_id(client_id) -> str | None:
     cid = str(client_id).strip()
     if not cid or "/" in cid or "\\" in cid or cid.startswith("."):
         return None
+    return cid
+
+
+def _existing_client_id(client_id) -> str:
+    """A client id that is safe as a path and has a profile on disk, or 4xx."""
+    cid = _valid_client_id(client_id)
+    if not cid:
+        raise HTTPException(status_code=400, detail="Invalid client id.")
+    if not (config.VAULT_DIR / "Clients" / cid / "_Profile.md").is_file():
+        raise HTTPException(status_code=404, detail=f"No such client: {cid}")
     return cid
 
 
